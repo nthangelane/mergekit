@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Charles O. Goddard
+# Copyright (C) 2025 Arcee AI
 #
 # This software is free software: you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public License as
@@ -49,3 +49,4 @@ class TokenEmbeddingConfig(BaseModel, frozen=True):
 class TokenizerConfig(BaseModel, frozen=True):
     source: Union[ModelReference, Literal["union"], Literal["base"]] = "union"
     tokens: Optional[Dict[str, TokenEmbeddingConfig]] = None
+    pad_to_multiple_of: Optional[int] = None
