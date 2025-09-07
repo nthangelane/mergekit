@@ -16,7 +16,11 @@ import torch
 import transformers
 
 from mergekit.common import get_torch_accelerator_count
-from mergekit.evo.actors import InMemoryMergeEvaluator, OnDiskMergeEvaluator
+from mergekit.evo.actors import (
+    InMemoryMergeEvaluator,
+    OnDiskMergeEvaluator,
+    OnDiskMergeEvaluatorCPU,
+)
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.helpers import (
@@ -76,10 +80,16 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
     ):
         super().__init__(*args, **kwargs)
         if in_memory:
-            self.actor_cls = InMemoryMergeEvaluator
+            if self.num_gpus and self.num_gpus > 0:
+                self.actor_cls = InMemoryMergeEvaluator
+            else:
+                raise ValueError("In-memory evaluation is not supported on CPU")
         else:
-            self.actor_cls = OnDiskMergeEvaluator
+            self.actor_cls = (
+                OnDiskMergeEvaluator if (self.num_gpus and self.num_gpus > 0) else OnDiskMergeEvaluatorCPU
+            )
 
+        worker_count = self.num_gpus if (self.num_gpus and self.num_gpus > 0) else 1
         self.actor_pool = ray.util.ActorPool(
             [
                 self.actor_cls.remote(
@@ -92,7 +102,7 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
                     task_manager=self.task_manager,
                     quantization_config=self.quantization_config,
                 )
-                for _ in range(self.num_gpus)
+                for _ in range(worker_count)
             ]
         )
 
@@ -150,36 +160,59 @@ class BufferedRayEvaluationStrategyActor:
 
         try:
             while not self._shutdown:
-                while self.input_queue and (len(merging) + len(merged) < self.num_gpus):
+                capacity = self.num_gpus if self.num_gpus > 0 else 1
+                while self.input_queue and (len(merging) + len(merged) < capacity):
                     genotype, future_result = self.input_queue.pop(0)
-                    merging[
-                        merge_model_ray.remote(
-                            genotype,
-                            self.genome,
-                            self.model_storage_path,
-                            self.merge_options,
-                        )
-                    ] = future_result
+                    if self.num_gpus > 0:
+                        merging[
+                            merge_model_ray.remote(
+                                genotype,
+                                self.genome,
+                                self.model_storage_path,
+                                self.merge_options,
+                            )
+                        ] = future_result
+                    else:
+                        merging[
+                            merge_model_ray_cpu.remote(
+                                genotype,
+                                self.genome,
+                                self.model_storage_path,
+                                self.merge_options,
+                            )
+                        ] = future_result
 
-                while merged and len(evaluating) < self.num_gpus:
+                while merged and len(evaluating) < capacity:
                     future_result, merged_path = merged.pop()
                     kwargs = {}
                     if self.quantization_config is not None:
                         kwargs["quantization_config"] = self.quantization_config
-                    evaluating[
-                        evaluate_model_ray.remote(
-                            merged_path,
-                            self.config.tasks,
-                            num_fewshot=self.config.num_fewshot,
-                            limit=self.config.limit,
-                            vllm=self.vllm,
-                            batch_size=self.batch_size,
-                            task_manager=self.task_manager,
-                            apply_chat_template=self.config.apply_chat_template,
-                            fewshot_as_multiturn=self.config.fewshot_as_multiturn,
-                            **kwargs,
-                        )
-                    ] = future_result
+                    if self.num_gpus > 0:
+                        evaluating[
+                            evaluate_model_ray.remote(
+                                merged_path,
+                                self.config.tasks,
+                                num_fewshot=self.config.num_fewshot,
+                                limit=self.config.limit,
+                                vllm=self.vllm,
+                                batch_size=self.batch_size,
+                                task_manager=self.task_manager,
+                                apply_chat_template=self.config.apply_chat_template,
+                                fewshot_as_multiturn=self.config.fewshot_as_multiturn,
+                                **kwargs,
+                            )
+                        ] = future_result
+                    else:
+                        evaluating[
+                            evaluate_model_ray_cpu.remote(
+                                merged_path,
+                                self.config.tasks,
+                                num_fewshot=self.config.num_fewshot,
+                                limit=self.config.limit,
+                                batch_size=self.batch_size,
+                                task_manager=self.task_manager,
+                            )
+                        ] = future_result
 
                 ready, _ = ray.wait(
                     list(merging.keys()) + list(evaluating.keys()),
@@ -328,22 +361,6 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         super().__init__(*args, **kwargs)
 
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
-        return ray.get(
-            [
-                evaluate_genotype_serial.remote(
-                    x,
-                    self.config,
-                    self.genome,
-                    self.merge_options,
-                    model_storage_path=self.model_storage_path,
-                    vllm=self.vllm,
-                    batch_size=self.batch_size,
-                    task_manager=self.task_manager,
-                    quantization_config=self.quantization_config,
-                )
-                for x in genotypes
-            ]
-        )
         if self.num_gpus and self.num_gpus > 0:
             return ray.get(
                 [
@@ -356,6 +373,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                         vllm=self.vllm,
                         batch_size=self.batch_size,
                         task_manager=self.task_manager,
+                        quantization_config=self.quantization_config,
                     )
                     for x in genotypes
                 ]

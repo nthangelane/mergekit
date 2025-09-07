@@ -91,10 +91,16 @@ class OnDiskMergeEvaluator(MergeActorBase):
         genotype: torch.Tensor,
     ) -> dict:
         gc.collect()
-        torch_accelerator_module = get_torch_accelerator_module(
-            self.merge_options.device
-        )
-        torch_accelerator_module.empty_cache()
+        try:
+            torch_accelerator_module = get_torch_accelerator_module(
+                self.merge_options.device
+            )
+            # empty_cache is not available for CPU; guard call
+            empty_cache = getattr(torch_accelerator_module, "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+        except Exception:
+            pass
         LOG.info("Merging model")
         merged_path = merge_model(
             genotype, self.genome, self.model_storage_path, self.merge_options
@@ -113,6 +119,43 @@ class OnDiskMergeEvaluator(MergeActorBase):
             num_fewshot=self.config.num_fewshot,
             limit=self.config.limit,
             vllm=self.vllm,
+            batch_size=self.batch_size,
+            task_manager=self.task_manager,
+            apply_chat_template=self.config.apply_chat_template,
+            fewshot_as_multiturn=self.config.fewshot_as_multiturn,
+            model_kwargs=model_kwargs,
+        )
+
+
+@ray.remote(num_cpus=1)
+class OnDiskMergeEvaluatorCPU(MergeActorBase):
+    """
+    CPU-only variant: merges to disk and evaluates with HF backend on CPU.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def evaluate_genotype(self, genotype: torch.Tensor) -> dict:
+        gc.collect()
+        LOG.info("Merging model (CPU)")
+        merged_path = merge_model(
+            genotype, self.genome, self.model_storage_path, self.merge_options
+        )
+        if not merged_path:
+            LOG.error("Model merge failed")
+            return {"score": None, "results": None}
+
+        model_kwargs = {}
+        if self.quantization_config is not None:
+            model_kwargs["quantization_config"] = self.quantization_config
+        LOG.info(f"Model merged to {merged_path}")
+        return evaluate_model(
+            merged_path,
+            self.config.tasks,
+            num_fewshot=self.config.num_fewshot,
+            limit=self.config.limit,
+            vllm=False,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
             apply_chat_template=self.config.apply_chat_template,

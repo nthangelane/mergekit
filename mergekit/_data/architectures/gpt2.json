@@ -29,7 +29,8 @@
             "name": "transformer.ln_f.bias",
             "aliases": [
                 "ln_f.bias"
-            ]
+            ],
+            "optional": true
         },
         {
             "name": "lm_head.weight",
