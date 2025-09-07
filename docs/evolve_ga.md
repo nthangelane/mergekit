@@ -16,6 +16,30 @@ Key options:
 - `--mutation-sigma`: stddev of Gaussian mutation noise (default 0.05)
 - `--crossover`: `arithmetic` or `uniform` (default `arithmetic`)
 - `--tournament-size`: tournament size for selection (default 4)
+
+YAML configuration (optional):
+
+You can specify GA hyperparameters inside your evolution config file. CLI flags override YAML values when provided.
+
+```yaml
+genome:
+  merge_method: linear
+  models:
+    - path/to/modelA
+    - path/to/modelB
+    - path/to/modelC
+tasks:
+  - name: truthfulqa_mc
+    weight: 1.0
+random_init: false
+ga:
+  population_size: 32
+  elite_fraction: 0.125
+  mutation_rate: 0.15
+  mutation_sigma: 0.05
+  crossover: arithmetic
+  tournament_size: 4
+```
 - `--max-fevals`: maximum evaluations before stopping
 - `--timeout`: optional time budget in seconds
 
@@ -33,16 +57,33 @@ Shared options with `mergekit-evolve`:
 - If `--save-final-model` is set (default true), saves the final best merge to `storage_path/final_model`.
 - `--reshard` converts inputs to single-shard safetensors for faster merges and is enabled by default.
 
-## Installation
+### CPU-only testing
 
-Install the package and GA extras:
+You can run a full end-to-end pipeline on a CPU-only node using the serial strategy and disabling CUDA merges. Use the HuggingFace backend (no vLLM):
 
 ```
-pip install -e .[evolve-ga]
+mergekit-evolve-ga \
+  --strategy serial \
+  --no-merge-cuda \
+  --max-fevals 16 \
+  --storage-path /tmp/mk-ga \
+  examples/evolve_ga_tiny.yml
+```
+
+Notes:
+- `--vllm` is GPU-only; omit it on CPU.
+- Serial strategy automatically switches to a CPU path when no GPUs are detected.
+
+## Installation
+
+Install the package and GA extras (quote the extras on zsh):
+
+```
+pip install -e '.[evolve-ga]'
 ```
 
 To use CMA-ES instead (or both), install:
 
 ```
-pip install -e .[evolve]
+pip install -e '.[evolve]'
 ```

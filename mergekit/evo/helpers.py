@@ -100,6 +100,39 @@ def evaluate_model(
 evaluate_model_ray = ray.remote(num_cpus=1, num_gpus=1.0)(evaluate_model)
 
 
+def evaluate_model_cpu(
+    merged_path: str,
+    tasks: List[TaskConfiguration],
+    num_fewshot: Optional[int],
+    limit: Optional[int],
+    batch_size: Optional[int] = None,
+    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+) -> dict:
+    """CPU-only evaluation using HuggingFace backend and float32."""
+    monkeypatch_lmeval_vllm()
+    try:
+        model_args = {
+            "pretrained": merged_path,
+            "dtype": "float32",
+            "use_cache": True,
+        }
+        res = _eval_model(
+            "huggingface",
+            tasks,
+            model_args,
+            num_fewshot=num_fewshot,
+            limit=limit,
+            batch_size=batch_size,
+            task_manager=task_manager,
+        )
+        return res
+    finally:
+        shutil.rmtree(merged_path)
+
+
+evaluate_model_ray_cpu = ray.remote(num_cpus=1)(evaluate_model_cpu)
+
+
 def merge_model(
     genotype: torch.Tensor,
     genome: ModelGenome,
@@ -121,6 +154,12 @@ def merge_model(
 merge_model_ray = ray.remote(
     num_cpus=1,
     num_gpus=1,
+    max_retries=3,
+    retry_exceptions=[ConnectionError],
+)(merge_model)
+
+merge_model_ray_cpu = ray.remote(
+    num_cpus=1,
     max_retries=3,
     retry_exceptions=[ConnectionError],
 )(merge_model)

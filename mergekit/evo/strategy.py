@@ -29,7 +29,12 @@ import torch
 from mergekit.evo.actors import InMemoryMergeEvaluator, OnDiskMergeEvaluator
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import ModelGenome
-from mergekit.evo.helpers import evaluate_model_ray, merge_model_ray
+from mergekit.evo.helpers import (
+    evaluate_model_ray,
+    merge_model_ray,
+    evaluate_model_ray_cpu,
+    merge_model_ray_cpu,
+)
 from mergekit.options import MergeOptions
 
 
@@ -267,6 +272,34 @@ def evaluate_genotype_serial(
     return res
 
 
+@ray.remote
+def evaluate_genotype_serial_cpu(
+    genotype: np.ndarray,
+    config: EvolMergeConfiguration,
+    genome: ModelGenome,
+    merge_options: MergeOptions,
+    model_storage_path: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+):
+    merged_path = merge_model_ray_cpu.remote(
+        genotype, genome, model_storage_path, merge_options
+    )
+    if not merged_path:
+        return {"score": None, "results": None}
+    res = ray.get(
+        evaluate_model_ray_cpu.remote(
+            merged_path,
+            config.tasks,
+            num_fewshot=config.num_fewshot,
+            limit=config.limit,
+            batch_size=batch_size,
+            task_manager=task_manager,
+        )
+    )
+    return res
+
+
 class SerialEvaluationStrategy(EvaluationStrategyBase):
     def __init__(
         self,
@@ -281,21 +314,38 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         super().__init__(*args, **kwargs)
 
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
-        return ray.get(
-            [
-                evaluate_genotype_serial.remote(
-                    x,
-                    self.config,
-                    self.genome,
-                    self.merge_options,
-                    model_storage_path=self.model_storage_path,
-                    vllm=self.vllm,
-                    batch_size=self.batch_size,
-                    task_manager=self.task_manager,
-                )
-                for x in genotypes
-            ]
-        )
+        if self.num_gpus and self.num_gpus > 0:
+            return ray.get(
+                [
+                    evaluate_genotype_serial.remote(
+                        x,
+                        self.config,
+                        self.genome,
+                        self.merge_options,
+                        model_storage_path=self.model_storage_path,
+                        vllm=self.vllm,
+                        batch_size=self.batch_size,
+                        task_manager=self.task_manager,
+                    )
+                    for x in genotypes
+                ]
+            )
+        else:
+            # CPU-only path: no GPUs available
+            return ray.get(
+                [
+                    evaluate_genotype_serial_cpu.remote(
+                        x,
+                        self.config,
+                        self.genome,
+                        self.merge_options,
+                        model_storage_path=self.model_storage_path,
+                        batch_size=self.batch_size,
+                        task_manager=self.task_manager,
+                    )
+                    for x in genotypes
+                ]
+            )
 
     def evaluate_genotype(self, genotype: np.ndarray) -> dict:
         return self.evaluate_genotypes([genotype])[0]

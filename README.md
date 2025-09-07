@@ -36,8 +36,8 @@ You may need to upgrade pip to > 21.3 with the command `python3 -m pip install -
 
 Optional dependency groups:
 
-- CMA-ES evolution (existing `mergekit-evolve`): `pip install -e .[evolve]`
-- GA evolution only (`mergekit-evolve-ga`): `pip install -e .[evolve-ga]`
+- CMA-ES evolution (existing `mergekit-evolve`): `pip install -e '.[evolve]'`
+- GA evolution only (`mergekit-evolve-ga`): `pip install -e '.[evolve-ga]'`
 
 Both extras include `ray`, `lm_eval`, and `wandb`. The `evolve` group also includes `cma`.
 
@@ -99,6 +99,9 @@ Notes:
 
 - `--reshard` speeds up merges by saving single-shard safetensors (default enabled).
 - `--in-memory` is supported only with the `pool` strategy.
+ - CPU-only run is supported with `--strategy serial` and `--no-merge-cuda` (no `--vllm`). See `docs/evolve_ga.md` for an example.
+
+YAML configuration (optional): GA hyperparameters can be placed in your evolution config file under a `ga` section. CLI flags override YAML values when provided. See `docs/evolve_ga.md` for a full example.
 
 ### Uploading to Huggingface
 

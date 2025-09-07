@@ -53,17 +53,17 @@ from mergekit.options import MergeOptions
 @click.command("mergekit-evolve-ga")
 @click.argument("genome-config-path", type=str)
 @click.option("--max-fevals", type=int, default=100)
-@click.option("--population-size", type=int, default=32, help="Population size")
-@click.option("--elite-fraction", type=float, default=0.125, help="Elitism fraction [0,1]")
-@click.option("--mutation-rate", type=float, default=0.15, help="Per-gene mutation probability")
-@click.option("--mutation-sigma", type=float, default=0.05, help="Stddev for Gaussian mutation noise")
+@click.option("--population-size", type=int, default=None, help="Population size (overrides YAML if set)")
+@click.option("--elite-fraction", type=float, default=None, help="Elitism fraction [0,1] (overrides YAML if set)")
+@click.option("--mutation-rate", type=float, default=None, help="Per-gene mutation probability (overrides YAML if set)")
+@click.option("--mutation-sigma", type=float, default=None, help="Stddev for Gaussian mutation noise (overrides YAML if set)")
 @click.option(
     "--crossover",
     type=click.Choice(["arithmetic", "uniform"]),
     default="arithmetic",
     help="Crossover operator",
 )
-@click.option("--tournament-size", type=int, default=4, help="Tournament size for selection")
+@click.option("--tournament-size", type=int, default=None, help="Tournament size for selection (overrides YAML if set)")
 @click.option("--vllm/--no-vllm", is_flag=True, default=False, help="Use vLLM")
 @click.option(
     "--strategy",
@@ -127,12 +127,12 @@ from mergekit.options import MergeOptions
 def main(
     genome_config_path: str,
     max_fevals: int,
-    population_size: int,
-    elite_fraction: float,
-    mutation_rate: float,
-    mutation_sigma: float,
+    population_size: Optional[int],
+    elite_fraction: Optional[float],
+    mutation_rate: Optional[float],
+    mutation_sigma: Optional[float],
     crossover: str,
-    tournament_size: int,
+    tournament_size: Optional[int],
     vllm: bool,
     strategy: str,
     in_memory: bool,
@@ -167,17 +167,7 @@ def main(
         run = wandb.init(
             project=wandb_project or "mergekit-evolve-ga",
             entity=wandb_entity,
-            config={
-                **config.model_dump(mode="json"),
-                "ga": {
-                    "population_size": population_size,
-                    "elite_fraction": elite_fraction,
-                    "mutation_rate": mutation_rate,
-                    "mutation_sigma": mutation_sigma,
-                    "crossover": crossover,
-                    "tournament_size": tournament_size,
-                },
-            },
+            config=config.model_dump(mode="json"),
         )
     else:
         run = None
@@ -319,14 +309,30 @@ def main(
                 logging.warning("Failed to log best_config artifact", exc_info=e)
 
     # Build GA optimizer with callbacks
+    # Resolve GA parameters: CLI overrides YAML; fallback to GAParams defaults
+    defaults = GAParams()
+    yaml_ga = getattr(config, "ga", None)
     ga_params = GAParams(
-        population_size=population_size,
-        elite_fraction=elite_fraction,
-        mutation_rate=mutation_rate,
-        mutation_sigma=mutation_sigma,
-        crossover=crossover,
-        tournament_size=tournament_size,
+        population_size=population_size if population_size is not None else (yaml_ga.population_size if yaml_ga else defaults.population_size),
+        elite_fraction=elite_fraction if elite_fraction is not None else (yaml_ga.elite_fraction if yaml_ga else defaults.elite_fraction),
+        mutation_rate=mutation_rate if mutation_rate is not None else (yaml_ga.mutation_rate if yaml_ga else defaults.mutation_rate),
+        mutation_sigma=mutation_sigma if mutation_sigma is not None else (yaml_ga.mutation_sigma if yaml_ga else defaults.mutation_sigma),
+        crossover=crossover if crossover is not None else (yaml_ga.crossover if yaml_ga else defaults.crossover),
+        tournament_size=tournament_size if tournament_size is not None else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size),
     )
+
+    # Log resolved GA params to wandb
+    if use_wandb and "run" in locals() and run is not None:
+        run.config.update({
+            "ga": {
+                "population_size": ga_params.population_size,
+                "elite_fraction": ga_params.elite_fraction,
+                "mutation_rate": ga_params.mutation_rate,
+                "mutation_sigma": ga_params.mutation_sigma,
+                "crossover": ga_params.crossover,
+                "tournament_size": ga_params.tournament_size,
+            }
+        }, allow_val_change=True)
 
     best_x = None
     best_score = -np.inf

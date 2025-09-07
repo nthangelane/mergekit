@@ -14,11 +14,20 @@
 # along with this program. If not, see http://www.gnu.org/licenses/.
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from pydantic import BaseModel, model_validator
 
 from mergekit.evo.genome import ModelGenomeDefinition
+
+
+class GAOptimizerConfiguration(BaseModel, frozen=True):
+    population_size: int = 32
+    elite_fraction: float = 0.125
+    mutation_rate: float = 0.15
+    mutation_sigma: float = 0.05
+    crossover: Literal["arithmetic", "uniform"] = "arithmetic"
+    tournament_size: int = 4
 
 
 class TaskConfiguration(BaseModel, frozen=True):
@@ -40,6 +49,7 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     num_fewshot: Optional[int] = None
     shuffle: bool = False
     random_init: bool = False
+    ga: Optional[GAOptimizerConfiguration] = None
 
 
 NAUGHTY_PREFIXES = [
