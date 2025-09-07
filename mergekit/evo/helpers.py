@@ -1,17 +1,5 @@
-# Copyright (C) 2024 Charles O. Goddard
-#
-# This software is free software: you can redistribute it and/or
-# modify it under the terms of the GNU Lesser General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This software is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program. If not, see http://www.gnu.org/licenses/.
+# Copyright (C) 2025 Arcee AI
+# SPDX-License-Identifier: BUSL-1.1
 
 import logging
 import os
@@ -42,7 +30,7 @@ def _eval_model(
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     **kwargs,
 ) -> Dict[str, Any]:
-    results = lm_eval.evaluator.simple_evaluate(
+    results = lm_eval.simple_evaluate(
         model=model,
         model_args=model_args,
         tasks=list(set([task.name for task in tasks])),
@@ -67,6 +55,8 @@ def evaluate_model(
     vllm: bool,
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    model_kwargs: Optional[Dict[str, Any]] = None,
+    **kwargs,
 ) -> dict:
     # monkeypatch_tqdm()
     monkeypatch_lmeval_vllm()
@@ -74,6 +64,7 @@ def evaluate_model(
         model_args = {
             "pretrained": merged_path,
             "dtype": "bfloat16",
+            **(model_kwargs or {}),
         }
         if vllm:
             model_args["gpu_memory_utilization"] = 0.8
@@ -91,6 +82,7 @@ def evaluate_model(
             limit=limit,
             batch_size=batch_size,
             task_manager=task_manager,
+            **kwargs,
         )
         return res
     finally:
