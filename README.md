@@ -132,6 +132,69 @@ Notes:
 - `--in-memory` is supported only with the `pool` strategy.
  - CPU-only run is supported with `--strategy serial` and `--no-merge-cuda` (no `--vllm`). See `docs/evolve_ga.md` for an example.
 
+Example commands
+
+- CPU, serial strategy (end-to-end on CPU):
+
+```
+mergekit-evolve-ga \
+  --strategy serial \
+  --no-merge-cuda \
+  --max-fevals 16 \
+  --storage-path /tmp/mk-ga \
+  examples/evolve_ga_tiny.yml
+```
+
+- CPU, pool strategy (single CPU worker, on-disk merges):
+
+```
+mergekit-evolve-ga \
+  --strategy pool \
+  --no-merge-cuda \
+  --max-fevals 16 \
+  --storage-path /tmp/mk-ga \
+  examples/evolve_ga_tiny.yml
+```
+
+- CPU, buffered strategy (single CPU worker, pipelines merge/eval):
+
+```
+mergekit-evolve-ga \
+  --strategy buffered \
+  --no-merge-cuda \
+  --max-fevals 16 \
+  --storage-path /tmp/mk-ga \
+  examples/evolve_ga_tiny.yml
+```
+
+- GPU, pool strategy with vLLM (fastest throughput):
+
+```
+mergekit-evolve-ga \
+  --strategy pool \
+  --vllm \
+  --num-gpus 2 \
+  --max-fevals 320 \
+  --storage-path /path/to/ga-run \
+  ./your_config.yml
+```
+
+- GPU, buffered strategy (stages merges and eval):
+
+```
+mergekit-evolve-ga \
+  --strategy buffered \
+  --vllm \
+  --num-gpus 2 \
+  --max-fevals 320 \
+  --storage-path /path/to/ga-run \
+  ./your_config.yml
+```
+
+Example config
+
+- A tiny, quick-start config is included at `examples/evolve_ga_tiny.yml` (uses three copies of `EleutherAI/pythia-70m-deduped`). You can adjust `ga:` parameters in YAML or override via CLI flags.
+
 YAML configuration (optional): GA hyperparameters can be placed in your evolution config file under a `ga` section. CLI flags override YAML values when provided. See `docs/evolve_ga.md` for a full example.
 
 ### Uploading to Huggingface

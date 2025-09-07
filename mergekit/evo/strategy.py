@@ -39,6 +39,7 @@ class EvaluationStrategyBase(ABC):
         genome: ModelGenome,
         merge_options: MergeOptions,
         num_gpus: Optional[int] = None,
+        num_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         task_search_path: Union[str, List[str], None] = None,
         model_storage_path: Optional[str] = None,
@@ -51,6 +52,7 @@ class EvaluationStrategyBase(ABC):
             self.merge_options.device
         )
         self.batch_size = batch_size
+        self.num_workers = num_workers
         self.task_manager = lm_eval.tasks.TaskManager(include_path=task_search_path)
         self.model_storage_path = model_storage_path
         self.quantization_config = quantization_config
@@ -89,7 +91,7 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
                 OnDiskMergeEvaluator if (self.num_gpus and self.num_gpus > 0) else OnDiskMergeEvaluatorCPU
             )
 
-        worker_count = self.num_gpus if (self.num_gpus and self.num_gpus > 0) else 1
+        worker_count = self.num_gpus if (self.num_gpus and self.num_gpus > 0) else (self.num_workers or 1)
         self.actor_pool = ray.util.ActorPool(
             [
                 self.actor_cls.remote(
@@ -127,6 +129,7 @@ class BufferedRayEvaluationStrategyActor:
         merge_options: MergeOptions,
         vllm: bool = False,
         num_gpus: Optional[int] = None,
+        num_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         task_manager: Optional[lm_eval.tasks.TaskManager] = None,
         model_storage_path: Optional[str] = None,
@@ -139,6 +142,7 @@ class BufferedRayEvaluationStrategyActor:
         self.num_gpus = num_gpus or get_torch_accelerator_count(
             self.merge_options.device
         )
+        self.num_workers = num_workers or 1
         self.input_queue = []
         self.batch_size = batch_size
         self.task_manager = task_manager
@@ -160,7 +164,7 @@ class BufferedRayEvaluationStrategyActor:
 
         try:
             while not self._shutdown:
-                capacity = self.num_gpus if self.num_gpus > 0 else 1
+                capacity = self.num_gpus if self.num_gpus > 0 else self.num_workers
                 while self.input_queue and (len(merging) + len(merged) < capacity):
                     genotype, future_result = self.input_queue.pop(0)
                     if self.num_gpus > 0:
@@ -264,6 +268,7 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             model_storage_path=self.model_storage_path,
             vllm=vllm,
             num_gpus=self.num_gpus,
+            num_workers=self.num_workers,
             task_manager=self.task_manager,
             batch_size=self.batch_size,
             quantization_config=self.quantization_config,

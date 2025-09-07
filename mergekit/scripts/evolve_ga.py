@@ -59,9 +59,9 @@ from mergekit.options import MergeOptions
 @click.option("--mutation-sigma", type=float, default=None, help="Stddev for Gaussian mutation noise (overrides YAML if set)")
 @click.option(
     "--crossover",
-    type=click.Choice(["arithmetic", "uniform"]),
-    default="arithmetic",
-    help="Crossover operator",
+    type=str,
+    default=None,
+    help="Crossover operator: arithmetic | uniform | sbx (overrides YAML if set)",
 )
 @click.option("--tournament-size", type=int, default=None, help="Tournament size for selection (overrides YAML if set)")
 @click.option("--vllm/--no-vllm", is_flag=True, default=False, help="Use vLLM")
@@ -85,6 +85,7 @@ from mergekit.options import MergeOptions
     required=True,
 )
 @click.option("--num-gpus", type=int, help="Number of GPUs to use across all nodes")
+@click.option("--num-workers", type=int, default=None, help="Number of CPU workers when GPUs=0 (pool/buffered)")
 @click.option("--merge-cuda/--no-merge-cuda", is_flag=True, default=True)
 @click.option("--trust-remote-code/--no-trust-remote-code", is_flag=True, default=False)
 @click.option("--allow-crimes/--no-allow-crimes", is_flag=True, default=False)
@@ -138,6 +139,7 @@ def main(
     in_memory: bool,
     storage_path: Optional[str],
     num_gpus: Optional[int],
+    num_workers: Optional[int],
     merge_cuda: bool,
     trust_remote_code: bool,
     allow_crimes: bool,
@@ -231,11 +233,16 @@ def main(
     else:
         raise ValueError(f"Unknown strategy {strategy}")
 
+    # Validate crossover if provided
+    if crossover is not None and crossover not in {"arithmetic", "uniform", "sbx"}:
+        raise click.BadParameter("--crossover must be one of: arithmetic, uniform, sbx")
+
     strat = strat_cls(
         config,
         genome,
         merge_options,
         num_gpus=num_gpus,
+        num_workers=num_workers,
         vllm=vllm,
         in_memory=in_memory,
         model_storage_path=os.path.join(storage_path, "merged"),
@@ -337,8 +344,56 @@ def main(
     best_x = None
     best_score = -np.inf
 
-    def on_pop(res_list: List[dict], step: int):
+    def on_pop(res_list: List[dict], pop_arr: np.ndarray, step: int, info: dict):
+        # population stats
         log_population(res_list, step)
+
+        # Compute CSV row values
+        generation = int(info.get("generation", max(1, step // ga_params.population_size)))
+        gen_best = info.get("gen_best")
+        gen_mean = info.get("gen_mean")
+        gen_std = info.get("gen_std")
+        best_so_far = info.get("best_so_far")
+        eval_seconds = info.get("eval_seconds", 0.0)
+
+        # Write/append CSV history for offline tracking
+        try:
+            hist_path = os.path.join(storage_path, "ga_history.csv")
+            header = "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,eval_seconds\n"
+            line = f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},{ga_params.mutation_sigma},{eval_seconds}\n"
+            if not os.path.exists(hist_path):
+                with open(hist_path, "w", encoding="utf-8") as f:
+                    f.write(header)
+                    f.write(line)
+            else:
+                with open(hist_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except Exception as e:
+            logging.warning("Failed to write ga_history.csv", exc_info=e)
+
+        if use_wandb and run is not None:
+            try:
+                # Log per-generation aggregates and extras
+                run.log({
+                    "ga/generation": generation,
+                    "ga/mutation_sigma": float(ga_params.mutation_sigma),
+                    "population/eval_seconds": float(eval_seconds),
+                    "population/gen_best": float(gen_best) if gen_best is not None else None,
+                    "population/gen_mean": float(gen_mean) if gen_mean is not None else None,
+                    "population/gen_std": float(gen_std) if gen_std is not None else None,
+                    "global/best_so_far": float(best_so_far) if best_so_far is not None else None,
+                }, commit=False, step=step)
+
+                # top-5 scores
+                scores = [r["score"] for r in res_list if r["score"] is not None]
+                if scores:
+                    scores_sorted = sorted(scores, reverse=True)[:5]
+                    payload = {"population/top1": float(scores_sorted[0])}
+                    for k, v in enumerate(scores_sorted[1:], start=2):
+                        payload[f"population/top{k}"] = float(v)
+                    run.log(payload, commit=False, step=step)
+            except Exception as e:
+                logging.warning("Failed to log GA extras to wandb", exc_info=e)
 
     def on_best(x: np.ndarray, score: float, step: int):
         nonlocal best_x, best_score
