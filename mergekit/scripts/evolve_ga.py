@@ -39,6 +39,7 @@ from mergekit.evo.config import (
     ModelGenomeDefinition,
     check_for_naughty_config,
 )
+from mergekit.evo.tracking import create_tracker
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
@@ -94,6 +95,9 @@ from mergekit.options import MergeOptions
 @click.option("use_wandb", "--wandb/--no-wandb", is_flag=True, default=False)
 @click.option("--wandb-project", type=str, help="Wandb project name")
 @click.option("--wandb-entity", type=str, help="Wandb entity name")
+@click.option("use_mlflow", "--mlflow/--no-mlflow", is_flag=True, default=False)
+@click.option("--mlflow-experiment", type=str, help="MLflow experiment name")
+@click.option("--mlflow-tracking-uri", type=str, help="MLflow tracking URI (default: ./mlruns)")
 @click.option(
     "--task-search-path",
     type=str,
@@ -148,6 +152,9 @@ def main(
     use_wandb: bool,
     wandb_project: Optional[str],
     wandb_entity: Optional[str],
+    use_mlflow: bool,
+    mlflow_experiment: Optional[str],
+    mlflow_tracking_uri: Optional[str],
     task_search_path: List[str],
     allow_benchmark_tasks: bool,
     save_final_model: bool,
@@ -163,16 +170,27 @@ def main(
 
     check_for_naughty_config(config, allow=allow_benchmark_tasks)
 
-    if use_wandb:
-        if not wandb:
-            raise RuntimeError("wandb is not installed")
-        run = wandb.init(
-            project=wandb_project or "mergekit-evolve-ga",
-            entity=wandb_entity,
+    # Initialize experiment tracking
+    tracker = None
+    if use_wandb and use_mlflow:
+        raise ValueError("Cannot use both wandb and mlflow at the same time. Choose one.")
+    elif use_wandb:
+        tracker = create_tracker("wandb")
+        tracker.initialize(
+            project_name=wandb_project or "mergekit-evolve-ga",
             config=config.model_dump(mode="json"),
+            entity=wandb_entity,
+        )
+    elif use_mlflow:
+        tracker = create_tracker("mlflow")
+        tracker.initialize(
+            project_name=mlflow_experiment or "mergekit-evolve-ga",
+            config=config.model_dump(mode="json"),
+            tracking_uri=mlflow_tracking_uri,
         )
     else:
-        run = None
+        tracker = create_tracker("none")
+        tracker.initialize(project_name="no-tracking", config={})
 
     merge_options = MergeOptions(
         transformers_cache=os.path.join(storage_path, "transformers_cache"),
@@ -251,69 +269,18 @@ def main(
     )
 
     def log_population(res_list: List[dict], step: int):
-        if not use_wandb:
-            return
-        try:
-            score_vals = [r["score"] for r in res_list if r["score"] is not None]
-            if score_vals:
-                run.log(
-                    {
-                        "population/score_mean": float(np.mean(score_vals)),
-                        "population/score_std": float(np.std(score_vals)),
-                    },
-                    commit=False,
-                    step=step,
-                )
-            # Log per-task stats similar to evolve.py
-            if res_list and res_list[0]["results"]:
-                for task in res_list[0]["results"]:
-                    for metric in res_list[0]["results"][task]:
-                        values = [r["results"][task][metric] for r in res_list]
-                        values = [v for v in values if v is not None]
-                        if not values or all(isinstance(v, str) for v in values):
-                            continue
-                        metric_pretty = metric.replace(",none", "")
-                        if metric_pretty.endswith("_stderr"):
-                            continue
-                        run.log(
-                            {
-                                f"population/{task}_{metric_pretty}_mean": float(np.mean(values)),
-                                f"population/{task}_{metric_pretty}_max": float(np.max(values)),
-                                f"population/{task}_{metric_pretty}_min": float(np.min(values)),
-                            },
-                            commit=False,
-                            step=step,
-                        )
-        except Exception as e:
-            logging.warning("Failed to log population metrics to wandb", exc_info=e)
+        tracker.log_population_stats(res_list, step)
 
     def log_best(x: np.ndarray, score: float, step: int):
-        best_params = genome.genotype_to_param_arrays(x)
-        if use_wandb:
-            try:
-                run.log(
-                    {
-                        "best_score": float(score),
-                        "best_genome": wandb.Table(data=pandas.DataFrame(best_params)),
-                    },
-                    commit=True,
-                    step=step,
-                )
-            except Exception as e:
-                logging.warning("Failed to log best genome to wandb", exc_info=e)
+        tracker.log_best_individual(x, score, step, genome)
 
     def save_best_config(x: np.ndarray):
         best_yaml = genome.genotype_merge_config(x).to_yaml()
-        with open(os.path.join(storage_path, "best_config.yaml"), "w") as f:
+        config_path = os.path.join(storage_path, "best_config.yaml")
+        with open(config_path, "w") as f:
             f.write(best_yaml)
         print(f"Merge configuration:\n{best_yaml}")
-        if use_wandb:
-            try:
-                art = wandb.Artifact("best_config", type="merge_config")
-                art.add_file(os.path.join(storage_path, "best_config.yaml"))
-                run.log_artifact(art)
-            except Exception as e:
-                logging.warning("Failed to log best_config artifact", exc_info=e)
+        tracker.log_artifact(config_path, "best_config")
 
     # Build GA optimizer with callbacks
     # Resolve GA parameters: CLI overrides YAML; fallback to GAParams defaults
@@ -328,18 +295,14 @@ def main(
         tournament_size=tournament_size if tournament_size is not None else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size),
     )
 
-    # Log resolved GA params to wandb
-    if use_wandb and "run" in locals() and run is not None:
-        run.config.update({
-            "ga": {
-                "population_size": ga_params.population_size,
-                "elite_fraction": ga_params.elite_fraction,
-                "mutation_rate": ga_params.mutation_rate,
-                "mutation_sigma": ga_params.mutation_sigma,
-                "crossover": ga_params.crossover,
-                "tournament_size": ga_params.tournament_size,
-            }
-        }, allow_val_change=True)
+    # Log resolved GA params 
+    tracker.log_metrics({
+        "ga/population_size": ga_params.population_size,
+        "ga/elite_fraction": ga_params.elite_fraction,
+        "ga/mutation_rate": ga_params.mutation_rate,
+        "ga/mutation_sigma": ga_params.mutation_sigma,
+        "ga/tournament_size": ga_params.tournament_size,
+    })
 
     best_x = None
     best_score = -np.inf
@@ -371,29 +334,25 @@ def main(
         except Exception as e:
             logging.warning("Failed to write ga_history.csv", exc_info=e)
 
-        if use_wandb and run is not None:
-            try:
-                # Log per-generation aggregates and extras
-                run.log({
-                    "ga/generation": generation,
-                    "ga/mutation_sigma": float(ga_params.mutation_sigma),
-                    "population/eval_seconds": float(eval_seconds),
-                    "population/gen_best": float(gen_best) if gen_best is not None else None,
-                    "population/gen_mean": float(gen_mean) if gen_mean is not None else None,
-                    "population/gen_std": float(gen_std) if gen_std is not None else None,
-                    "global/best_so_far": float(best_so_far) if best_so_far is not None else None,
-                }, commit=False, step=step)
+        # Log per-generation aggregates and extras
+        tracker.log_metrics({
+            "ga/generation": generation,
+            "ga/mutation_sigma": float(ga_params.mutation_sigma),
+            "population/eval_seconds": float(eval_seconds),
+            "population/gen_best": float(gen_best) if gen_best is not None else None,
+            "population/gen_mean": float(gen_mean) if gen_mean is not None else None,
+            "population/gen_std": float(gen_std) if gen_std is not None else None,
+            "global/best_so_far": float(best_so_far) if best_so_far is not None else None,
+        }, step=step)
 
-                # top-5 scores
-                scores = [r["score"] for r in res_list if r["score"] is not None]
-                if scores:
-                    scores_sorted = sorted(scores, reverse=True)[:5]
-                    payload = {"population/top1": float(scores_sorted[0])}
-                    for k, v in enumerate(scores_sorted[1:], start=2):
-                        payload[f"population/top{k}"] = float(v)
-                    run.log(payload, commit=False, step=step)
-            except Exception as e:
-                logging.warning("Failed to log GA extras to wandb", exc_info=e)
+        # Log top-5 scores
+        scores = [r["score"] for r in res_list if r["score"] is not None]
+        if scores:
+            scores_sorted = sorted(scores, reverse=True)[:5]
+            top_scores = {"population/top1": float(scores_sorted[0])}
+            for k, v in enumerate(scores_sorted[1:], start=2):
+                top_scores[f"population/top{k}"] = float(v)
+            tracker.log_metrics(top_scores, step=step)
 
     def on_best(x: np.ndarray, score: float, step: int):
         nonlocal best_x, best_score

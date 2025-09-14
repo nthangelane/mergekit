@@ -190,6 +190,16 @@ downloads/
 # Weights & Biases
 wandb/
 
+# MLflow experiment tracking
+mlruns/
+test-mlruns/
+*.mlruns/
+mlartifacts/
+.mlflow/
+
+# Evolution workspace and storage
+workspace/
+
 # Model storage and cache directories
 workspace/evol_merge_storage/transformers_cache/
 workspace/evol_merge_storage/models/

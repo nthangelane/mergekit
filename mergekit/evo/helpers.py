@@ -43,7 +43,61 @@ def _eval_model(
     logging.info(results["results"])
     res = 0
     for task in tasks:
-        res += results["results"][task.name][task.metric] * task.weight
+        if task.name not in results["results"]:
+            logging.warning(f"Task {task.name} not found in results")
+            continue
+            
+        task_results = results["results"][task.name]
+        metric_value = None
+        
+        # Try the exact metric first
+        if task.metric in task_results:
+            metric_value = task_results[task.metric]
+        else:
+            # Auto-detect common metric alternatives
+            metric_alternatives = {
+                "ppl,none": ["word_perplexity,none", "perplexity,none", "byte_perplexity,none"],
+                "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
+                "acc_norm,none": ["acc_norm,none", "acc,none", "accuracy,none"],
+            }
+            
+            alternatives = metric_alternatives.get(task.metric, [])
+            for alt_metric in alternatives:
+                if alt_metric in task_results:
+                    metric_value = task_results[alt_metric]
+                    logging.info(f"Auto-detected metric for {task.name}: {alt_metric} instead of {task.metric}")
+                    break
+            
+            # If still not found, try pattern matching
+            if metric_value is None:
+                available_metrics = list(task_results.keys())
+                if "ppl" in task.metric or "perplexity" in task.metric:
+                    # Look for any perplexity metric
+                    for metric in available_metrics:
+                        if "perplexity" in metric.lower() and "stderr" not in metric:
+                            metric_value = task_results[metric]
+                            logging.info(f"Pattern-matched perplexity metric for {task.name}: {metric}")
+                            break
+                elif "acc" in task.metric:
+                    # Look for any accuracy metric
+                    for metric in available_metrics:
+                        if "acc" in metric.lower() and "stderr" not in metric:
+                            metric_value = task_results[metric]
+                            logging.info(f"Pattern-matched accuracy metric for {task.name}: {metric}")
+                            break
+        
+        # Handle invalid values
+        if metric_value is None:
+            logging.error(f"Could not find metric {task.metric} for task {task.name}. Available: {list(task_results.keys())}")
+            continue
+        
+        # Handle NaN values
+        import math
+        if isinstance(metric_value, float) and math.isnan(metric_value):
+            logging.warning(f"NaN result for {task.name}:{task.metric}, skipping")
+            continue
+            
+        res += metric_value * task.weight
     return {"score": res, "results": results["results"]}
 
 
