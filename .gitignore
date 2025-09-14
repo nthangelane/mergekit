@@ -180,3 +180,5 @@ models/
 checkpoints/
 data/
 downloads/
+.DS_Store
+**/.DS_Store
