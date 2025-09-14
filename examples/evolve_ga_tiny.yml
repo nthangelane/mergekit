@@ -22,38 +22,7 @@ random_init: false
 
 # GA hyperparameters (CLI flags override these when provided)
 ga:
-  population_size: 8  # Cell 2: Create config file
-  config_content = """
-  # Example GA evolution config using tiny models for Colab testing
-  genome:
-    merge_method: linear
-    models:
-      - EleutherAI/pythia-70m-deduped
-      - EleutherAI/pythia-70m-deduped
-      - EleutherAI/pythia-70m-deduped
-    layer_granularity: 0
-  
-  tasks:
-    - name: wikitext
-      weight: 1.0
-      metric: ppl,none
-  
-  random_init: false
-  
-  ga:
-    population_size: 4    # Smaller for Colab
-    elite_fraction: 0.25
-    mutation_rate: 0.2
-    mutation_sigma: 0.05
-    crossover: arithmetic
-    tournament_size: 2
-  
-  limit: 64             # Small for quick testing
-  num_fewshot: 0
-  """
-  
-  with open('/content/mergekit/colab_test.yml', 'w') as f:
-      f.write(config_content)
+  population_size: 8
   elite_fraction: 0.25
   mutation_rate: 0.2
   mutation_sigma: 0.05

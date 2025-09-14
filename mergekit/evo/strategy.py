@@ -48,7 +48,7 @@ class EvaluationStrategyBase(ABC):
         self.config = config
         self.genome = genome
         self.merge_options = merge_options
-        self.num_gpus = num_gpus or get_torch_accelerator_count(
+        self.num_gpus = num_gpus if num_gpus is not None else get_torch_accelerator_count(
             self.merge_options.device
         )
         self.batch_size = batch_size
@@ -139,7 +139,7 @@ class BufferedRayEvaluationStrategyActor:
         self.genome = genome
         self.merge_options = merge_options
         self.vllm = vllm
-        self.num_gpus = num_gpus or get_torch_accelerator_count(
+        self.num_gpus = num_gpus if num_gpus is not None else get_torch_accelerator_count(
             self.merge_options.device
         )
         self.num_workers = num_workers or 1

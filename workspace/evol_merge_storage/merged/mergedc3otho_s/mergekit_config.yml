@@ -1,0 +1,21 @@
+dtype: bfloat16
+merge_method: linear
+modules:
+  default:
+    slices:
+    - sources:
+      - layer_range: [0, 6]
+        model: EleutherAI/pythia-70m-deduped
+        parameters:
+          weight: 0.3808377683162689
+      - layer_range: [0, 6]
+        model: EleutherAI/pythia-70m-deduped
+        parameters:
+          weight: 0.3257654905319214
+      - layer_range: [0, 6]
+        model: EleutherAI/pythia-70m-deduped
+        parameters:
+          weight: 0.32817238569259644
+parameters:
+  int8_mask: 1.0
+  normalize: 1.0

@@ -106,6 +106,7 @@ def evaluate_model_cpu(
         model_args = {
             "pretrained": merged_path,
             "dtype": "float32",
+            "device": "cpu",
             "use_cache": True,
         }
         res = _eval_model(
