@@ -39,14 +39,14 @@ from mergekit.evo.config import (
     ModelGenomeDefinition,
     check_for_naughty_config,
 )
-from mergekit.evo.tracking import create_tracker
+from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
     SerialEvaluationStrategy,
 )
-from mergekit.evo.ga import GAOptimizer, GAParams
+from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
 
@@ -54,17 +54,42 @@ from mergekit.options import MergeOptions
 @click.command("mergekit-evolve-ga")
 @click.argument("genome-config-path", type=str)
 @click.option("--max-fevals", type=int, default=100)
-@click.option("--population-size", type=int, default=None, help="Population size (overrides YAML if set)")
-@click.option("--elite-fraction", type=float, default=None, help="Elitism fraction [0,1] (overrides YAML if set)")
-@click.option("--mutation-rate", type=float, default=None, help="Per-gene mutation probability (overrides YAML if set)")
-@click.option("--mutation-sigma", type=float, default=None, help="Stddev for Gaussian mutation noise (overrides YAML if set)")
+@click.option(
+    "--population-size",
+    type=int,
+    default=None,
+    help="Population size (overrides YAML if set)",
+)
+@click.option(
+    "--elite-fraction",
+    type=float,
+    default=None,
+    help="Elitism fraction [0,1] (overrides YAML if set)",
+)
+@click.option(
+    "--mutation-rate",
+    type=float,
+    default=None,
+    help="Per-gene mutation probability (overrides YAML if set)",
+)
+@click.option(
+    "--mutation-sigma",
+    type=float,
+    default=None,
+    help="Stddev for Gaussian mutation noise (overrides YAML if set)",
+)
 @click.option(
     "--crossover",
     type=str,
     default=None,
     help="Crossover operator: arithmetic | uniform | sbx (overrides YAML if set)",
 )
-@click.option("--tournament-size", type=int, default=None, help="Tournament size for selection (overrides YAML if set)")
+@click.option(
+    "--tournament-size",
+    type=int,
+    default=None,
+    help="Tournament size for selection (overrides YAML if set)",
+)
 @click.option("--vllm/--no-vllm", is_flag=True, default=False, help="Use vLLM")
 @click.option(
     "--strategy",
@@ -86,7 +111,12 @@ from mergekit.options import MergeOptions
     required=True,
 )
 @click.option("--num-gpus", type=int, help="Number of GPUs to use across all nodes")
-@click.option("--num-workers", type=int, default=None, help="Number of CPU workers when GPUs=0 (pool/buffered)")
+@click.option(
+    "--num-workers",
+    type=int,
+    default=None,
+    help="Number of CPU workers when GPUs=0 (pool/buffered)",
+)
 @click.option("--merge-cuda/--no-merge-cuda", is_flag=True, default=True)
 @click.option("--trust-remote-code/--no-trust-remote-code", is_flag=True, default=False)
 @click.option("--allow-crimes/--no-allow-crimes", is_flag=True, default=False)
@@ -97,7 +127,9 @@ from mergekit.options import MergeOptions
 @click.option("--wandb-entity", type=str, help="Wandb entity name")
 @click.option("use_mlflow", "--mlflow/--no-mlflow", is_flag=True, default=False)
 @click.option("--mlflow-experiment", type=str, help="MLflow experiment name")
-@click.option("--mlflow-tracking-uri", type=str, help="MLflow tracking URI (default: ./mlruns)")
+@click.option(
+    "--mlflow-tracking-uri", type=str, help="MLflow tracking URI (default: ./mlruns)"
+)
 @click.option(
     "--task-search-path",
     type=str,
@@ -173,7 +205,9 @@ def main(
     # Initialize experiment tracking
     tracker = None
     if use_wandb and use_mlflow:
-        raise ValueError("Cannot use both wandb and mlflow at the same time. Choose one.")
+        raise ValueError(
+            "Cannot use both wandb and mlflow at the same time. Choose one."
+        )
     elif use_wandb:
         tracker = create_tracker("wandb")
         tracker.initialize(
@@ -287,22 +321,48 @@ def main(
     defaults = GAParams()
     yaml_ga = getattr(config, "ga", None)
     ga_params = GAParams(
-        population_size=population_size if population_size is not None else (yaml_ga.population_size if yaml_ga else defaults.population_size),
-        elite_fraction=elite_fraction if elite_fraction is not None else (yaml_ga.elite_fraction if yaml_ga else defaults.elite_fraction),
-        mutation_rate=mutation_rate if mutation_rate is not None else (yaml_ga.mutation_rate if yaml_ga else defaults.mutation_rate),
-        mutation_sigma=mutation_sigma if mutation_sigma is not None else (yaml_ga.mutation_sigma if yaml_ga else defaults.mutation_sigma),
-        crossover=crossover if crossover is not None else (yaml_ga.crossover if yaml_ga else defaults.crossover),
-        tournament_size=tournament_size if tournament_size is not None else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size),
+        population_size=(
+            population_size
+            if population_size is not None
+            else (yaml_ga.population_size if yaml_ga else defaults.population_size)
+        ),
+        elite_fraction=(
+            elite_fraction
+            if elite_fraction is not None
+            else (yaml_ga.elite_fraction if yaml_ga else defaults.elite_fraction)
+        ),
+        mutation_rate=(
+            mutation_rate
+            if mutation_rate is not None
+            else (yaml_ga.mutation_rate if yaml_ga else defaults.mutation_rate)
+        ),
+        mutation_sigma=(
+            mutation_sigma
+            if mutation_sigma is not None
+            else (yaml_ga.mutation_sigma if yaml_ga else defaults.mutation_sigma)
+        ),
+        crossover=(
+            crossover
+            if crossover is not None
+            else (yaml_ga.crossover if yaml_ga else defaults.crossover)
+        ),
+        tournament_size=(
+            tournament_size
+            if tournament_size is not None
+            else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size)
+        ),
     )
 
-    # Log resolved GA params 
-    tracker.log_metrics({
-        "ga/population_size": ga_params.population_size,
-        "ga/elite_fraction": ga_params.elite_fraction,
-        "ga/mutation_rate": ga_params.mutation_rate,
-        "ga/mutation_sigma": ga_params.mutation_sigma,
-        "ga/tournament_size": ga_params.tournament_size,
-    })
+    # Log resolved GA params
+    tracker.log_metrics(
+        {
+            "ga/population_size": ga_params.population_size,
+            "ga/elite_fraction": ga_params.elite_fraction,
+            "ga/mutation_rate": ga_params.mutation_rate,
+            "ga/mutation_sigma": ga_params.mutation_sigma,
+            "ga/tournament_size": ga_params.tournament_size,
+        }
+    )
 
     best_x = None
     best_score = -np.inf
@@ -312,7 +372,9 @@ def main(
         log_population(res_list, step)
 
         # Compute CSV row values
-        generation = int(info.get("generation", max(1, step // ga_params.population_size)))
+        generation = int(
+            info.get("generation", max(1, step // ga_params.population_size))
+        )
         gen_best = info.get("gen_best")
         gen_mean = info.get("gen_mean")
         gen_std = info.get("gen_std")
@@ -335,15 +397,24 @@ def main(
             logging.warning("Failed to write ga_history.csv", exc_info=e)
 
         # Log per-generation aggregates and extras
-        tracker.log_metrics({
-            "ga/generation": generation,
-            "ga/mutation_sigma": float(ga_params.mutation_sigma),
-            "population/eval_seconds": float(eval_seconds),
-            "population/gen_best": float(gen_best) if gen_best is not None else None,
-            "population/gen_mean": float(gen_mean) if gen_mean is not None else None,
-            "population/gen_std": float(gen_std) if gen_std is not None else None,
-            "global/best_so_far": float(best_so_far) if best_so_far is not None else None,
-        }, step=step)
+        tracker.log_metrics(
+            {
+                "ga/generation": generation,
+                "ga/mutation_sigma": float(ga_params.mutation_sigma),
+                "population/eval_seconds": float(eval_seconds),
+                "population/gen_best": (
+                    float(gen_best) if gen_best is not None else None
+                ),
+                "population/gen_mean": (
+                    float(gen_mean) if gen_mean is not None else None
+                ),
+                "population/gen_std": float(gen_std) if gen_std is not None else None,
+                "global/best_so_far": (
+                    float(best_so_far) if best_so_far is not None else None
+                ),
+            },
+            step=step,
+        )
 
         # Log top-5 scores
         scores = [r["score"] for r in res_list if r["score"] is not None]

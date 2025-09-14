@@ -7,11 +7,11 @@
 @retry(max_attempts=3, backoff_factor=2)
 def evaluate_individual(individual):
     """Robust evaluation with automatic retry"""
-    
+
 class EvolutionCheckpointing:
     def save_state(self, generation, population, metrics):
         """Save complete evolution state"""
-        
+
     def resume_from_checkpoint(self, checkpoint_path):
         """Resume interrupted evolution"""
 ```
@@ -32,7 +32,7 @@ monitoring:
 class DistributedGA:
     def __init__(self, cluster_config):
         self.ray_cluster = ray.init(cluster_config)
-        
+
     @ray.remote
     def evaluate_batch(self, individuals):
         """Evaluate multiple individuals in parallel"""
@@ -45,7 +45,7 @@ cloud:
   instance_types:
     - g4dn.xlarge  # GPU for model evaluation
     - c5.2xlarge   # CPU for GA operations
-  
+
   auto_scaling:
     min_instances: 1
     max_instances: 10
@@ -91,13 +91,13 @@ mergekit-evolve-ga config.yml \
 def validate_ga_config(config):
     """Comprehensive config validation with helpful error messages"""
     errors = []
-    
+
     if config.population_size < 4:
         errors.append("Population size must be >= 4 for genetic operations")
-        
+
     if config.mutation_rate > 1.0:
         errors.append("Mutation rate must be <= 1.0")
-        
+
     return errors
 ```
 
@@ -112,7 +112,7 @@ def validate_ga_config(config):
 ```yaml
 # examples/ga_configs/
 quick_test.yml      # 5-minute validation run
-research_grade.yml  # Full-scale research configuration  
+research_grade.yml  # Full-scale research configuration
 production.yml      # Robust production settings
 multi_objective.yml # Multi-objective optimization
 ```

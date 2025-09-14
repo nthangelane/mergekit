@@ -17,7 +17,7 @@ parameters:
     range: [0.0, 1.0]
     distribution: uniform
     constraint: sum_to_one  # For multi-model merging
-  
+
   layer_weights:
     type: discrete
     choices: [0.1, 0.25, 0.5, 0.75, 0.9]
@@ -45,12 +45,12 @@ optimization:
 ### 3. **Adaptive Parameters**
 ```yaml
 ga:
-  population_size: 
+  population_size:
     initial: 20
     adaptive: true
     min: 10
     max: 50
-  
+
   mutation_rate:
     initial: 0.2
     decay: 0.95

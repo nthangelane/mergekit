@@ -7,10 +7,10 @@
 class AdvancedCrossover:
     def layer_aware_crossover(self, parent1, parent2):
         """Respect model architecture boundaries"""
-        
+
     def semantic_crossover(self, parent1, parent2):
         """Cross based on functional similarity"""
-        
+
     def adaptive_crossover(self, parent1, parent2, generation):
         """Adjust crossover based on search progress"""
 ```
@@ -20,7 +20,7 @@ class AdvancedCrossover:
 class AdaptiveMutation:
     def guided_mutation(self, individual, fitness_landscape):
         """Use gradient information for mutation direction"""
-        
+
     def diversity_preserving_mutation(self, individual, population):
         """Maintain population diversity"""
 ```
@@ -55,10 +55,10 @@ islands:
     frequency: 10  # generations
     rate: 0.1     # fraction of population
     topology: ring
-  
+
   specialization:
     island_1: accuracy_focused
-    island_2: efficiency_focused  
+    island_2: efficiency_focused
     island_3: diversity_focused
     island_4: exploration_focused
 ```
@@ -75,7 +75,7 @@ islands:
 class EvolutionaryTransfer:
     def warm_start_from_previous_run(self, previous_results):
         """Initialize population from successful past runs"""
-        
+
     def transfer_across_model_families(self, source_family, target_family):
         """Adapt learned patterns to new architectures"""
 ```

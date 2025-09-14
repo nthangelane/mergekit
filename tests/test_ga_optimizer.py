@@ -61,4 +61,3 @@ def test_ga_optimizer_improves_score():
 
     assert best_score > baseline, "GA should improve over baseline"
     assert best_x.shape[0] == dim, "Returned best_x should be flattened genotype"
-

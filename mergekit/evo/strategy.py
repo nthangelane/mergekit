@@ -25,8 +25,8 @@ from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.helpers import (
     evaluate_model_ray,
-    merge_model_ray,
     evaluate_model_ray_cpu,
+    merge_model_ray,
     merge_model_ray_cpu,
 )
 from mergekit.options import MergeOptions
@@ -48,8 +48,10 @@ class EvaluationStrategyBase(ABC):
         self.config = config
         self.genome = genome
         self.merge_options = merge_options
-        self.num_gpus = num_gpus if num_gpus is not None else get_torch_accelerator_count(
-            self.merge_options.device
+        self.num_gpus = (
+            num_gpus
+            if num_gpus is not None
+            else get_torch_accelerator_count(self.merge_options.device)
         )
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -88,10 +90,16 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
                 raise ValueError("In-memory evaluation is not supported on CPU")
         else:
             self.actor_cls = (
-                OnDiskMergeEvaluator if (self.num_gpus and self.num_gpus > 0) else OnDiskMergeEvaluatorCPU
+                OnDiskMergeEvaluator
+                if (self.num_gpus and self.num_gpus > 0)
+                else OnDiskMergeEvaluatorCPU
             )
 
-        worker_count = self.num_gpus if (self.num_gpus and self.num_gpus > 0) else (self.num_workers or 1)
+        worker_count = (
+            self.num_gpus
+            if (self.num_gpus and self.num_gpus > 0)
+            else (self.num_workers or 1)
+        )
         self.actor_pool = ray.util.ActorPool(
             [
                 self.actor_cls.remote(
@@ -139,8 +147,10 @@ class BufferedRayEvaluationStrategyActor:
         self.genome = genome
         self.merge_options = merge_options
         self.vllm = vllm
-        self.num_gpus = num_gpus if num_gpus is not None else get_torch_accelerator_count(
-            self.merge_options.device
+        self.num_gpus = (
+            num_gpus
+            if num_gpus is not None
+            else get_torch_accelerator_count(self.merge_options.device)
         )
         self.num_workers = num_workers or 1
         self.input_queue = []

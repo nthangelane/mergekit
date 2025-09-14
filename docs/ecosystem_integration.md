@@ -8,7 +8,7 @@ def publish_best_model(evolution_result):
     """Automatically publish evolved models to HF Hub"""
     best_config = evolution_result.best_individual
     merged_model = merge_models(best_config)
-    
+
     # Upload with evolution metadata
     merged_model.push_to_hub(
         repo_id=f"evolved-{model_name}",
@@ -60,7 +60,7 @@ class ReproducibleEvolution:
         self.config = config
         self.random_seed = config.seed
         self.version_info = get_version_info()
-        
+
     def get_reproduction_bundle(self):
         """Package everything needed to reproduce results"""
         return {
@@ -77,13 +77,13 @@ class ReproducibleEvolution:
 standard_benchmarks:
   language_understanding:
     - hellaswag
-    - winogrande  
+    - winogrande
     - arc_challenge
-  
+
   generation_quality:
     - truthfulqa
     - human_eval
-    
+
   efficiency_metrics:
     - inference_time
     - memory_usage
@@ -108,10 +108,10 @@ standard_benchmarks:
 ```python
 class EvolutionPlugin:
     """Base class for community-contributed extensions"""
-    
+
     def custom_fitness_function(self, model, tasks):
         """Override for domain-specific evaluation"""
-        
+
     def custom_genetic_operator(self, population):
         """Add novel genetic operators"""
 ```

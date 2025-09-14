@@ -74,7 +74,7 @@ pip install mergekit[evolve-ga]
 ### For MLflow Tracking
 ```bash
 pip install mlflow
-# or install with optional dependencies  
+# or install with optional dependencies
 pip install mergekit[evolve-ga]
 ```
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import logging
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, model_validator
 

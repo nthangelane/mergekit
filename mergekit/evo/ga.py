@@ -22,7 +22,6 @@ import numpy as np
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.strategy import EvaluationStrategyBase
 
-
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, float]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
 
@@ -39,7 +38,9 @@ class GAParams:
     cache_round: float = 1e-4
     immigrant_fraction: float = 0.0
     # adaptive mutation
-    patience: int = 0  # generations without improvement before decaying sigma; 0 disables
+    patience: int = (
+        0  # generations without improvement before decaying sigma; 0 disables
+    )
     sigma_decay: float = 0.5
     min_mutation_sigma: float = 0.005
 
@@ -75,7 +76,9 @@ class GAOptimizer:
         self.pop_size = max(2, int(self.params.population_size))
         self.n_elite = max(1, int(self.params.elite_fraction * self.pop_size))
 
-    def run(self, max_fevals: int, timeout: Optional[float] = None) -> Tuple[np.ndarray, float]:
+    def run(
+        self, max_fevals: int, timeout: Optional[float] = None
+    ) -> Tuple[np.ndarray, float]:
         pop = self._init_population()
         fevals = 0
         start_time = time.time()
@@ -84,14 +87,19 @@ class GAOptimizer:
         no_improve = 0
         self._fitness_cache: Dict[Tuple[int, ...], Tuple[float, dict]] = {}
 
-        while fevals < max_fevals and (timeout is None or (time.time() - start_time) < timeout):
+        while fevals < max_fevals and (
+            timeout is None or (time.time() - start_time) < timeout
+        ):
             t0 = time.time()
             fitness, res_list = self._evaluate_population(pop)
             fevals += self.pop_size
             eval_seconds = time.time() - t0
 
             if self.on_population_evaluated:
-                info = {"eval_seconds": float(eval_seconds), "mutation_sigma": float(self.params.mutation_sigma)}
+                info = {
+                    "eval_seconds": float(eval_seconds),
+                    "mutation_sigma": float(self.params.mutation_sigma),
+                }
                 self.on_population_evaluated(res_list, pop, fevals, info)
 
             gen_best_idx = int(np.argmax(fitness))
@@ -130,7 +138,12 @@ class GAOptimizer:
             for i in range(n_imm):
                 if len(next_pop) - 1 - i < self.n_elite:
                     break
-                next_pop[-1 - i] = self.genome.initial_genotype(random=True).view(-1).numpy().astype(np.float32)
+                next_pop[-1 - i] = (
+                    self.genome.initial_genotype(random=True)
+                    .view(-1)
+                    .numpy()
+                    .astype(np.float32)
+                )
 
             pop = np.stack(next_pop, axis=0)
 
@@ -156,9 +169,18 @@ class GAOptimizer:
         # fill remaining with random or noisy around x0
         while len(pop) < self.pop_size:
             if self.random_init:
-                pop.append(self.genome.initial_genotype(random=True).view(-1).numpy().astype(np.float32))
+                pop.append(
+                    self.genome.initial_genotype(random=True)
+                    .view(-1)
+                    .numpy()
+                    .astype(np.float32)
+                )
             else:
-                pop.append((x0 + self.rs.randn(self.dim).astype(np.float32) * 0.05).astype(np.float32))
+                pop.append(
+                    (x0 + self.rs.randn(self.dim).astype(np.float32) * 0.05).astype(
+                        np.float32
+                    )
+                )
         return np.stack(pop[: self.pop_size], axis=0)
 
     def _evaluate_population(self, pop: np.ndarray) -> Tuple[np.ndarray, List[dict]]:
@@ -183,7 +205,9 @@ class GAOptimizer:
 
         # type: ignore
         results_final: List[dict] = [r for r in results]  # all filled
-        fitness = np.array([r["score"] if r["score"] is not None else -np.inf for r in results_final])
+        fitness = np.array(
+            [r["score"] if r["score"] is not None else -np.inf for r in results_final]
+        )
         return fitness, results_final
 
     def _select_parent(self, fitness: np.ndarray) -> int:
@@ -207,7 +231,11 @@ class GAOptimizer:
             # Simulated Binary Crossover for continuous params
             eta = 2.0
             u = self.rs.rand(a.size)
-            beta = np.where(u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1)))
+            beta = np.where(
+                u <= 0.5,
+                (2 * u) ** (1 / (eta + 1)),
+                (1 / (2 * (1 - u))) ** (1 / (eta + 1)),
+            )
             child = 0.5 * ((1 + beta) * a + (1 - beta) * b)
             return child.astype(np.float32)
         # arithmetic (default)

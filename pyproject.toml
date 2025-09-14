@@ -34,7 +34,6 @@ dev = ["black~=25.1.0", "isort~=6.0.1", "pre-commit~=4.2.0"]
 test = ["pytest~=8.4.0"]
 evolve = ["ray", "cma", "lm_eval", "wandb", "mlflow"]
 vllm = ["vllm==0.7.2", "lm_eval[vllm]"]
-vllm = ["vllm==0.3.2", "lm_eval[vllm]"]
 evolve-ga = ["ray", "lm_eval", "wandb", "mlflow"]
 
 [project.urls]

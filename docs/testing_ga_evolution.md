@@ -7,10 +7,10 @@
 # tests/test_ga_evolution.py
 def test_genetic_operators():
     """Test crossover and mutation operators"""
-    
+
 def test_fitness_evaluation():
     """Test model evaluation pipeline"""
-    
+
 def test_population_management():
     """Test selection and elitism"""
 ```
@@ -30,7 +30,7 @@ tiny_models:
 tasks:
   - hellaswag (few-shot: 0, limit: 100)
   - winogrande (few-shot: 0, limit: 100)
-  
+
 expected_runtime: <5 minutes
 ```
 
