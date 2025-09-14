@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Charles O. Goddard
+# Copyright (C) 2025 Nkululeko Thangelane
 #
 # This software is free software: you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public License as
@@ -89,13 +89,13 @@ class GAOptimizer:
             fitness, res_list = self._evaluate_population(pop)
             fevals += self.pop_size
             eval_seconds = time.time() - t0
-            generation = fevals // self.pop_size
+
+            if self.on_population_evaluated:
+                info = {"eval_seconds": float(eval_seconds), "mutation_sigma": float(self.params.mutation_sigma)}
+                self.on_population_evaluated(res_list, pop, fevals, info)
 
             gen_best_idx = int(np.argmax(fitness))
             gen_best_score = float(fitness[gen_best_idx])
-            finite = np.isfinite(fitness)
-            gen_mean = float(np.mean(fitness[finite])) if np.any(finite) else float("nan")
-            gen_std = float(np.std(fitness[finite])) if np.any(finite) else float("nan")
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best_x = pop[gen_best_idx].copy()
@@ -110,18 +110,6 @@ class GAOptimizer:
                         self.params.mutation_sigma * float(self.params.sigma_decay),
                     )
                     no_improve = 0
-
-            if self.on_population_evaluated:
-                info = {
-                    "eval_seconds": float(eval_seconds),
-                    "mutation_sigma": float(self.params.mutation_sigma),
-                    "generation": int(generation),
-                    "gen_best": float(gen_best_score),
-                    "gen_mean": gen_mean,
-                    "gen_std": gen_std,
-                    "best_so_far": float(best_score),
-                }
-                self.on_population_evaluated(res_list, pop, fevals, info)
 
             # Elitism
             order = np.argsort(-fitness)
