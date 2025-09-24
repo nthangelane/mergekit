@@ -1,0 +1,43 @@
+# Minimal multi-method test - just 2 methods for quick validation
+genome:
+  type: multi_method  
+  models:
+    - EleutherAI/pythia-70m-deduped
+    - EleutherAI/pythia-70m
+  
+  # Test just 2 compatible methods
+  allowed_methods: ["linear", "task_arithmetic"]
+  base_model: EleutherAI/pythia-70m-deduped
+  max_models_per_layer: 2
+  layer_granularity: 0
+  
+  enable_method_evolution: true
+  enable_model_selection: true
+  allow_negative_weights: false
+
+tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: ppl,none
+
+random_init: false
+
+# Minimal GA settings for quick test
+ga:
+  population_size: 3
+  elite_fraction: 0.33
+  
+  crossover: semantic
+  semantic_crossover_prob: 0.8
+  
+  mutation_rate: 0.2
+  method_mutation_rate: 0.1
+  model_mutation_rate: 0.15
+  parameter_mutation_rate: 0.25
+  mutation_sigma: 0.08
+  
+  tournament_size: 2
+
+# Very quick evaluation
+limit: 16
+num_fewshot: 0

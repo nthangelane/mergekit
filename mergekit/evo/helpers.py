@@ -19,6 +19,13 @@ import torch
 from mergekit.evo.config import TaskConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
 from mergekit.evo.monkeypatch import monkeypatch_lmeval_vllm
+
+# Try to import multi-method genome exception
+try:
+    from mergekit.evo.multi_method_genome import InvalidGenotypeError as MultiMethodInvalidGenotypeError
+except ImportError:
+    MultiMethodInvalidGenotypeError = InvalidGenotypeError
+
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
 
@@ -201,8 +208,14 @@ def merge_model(
 ) -> str:
     # monkeypatch_tqdm()
     try:
-        cfg = genome.genotype_merge_config(genotype)
-    except InvalidGenotypeError as e:
+        # Handle both traditional and multi-method genomes
+        if hasattr(genome, 'genotype_to_merge_config'):
+            # MultiMethodGenome
+            cfg = genome.genotype_to_merge_config(genotype)
+        else:
+            # Traditional ModelGenome
+            cfg = genome.genotype_merge_config(genotype)
+    except (InvalidGenotypeError, MultiMethodInvalidGenotypeError) as e:
         logging.error("Invalid genotype", exc_info=e)
         return None
     os.makedirs(model_storage_path, exist_ok=True)

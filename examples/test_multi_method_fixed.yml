@@ -1,0 +1,34 @@
+# Minimal multi-method test - corrected format with compatible models
+genome:
+  models:
+    - microsoft/DialoGPT-small  # These are known to be compatible
+    - microsoft/DialoGPT-medium
+  
+  base_model: microsoft/DialoGPT-small
+  layer_granularity: 4
+  
+  # Test just 2 compatible methods for quick validation
+  allowed_methods:
+    - linear
+    - task_arithmetic
+  
+  # Semantic operation parameters
+  semantic_crossover:
+    method_inheritance_prob: 0.6
+    parameter_compatibility_check: true
+    
+  semantic_mutation:
+    method_mutation_prob: 0.1
+    parameter_constraint_enforcement: true
+
+tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: "word_perplexity,none"
+
+# Minimal GA settings for quick test
+enhanced_ga:
+  population_size: 6
+  semantic_operations: true
+
+random_init: false

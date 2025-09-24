@@ -61,6 +61,8 @@ This should be a list of all of the models you want available to be merged. Depe
 
 Merge method to be used. Currently supported values are `linear`, `dare_ties`, `task_arithmetic`, `ties`, and `slerp`.
 
+**Note:** For advanced use cases, consider using the multi-method genome system (see "Multi-Method Genome" section below) which allows the evolutionary algorithm to select between different merge methods as part of the optimization process.
+
 #### `base_model`
 
 The base model for the merge, if applicable.
@@ -100,6 +102,141 @@ Will divide up the merge parameters into three groups - self attention parameter
 To evaluate the produced merges you need to specify a list of tasks supported by the EleutherAI LM evaluation harness. This can be either [built in tasks](https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/tasks) (don't be naughty) or tasks you define yourself (see the [New Task Guide](https://github.com/EleutherAI/lm-evaluation-harness/blob/main/docs/new_task_guide.md) for how). If your task does not use `acc` as the metric then you must specify the correct metric name. Each task can also optionally have a weight associated.
 
 `mergekit-evolve` aims to maximize the score of the merge, so if you are using any tasks or metrics where a lower score is better (like perplexity) be sure to assign a negative weight to that task.
+
+## Multi-Method Genome System
+
+The traditional genome system fixes the merge method and optimizes only parameters. The **multi-method genome system** allows the evolutionary algorithm to evolve both merge methods and their parameters simultaneously, providing more sophisticated optimization capabilities.
+
+### Multi-Method Configuration
+
+Instead of specifying a single `merge_method`, you can define a multi-method genome:
+
+```yml
+multi_method_genome:
+    models:
+       - model_1
+       - model_2
+       - model_3
+    base_model: base_model_if_needed
+    tokenizer_source: null
+    layer_granularity: 8
+    
+    # Available methods for evolution
+    allowed_methods:
+       - linear
+       - slerp
+       - task_arithmetic
+       - ties
+       - dare_ties
+       - dare_linear
+       - breadcrumbs
+       - breadcrumbs_ties
+       - model_stock
+       - della_linear  
+       - della
+       - magnus
+       - copy
+       - passthrough
+       - consensus
+    
+    # Semantic crossover parameters
+    semantic_crossover:
+        method_inheritance_prob: 0.6
+        parameter_compatibility_check: true
+        constraint_aware: true
+    
+    # Enhanced mutation parameters  
+    semantic_mutation:
+        method_mutation_prob: 0.1
+        parameter_constraint_enforcement: true
+        method_specific_ranges: true
+
+# Tasks remain the same
+tasks:
+  - name: lm_eval_task_name
+    weight: 1.0
+    metric: "acc,none"
+```
+
+### Multi-Method Features
+
+#### **Method Evolution**
+The algorithm can switch between merge methods during evolution, allowing discovery of optimal method-parameter combinations that wouldn't be possible with fixed-method optimization.
+
+#### **Semantic Crossover**
+Instead of blind parameter mixing, the system performs method-aware parameter inheritance:
+- Parameters are inherited based on method requirements
+- Invalid parameter combinations are automatically prevented
+- Method compatibility is enforced during crossover
+
+#### **Intelligent Mutations**
+- **Method Mutations**: Can change merge method while preserving compatible parameters
+- **Constraint-Aware Parameter Mutations**: Respects mathematical constraints of each method
+- **Method-Specific Ranges**: Different parameter bounds for different methods
+
+#### **15 Supported Methods**
+The multi-method system supports:
+- **Linear Family**: `linear`, `dare_linear`, `della_linear`
+- **SLERP Variants**: `slerp` with spherical interpolation
+- **Task Arithmetic**: `task_arithmetic`, `dare_ties`, `ties`
+- **Advanced Methods**: `breadcrumbs`, `breadcrumbs_ties`, `model_stock`, `della`, `magnus`
+- **Utility Methods**: `copy`, `passthrough`, `consensus`
+
+### Method Compatibility Matrix
+
+The system includes built-in compatibility validation:
+- Prevents invalid parameter combinations (e.g., `epsilon` with non-DARE methods)
+- Enforces method-specific constraints (e.g., `normalize` requirements)
+- Validates model requirements (e.g., base model needs)
+
+### Backwards Compatibility
+
+The multi-method system is fully backwards compatible:
+- Traditional single-method configurations continue to work
+- Existing scripts and workflows are unaffected
+- Enhanced GA optimizer automatically detects genome type
+
+### Example Multi-Method Configuration
+
+```yml
+multi_method_genome:
+    models:
+       - microsoft/DialoGPT-medium
+       - microsoft/DialoGPT-small
+       - gpt2-medium
+    base_model: gpt2
+    layer_granularity: 4
+    
+    allowed_methods:
+       - linear
+       - dare_ties
+       - task_arithmetic
+       - slerp
+    
+    semantic_crossover:
+        method_inheritance_prob: 0.7
+        
+    semantic_mutation:
+        method_mutation_prob: 0.15
+
+tasks:
+  - name: hellaswag
+    weight: 1.0
+  - name: arc_easy  
+    weight: 0.5
+```
+
+This configuration allows the GA to discover optimal combinations like:
+- Linear merging with specific weight distributions
+- DARE-TIES with optimal sparsification parameters  
+- Task arithmetic with negative weights
+- SLERP with precise interpolation factors
+
+The system automatically ensures all generated merges are mathematically valid and methodologically sound.
+
+### Enhanced GA Integration
+
+When using `mergekit-evolve-ga`, multi-method genomes are automatically detected and use the enhanced optimizer with semantic operations. No additional configuration is required - just specify the multi-method genome format and the system handles the rest.
 
 ## Running `mergekit-evolve`
 

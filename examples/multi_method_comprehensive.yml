@@ -1,0 +1,112 @@
+# Multi-Method Genome Configuration Example
+# This demonstrates the full capabilities of the multi-method evolution system
+
+multi_method_genome:
+    # Model pool for evolution
+    models:
+        - microsoft/DialoGPT-medium
+        - microsoft/DialoGPT-small  
+        - gpt2-medium
+        - gpt2-small
+    
+    base_model: gpt2
+    tokenizer_source: gpt2
+    layer_granularity: 6
+    
+    # All 15 supported merge methods available for evolution
+    allowed_methods:
+        - linear           # Standard linear interpolation
+        - slerp           # Spherical linear interpolation
+        - task_arithmetic # Task vector arithmetic
+        - ties            # TIES methodology
+        - dare_ties       # DARE with TIES
+        - dare_linear     # DARE with linear interpolation
+        - breadcrumbs     # Breadcrumbs method
+        - breadcrumbs_ties # Breadcrumbs with TIES
+        - model_stock     # Model stock approach
+        - della           # DELLA method
+        - della_linear    # DELLA with linear weights
+        - magnus          # Magnus method
+        - copy            # Direct model copying
+        - passthrough     # Parameter passthrough
+        - consensus       # Consensus-based merging
+    
+    # Semantic crossover configuration
+    semantic_crossover:
+        method_inheritance_prob: 0.6    # Probability of inheriting parent's method
+        parameter_compatibility_check: true  # Ensure parameter compatibility
+        constraint_aware: true              # Respect method constraints
+        parent_selection_strategy: "fitness_weighted"  # How to select parent methods
+        
+    # Enhanced mutation configuration  
+    semantic_mutation:
+        method_mutation_prob: 0.12          # Probability of method change
+        parameter_constraint_enforcement: true  # Enforce parameter bounds
+        method_specific_ranges: true           # Use method-specific parameter ranges
+        adaptive_mutation_rate: true           # Adapt mutation rate based on fitness
+        constraint_repair: true               # Repair invalid parameters
+        
+    # Global constraints
+    normalize: false
+    allow_negative_weights: true
+    smooth: false
+    
+    # Advanced parameter filtering
+    filters:
+        - self_attn
+        - mlp
+
+# Task evaluation configuration
+tasks:
+    - name: hellaswag
+      weight: 1.0
+      metric: "acc,none"
+    - name: arc_easy
+      weight: 0.8
+      metric: "acc,none"
+    - name: arc_challenge  
+      weight: 1.2
+      metric: "acc,none"
+    - name: truthfulqa_mc
+      weight: 0.9
+      metric: "mc2,none"
+
+# Enhanced GA parameters
+enhanced_ga:
+    population_size: 48
+    elite_fraction: 0.15
+    tournament_size: 5
+    semantic_operations: true
+    method_evolution: true
+    
+    # Multi-method specific parameters
+    method_diversity_bonus: 0.05    # Bonus for method diversity in population
+    constraint_penalty: -0.1        # Penalty for constraint violations
+    convergence_threshold: 0.001    # Stop when improvement < threshold
+    
+# Optional: Method-specific parameter bounds
+method_parameters:
+    linear:
+        weight_bounds: [0.0, 1.0]
+        normalize_default: true
+        
+    dare_ties:
+        density_bounds: [0.1, 0.9]
+        epsilon_bounds: [0.001, 0.1]
+        normalize_default: true
+        
+    slerp:
+        t_bounds: [0.0, 1.0]
+        
+    task_arithmetic:
+        weight_bounds: [-2.0, 2.0]  # Allow negative weights
+        
+    breadcrumbs:
+        density_bounds: [0.05, 0.95]
+        
+# Random initialization settings
+random_init: false
+seed: 42
+
+# MLflow tracking
+mlflow_experiment: "multi-method-evolution-comprehensive"

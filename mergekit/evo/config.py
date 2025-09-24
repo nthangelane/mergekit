@@ -2,20 +2,29 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import logging
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, model_validator
 
 from mergekit.evo.genome import ModelGenomeDefinition
+from mergekit.evo.multi_method_genome import MultiMethodGenomeDefinition
 
 
 class GAOptimizerConfiguration(BaseModel, frozen=True):
+    model_config = {"protected_namespaces": ()}  # Allow model_ fields
+    
     population_size: int = 32
     elite_fraction: float = 0.125
     mutation_rate: float = 0.15
     mutation_sigma: float = 0.05
-    crossover: Literal["arithmetic", "uniform"] = "arithmetic"
+    crossover: Literal["arithmetic", "uniform", "sbx", "semantic"] = "arithmetic"
     tournament_size: int = 4
+    
+    # Enhanced GA parameters for semantic operations
+    semantic_crossover_prob: Optional[float] = None
+    method_mutation_rate: Optional[float] = None
+    model_mutation_rate: Optional[float] = None
+    parameter_mutation_rate: Optional[float] = None
 
 
 class TaskConfiguration(BaseModel, frozen=True):
@@ -31,7 +40,7 @@ class TaskConfiguration(BaseModel, frozen=True):
 
 
 class EvolMergeConfiguration(BaseModel, frozen=True):
-    genome: ModelGenomeDefinition
+    genome: Union[MultiMethodGenomeDefinition, ModelGenomeDefinition]  # Try multi-method first
     tasks: List[TaskConfiguration]
     limit: Optional[int] = None
     num_fewshot: Optional[int] = None

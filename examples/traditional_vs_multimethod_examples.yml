@@ -1,0 +1,104 @@
+# Traditional vs Multi-Method Comparison Examples
+
+# =============================================================================
+# TRADITIONAL GENOME - Fixed Method Parameter Optimization
+# =============================================================================
+
+# Save as: traditional_linear.yml
+# genome:
+#     merge_method: linear
+#     models:
+#         - microsoft/DialoGPT-medium
+#         - microsoft/DialoGPT-small
+#         - gpt2-medium
+#     base_model: gpt2
+#     layer_granularity: 8
+#     normalize: true
+#     allow_negative_weights: false
+# 
+# tasks:
+#     - name: hellaswag
+#       weight: 1.0
+# 
+# ga:
+#     population_size: 32
+#     mutation_rate: 0.15
+#     crossover: arithmetic
+
+# =============================================================================
+# MULTI-METHOD GENOME - Method + Parameter Co-Evolution  
+# =============================================================================
+
+# Save as: multi_method_equivalent.yml
+multi_method_genome:
+    models:
+        - microsoft/DialoGPT-medium
+        - microsoft/DialoGPT-small
+        - gpt2-medium
+    base_model: gpt2
+    layer_granularity: 8
+    
+    # Can evolve between multiple methods
+    allowed_methods:
+        - linear
+        - dare_ties
+        - task_arithmetic
+        - slerp
+    
+    semantic_crossover:
+        method_inheritance_prob: 0.6
+        parameter_compatibility_check: true
+        
+    semantic_mutation:
+        method_mutation_prob: 0.1
+        parameter_constraint_enforcement: true
+
+tasks:
+    - name: hellaswag
+      weight: 1.0
+
+enhanced_ga:
+    population_size: 32
+    semantic_operations: true
+
+# =============================================================================
+# SEMANTIC EVOLUTION EXAMPLES
+# =============================================================================
+
+# Example 1: Method evolution with parameter inheritance
+# Parent A: linear(weights=[0.3, 0.4, 0.3])
+# Parent B: dare_ties(density=0.7, epsilon=0.01)  
+# Child: dare_ties(density=0.5, epsilon=0.015)  # Inherited compatible params
+
+# Example 2: Constraint-aware mutation
+# Before: slerp(t=1.2)  # Invalid - t must be [0,1]
+# After:  slerp(t=1.0)  # Automatically corrected
+
+# Example 3: Method-specific parameter ranges
+# linear: weights in [0,1] with normalization
+# task_arithmetic: weights in [-2,2] allowing negative values
+# dare_ties: density in [0.1,0.9], epsilon in [0.001,0.1]
+
+# =============================================================================  
+# PERFORMANCE COMPARISON
+# =============================================================================
+
+# Traditional Genome Limitations:
+# - Fixed to single merge method
+# - Parameter optimization only
+# - Blind crossover can create invalid combinations
+# - No method-specific constraints
+
+# Multi-Method Genome Advantages:  
+# - Explores 15 different merge methods
+# - Semantic crossover prevents invalid combinations
+# - Method evolution discovers optimal approaches
+# - Constraint-aware operations ensure valid parameters
+# - Can find superior method-parameter combinations
+
+# Expected Results:
+# Multi-method evolution typically finds better solutions by:
+# 1. Discovering optimal merge method for the task
+# 2. Fine-tuning parameters for that specific method  
+# 3. Avoiding invalid parameter combinations
+# 4. Leveraging method-specific optimization strategies

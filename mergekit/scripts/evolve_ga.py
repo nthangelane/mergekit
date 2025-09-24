@@ -40,7 +40,9 @@ from mergekit.evo.config import (
     check_for_naughty_config,
 )
 from mergekit.evo.ga import GAOptimizer, GAParams
+from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.genome import ModelGenome
+from mergekit.evo.multi_method_genome import MultiMethodGenome, MultiMethodGenomeDefinition
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
@@ -265,16 +267,36 @@ def main(
         resharded_models = config.genome.models
         resharded_base = config.genome.base_model
 
-    genome = ModelGenome(
-        ModelGenomeDefinition.model_validate(
-            {
-                **config.genome.model_dump(exclude=["models", "base_model"]),
-                "models": resharded_models,
-                "base_model": resharded_base,
-            }
-        ),
-        trust_remote_code=trust_remote_code,
-    )
+    # Create genome based on type - check if it's MultiMethodGenomeDefinition
+    from mergekit.evo.multi_method_genome import MultiMethodGenomeDefinition
+    genome_config = config.genome
+    
+    if isinstance(genome_config, MultiMethodGenomeDefinition):
+        genome_type = 'multi_method'
+        # Create multi-method genome
+        genome = MultiMethodGenome(
+            MultiMethodGenomeDefinition.model_validate(
+                {
+                    **genome_config.model_dump(exclude=["models", "base_model"]),
+                    "models": resharded_models,
+                    "base_model": resharded_base,
+                }
+            ),
+            trust_remote_code=trust_remote_code,
+        )
+    else:
+        genome_type = 'standard'
+        # Create traditional genome
+        genome = ModelGenome(
+            ModelGenomeDefinition.model_validate(
+                {
+                    **genome_config.model_dump(exclude=["models", "base_model"]),
+                    "models": resharded_models,
+                    "base_model": resharded_base,
+                }
+            ),
+            trust_remote_code=trust_remote_code,
+        )
 
     if strategy == "pool":
         strat_cls = ActorPoolEvaluationStrategy
@@ -433,15 +455,50 @@ def main(
         save_best_config(best_x)
         log_best(best_x, best_score, step=step)
 
-    optimizer = GAOptimizer(
-        genome=genome,
-        strategy=strat,
-        params=ga_params,
-        random_init=config.random_init,
-        seed=random_seed,
-        on_population_evaluated=on_pop,
-        on_new_best=on_best,
+    # Choose optimizer based on genome type and parameters
+    use_enhanced = (
+        genome_type == 'multi_method' or 
+        hasattr(config.ga, 'semantic_crossover_prob') or
+        getattr(config.ga, 'crossover', None) == 'semantic'
     )
+    
+    if use_enhanced:
+        # Convert GAParams to EnhancedGAParams for new features
+        enhanced_params = EnhancedGAParams()
+        for key, value in ga_params.__dict__.items():
+            if hasattr(enhanced_params, key):
+                setattr(enhanced_params, key, value)
+        
+        # Set additional enhanced parameters from config
+        if hasattr(config.ga, 'semantic_crossover_prob') and config.ga.semantic_crossover_prob is not None:
+            enhanced_params.semantic_crossover_prob = config.ga.semantic_crossover_prob
+        if hasattr(config.ga, 'method_mutation_rate') and config.ga.method_mutation_rate is not None:
+            enhanced_params.method_mutation_rate = config.ga.method_mutation_rate
+        if hasattr(config.ga, 'model_mutation_rate') and config.ga.model_mutation_rate is not None:
+            enhanced_params.model_mutation_rate = config.ga.model_mutation_rate
+        if hasattr(config.ga, 'parameter_mutation_rate') and config.ga.parameter_mutation_rate is not None:
+            enhanced_params.parameter_mutation_rate = config.ga.parameter_mutation_rate
+            
+        optimizer = EnhancedGAOptimizer(
+            genome=genome,
+            strategy=strat,
+            params=enhanced_params,
+            random_init=config.random_init,
+            seed=random_seed,
+            on_population_evaluated=on_pop,
+            on_new_best=on_best,
+        )
+    else:
+        # Use traditional optimizer
+        optimizer = GAOptimizer(
+            genome=genome,
+            strategy=strat,
+            params=ga_params,
+            random_init=config.random_init,
+            seed=random_seed,
+            on_population_evaluated=on_pop,
+            on_new_best=on_best,
+        )
 
     try:
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
@@ -456,14 +513,29 @@ def main(
     time.sleep(1.0)
 
     # save the best merge configuration using original model references
-    genome_pretty = ModelGenome(config.genome, trust_remote_code=trust_remote_code)
-    best_config = genome_pretty.genotype_merge_config(best_x)
-    print("Best merge configuration:")
-    print(best_config.to_yaml())
+    if best_x is not None:
+        if genome_type == 'multi_method':
+            genome_pretty = MultiMethodGenome(
+                MultiMethodGenomeDefinition.model_validate(config.genome.model_dump()),
+                trust_remote_code=trust_remote_code
+            )
+            best_config = genome_pretty.genotype_to_merge_config(best_x)
+        else:
+            genome_pretty = ModelGenome(config.genome, trust_remote_code=trust_remote_code)
+            best_config = genome_pretty.genotype_merge_config(best_x)
+            
+        print("Best merge configuration:")
+        print(best_config.to_yaml())
 
-    if save_final_model:
-        print("Saving final model...")
-        run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
+        if save_final_model:
+            print("Saving final model...")
+            run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
+    else:
+        print("No valid solution found. All evaluations failed.")
+        print("This may indicate:")
+        print("- Model compatibility issues")
+        print("- Evaluation environment problems")
+        print("- Insufficient population size or evaluations")
 
 
 def _reshard_model(
