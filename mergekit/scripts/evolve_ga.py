@@ -402,12 +402,13 @@ def main(
         gen_std = info.get("gen_std")
         best_so_far = info.get("best_so_far")
         eval_seconds = info.get("eval_seconds", 0.0)
+        timestamp = info.get("timestamp", "")
 
         # Write/append CSV history for offline tracking
         try:
             hist_path = os.path.join(storage_path, "ga_history.csv")
-            header = "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,eval_seconds\n"
-            line = f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},{ga_params.mutation_sigma},{eval_seconds}\n"
+            header = "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,eval_seconds,timestamp\n"
+            line = f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},{ga_params.mutation_sigma},{eval_seconds},{timestamp}\n"
             if not os.path.exists(hist_path):
                 with open(hist_path, "w", encoding="utf-8") as f:
                     f.write(header)

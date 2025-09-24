@@ -1,0 +1,23 @@
+# Test logging fix - using same model 3x to avoid compatibility issues
+genome:
+  merge_method: linear
+  models:
+    - EleutherAI/pythia-70m-deduped
+    - EleutherAI/pythia-70m-deduped
+    - EleutherAI/pythia-70m-deduped
+  layer_granularity: 0  # Single group for maximum compatibility
+
+tasks:
+  - name: wikitext
+    weight: -1.0  # Negative weight since we want to minimize perplexity
+    metric: "word_perplexity,none"
+
+# Minimal GA settings for quick test
+ga:
+  population_size: 4
+  mutation_sigma: 0.1
+
+# Very quick evaluation
+limit: 32
+num_fewshot: 0
+random_init: false

@@ -93,16 +93,26 @@ class EnhancedGAOptimizer:
             fevals += self.pop_size
             eval_seconds = time.time() - t0
 
+            # Calculate generation statistics
+            gen_best_idx = int(np.argmax(fitness))
+            gen_best_score = float(fitness[gen_best_idx])
+            gen_mean = float(np.mean(fitness))
+            gen_std = float(np.std(fitness))
+
             if self.on_population_evaluated:
+                import datetime
                 info = {
                     "eval_seconds": float(eval_seconds),
                     "mutation_sigma": float(self.params.mutation_sigma),
                     "is_multi_method": self.is_multi_method,
+                    "gen_best": gen_best_score,
+                    "gen_mean": gen_mean,
+                    "gen_std": gen_std,
+                    "best_so_far": float(best_score),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "generation": int(max(1, fevals // self.pop_size))
                 }
                 self.on_population_evaluated(res_list, pop, fevals, info)
-
-            gen_best_idx = int(np.argmax(fitness))
-            gen_best_score = float(fitness[gen_best_idx])
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best_x = pop[gen_best_idx].copy()

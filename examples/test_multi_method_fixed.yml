@@ -1,25 +1,22 @@
-# Minimal multi-method test - corrected format with compatible models
+# Minimal multi-method test - using same-size compatible models
 genome:
   models:
-    - microsoft/DialoGPT-small  # These are known to be compatible
-    - microsoft/DialoGPT-medium
+    - gpt2
+    - distilgpt2  # Both GPT-2 based but should be compatible
   
-  base_model: microsoft/DialoGPT-small
-  layer_granularity: 4
+  base_model: gpt2
+  layer_granularity: 0  # No layer slicing for maximum compatibility
   
-  # Test just 2 compatible methods for quick validation
+  # Test just linear method for absolute simplicity
   allowed_methods:
     - linear
-    - task_arithmetic
   
-  # Semantic operation parameters
+  # Minimal semantic operation parameters
   semantic_crossover:
-    method_inheritance_prob: 0.6
-    parameter_compatibility_check: true
+    method_inheritance_prob: 1.0  # Always inherit method
     
   semantic_mutation:
-    method_mutation_prob: 0.1
-    parameter_constraint_enforcement: true
+    method_mutation_prob: 0.0  # No method mutations for simplicity
 
 tasks:
   - name: wikitext

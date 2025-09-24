@@ -1,0 +1,21 @@
+# Test traditional GA logging - using existing working config
+genome:
+  merge_method: linear
+  models:
+    - EleutherAI/pythia-70m-deduped
+    - EleutherAI/pythia-70m
+  base_model: EleutherAI/pythia-70m-deduped
+  layer_granularity: 0  # No layer slicing for maximum compatibility
+  normalize: true
+
+tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: "word_perplexity,none"
+
+# Minimal GA settings for quick test
+ga:
+  population_size: 4
+  mutation_sigma: 0.1
+
+random_init: false
