@@ -203,15 +203,23 @@ class ModelReference(BaseModel, frozen=True):
 
     @model_serializer()
     def serialize(self):
-        if self.override_architecture is not None:
+        if not hasattr(self, "model"):
+            return str(self)
+
+        override_architecture = getattr(self, "override_architecture", None)
+        if override_architecture is not None:
             return {
                 "model": self.model,
                 "lora": self.lora,
-                "override_architecture": self.override_architecture,
+                "override_architecture": override_architecture,
             }
+
         res = str(self)
         if '"' in res or " " in res:
-            return self
+            data = {"model": self.model}
+            if getattr(self, "lora", None):
+                data["lora"] = self.lora
+            return data
         return res
 
     @classmethod
