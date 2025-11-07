@@ -163,6 +163,12 @@ from mergekit.options import MergeOptions
     default=None,
     help="Maximum time to run the optimization in seconds",
 )
+@click.option(
+    "--hf-model-id",
+    type=str,
+    default=None,
+    help="Hugging Face model ID to push final model to (e.g. username/model-name)",
+)
 def main(
     genome_config_path: str,
     max_fevals: int,
@@ -194,6 +200,7 @@ def main(
     save_final_model: bool,
     reshard: bool,
     timeout: Optional[float],
+    hf_model_id: Optional[str],
 ):
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
@@ -403,12 +410,32 @@ def main(
         best_so_far = info.get("best_so_far")
         eval_seconds = info.get("eval_seconds", 0.0)
         timestamp = info.get("timestamp", "")
+        evaluations = int(info.get("evaluations", 0))
+        cache_hits = int(info.get("cache_hits", 0))
+        failed_evals = int(info.get("failed_evals", 0))
+        crossover_children = int(info.get("crossover_children", 0))
+        crossover_type = info.get("crossover_type", ga_params.crossover)
+        immigrants = int(info.get("immigrants", 0))
+
+        print(
+            f"[GA] gen={generation} best={gen_best} mean={gen_mean} std={gen_std} "
+            f"evaluated={evaluations} cache_hits={cache_hits} failed={failed_evals} "
+            f"crossover_children={crossover_children} type={crossover_type} immigrants={immigrants}"
+        )
 
         # Write/append CSV history for offline tracking
         try:
             hist_path = os.path.join(storage_path, "ga_history.csv")
-            header = "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,eval_seconds,timestamp\n"
-            line = f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},{ga_params.mutation_sigma},{eval_seconds},{timestamp}\n"
+            header = (
+                "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,"
+                "eval_seconds,timestamp,evaluations,cache_hits,failed_evals,crossover_children,"
+                "crossover_type,immigrants\n"
+            )
+            line = (
+                f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},"
+                f"{ga_params.mutation_sigma},{eval_seconds},{timestamp},{evaluations},"
+                f"{cache_hits},{failed_evals},{crossover_children},{crossover_type},{immigrants}\n"
+            )
             if not os.path.exists(hist_path):
                 with open(hist_path, "w", encoding="utf-8") as f:
                     f.write(header)
@@ -425,6 +452,9 @@ def main(
                 "ga/generation": generation,
                 "ga/mutation_sigma": float(ga_params.mutation_sigma),
                 "population/eval_seconds": float(eval_seconds),
+                "population/evaluations": float(evaluations),
+                "population/cache_hits": float(cache_hits),
+                "population/failed_evals": float(failed_evals),
                 "population/gen_best": (
                     float(gen_best) if gen_best is not None else None
                 ),
@@ -435,6 +465,8 @@ def main(
                 "global/best_so_far": (
                     float(best_so_far) if best_so_far is not None else None
                 ),
+                "ga/crossover_children": float(crossover_children),
+                "ga/immigrants": float(immigrants),
             },
             step=step,
         )
@@ -531,6 +563,23 @@ def main(
         if save_final_model:
             print("Saving final model...")
             run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
+            
+            # Upload to Hugging Face if requested
+            if hf_model_id:
+                print(f"\nUploading model to Hugging Face: {hf_model_id}")
+                try:
+                    from huggingface_hub import upload_folder
+                    
+                    final_model_path = os.path.join(storage_path, "final_model")
+                    upload_folder(
+                        repo_id=hf_model_id,
+                        folder_path=final_model_path,
+                        repo_type="model",
+                    )
+                    print(f"✅ Model successfully uploaded to {hf_model_id}")
+                except Exception as e:
+                    print(f"⚠️  Failed to upload model to Hugging Face: {e}")
+                    print(f"   You can manually upload from: {os.path.join(storage_path, 'final_model')}")
     else:
         print("No valid solution found. All evaluations failed.")
         print("This may indicate:")

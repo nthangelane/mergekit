@@ -343,17 +343,12 @@ class NoOpTracker(ExperimentTracker):
         pass
 
     def log_population_stats(
-        self,
-        generation: int,
-        population_size: int,
-        mean_fitness: float,
-        best_fitness: float,
-        **kwargs,
+        self, results: List[Dict], step: int, **_kwargs
     ) -> None:
         pass
 
     def log_best_individual(
-        self, generation: int, individual: Dict[str, Any], fitness: float, genome=None
+        self, genotype, score: float, step: int, genome=None, **_kwargs
     ) -> None:
         pass
 

@@ -12,24 +12,24 @@ from mergekit.architecture import WeightInfo
 
 def rectify_embed_sizes(weight_info: WeightInfo, tensors: List[torch.Tensor]):
     # TODO: use arch_info.embed_weights() instead
-    if weight_info.is_embed and all(len(t.shape) == 2 for t in tensors):
-        # special case - if lm_head.weight or embed_tokens.weight have a size
-        # mismatch, take the largest common submatrix of all of them
-        if take_common_submatrix(tensors):
-            logging.warning(
-                f"Using common submatrix of size {tensors[0].shape} for {weight_info.name}"
-            )
+    if not weight_info.is_embed or not all(len(t.shape) == 2 for t in tensors):
+        return
 
+    max_rows = max(t.shape[0] for t in tensors)
+    max_cols = max(t.shape[1] for t in tensors)
 
-def take_common_submatrix(tensors: List[torch.Tensor]) -> bool:
-    min_size = [None, None]
-    for t in tensors:
-        for idx in range(2):
-            if min_size[idx] is None or t.shape[idx] < min_size[idx]:
-                min_size[idx] = t.shape[idx]
+    resized = False
+    for idx, tensor in enumerate(tensors):
+        rows, cols = tensor.shape
+        if rows == max_rows and cols == max_cols:
+            continue
 
-    if not all(t.shape == torch.Size(min_size) for t in tensors):
-        for idx in range(len(tensors)):
-            tensors[idx] = tensors[idx][: min_size[0], : min_size[1]]
-        return True
-    return False
+        new_tensor = tensor.new_zeros((max_rows, max_cols))
+        new_tensor[:rows, :cols] = tensor
+        tensors[idx] = new_tensor
+        resized = True
+
+    if resized:
+        logging.warning(
+            f"Padded embeddings to common size {(max_rows, max_cols)} for {weight_info.name}"
+        )

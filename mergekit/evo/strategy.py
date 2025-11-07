@@ -344,11 +344,28 @@ def evaluate_genotype_serial_cpu(
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
 ):
+    import sys
+    import time
+    start_time = time.time()
+    print(f"[EVAL] Starting genotype evaluation...", flush=True)
+    sys.stdout.flush()
+    
+    print(f"[EVAL] Step 1/2: Merging models...", flush=True)
+    sys.stdout.flush()
+    merge_start = time.time()
     merged_path = merge_model_ray_cpu.remote(
         genotype, genome, model_storage_path, merge_options
     )
     if not merged_path:
+        print(f"[EVAL] Merge failed - returning None", flush=True)
+        sys.stdout.flush()
         return {"score": None, "results": None}
+    print(f"[EVAL] Merge completed in {time.time() - merge_start:.1f}s", flush=True)
+    sys.stdout.flush()
+    
+    print(f"[EVAL] Step 2/2: Evaluating merged model on {config.tasks}...", flush=True)
+    sys.stdout.flush()
+    eval_start = time.time()
     res = ray.get(
         evaluate_model_ray_cpu.remote(
             merged_path,
@@ -359,6 +376,9 @@ def evaluate_genotype_serial_cpu(
             task_manager=task_manager,
         )
     )
+    print(f"[EVAL] Evaluation completed in {time.time() - eval_start:.1f}s", flush=True)
+    print(f"[EVAL] Total time: {time.time() - start_time:.1f}s | Score: {res.get('score', 'N/A')}", flush=True)
+    sys.stdout.flush()
     return res
 
 
@@ -376,7 +396,13 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         super().__init__(*args, **kwargs)
 
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
+        import sys
+        print(f"\n[SERIAL] Evaluating {len(genotypes)} genotypes in serial mode...", flush=True)
+        sys.stdout.flush()
+        
         if self.num_gpus and self.num_gpus > 0:
+            print(f"[SERIAL] Using GPU path with {self.num_gpus} GPUs", flush=True)
+            sys.stdout.flush()
             return ray.get(
                 [
                     evaluate_genotype_serial.remote(
@@ -395,7 +421,10 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
             )
         else:
             # CPU-only path: no GPUs available
-            return ray.get(
+            print(f"[SERIAL] Using CPU-only path (no GPUs detected)", flush=True)
+            print(f"[SERIAL] Spawning {len(genotypes)} Ray tasks for parallel evaluation...", flush=True)
+            sys.stdout.flush()
+            results = ray.get(
                 [
                     evaluate_genotype_serial_cpu.remote(
                         x,
@@ -409,6 +438,9 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                     for x in genotypes
                 ]
             )
+            print(f"[SERIAL] All {len(genotypes)} evaluations completed!", flush=True)
+            sys.stdout.flush()
+            return results
 
     def evaluate_genotype(self, genotype: np.ndarray) -> dict:
         return self.evaluate_genotypes([genotype])[0]

@@ -15,7 +15,7 @@ import transformers
 from mergekit._data import chat_templates
 from mergekit.architecture import ModelArchitecture, get_architecture_info
 from mergekit.card import generate_card
-from mergekit.common import ModelReference, set_config_value
+from mergekit.common import ModelReference, get_config_value, set_config_value
 from mergekit.config import MergeConfiguration
 from mergekit.graph import Executor
 from mergekit.io.tasks import LoaderCache
@@ -290,6 +290,30 @@ def _model_out_config(
         res.torch_dtype = config.out_dtype
     elif config.dtype:
         res.torch_dtype = config.dtype
+
+    vocab_key = arch_info.vocab_size_config_key or "vocab_size"
+    max_vocab_size = None
+    try:
+        max_vocab_size = get_config_value(res, vocab_key)
+    except Exception:
+        LOG.debug("Output config has no attribute %s", vocab_key)
+
+    for model_ref in config.referenced_models():
+        try:
+            cfg = model_ref.config(trust_remote_code=trust_remote_code)
+            vocab_size = get_config_value(cfg, vocab_key)
+        except Exception:
+            continue
+        if max_vocab_size is None or vocab_size > max_vocab_size:
+            max_vocab_size = vocab_size
+
+    if max_vocab_size is not None:
+        try:
+            set_config_value(res, vocab_key, max_vocab_size)
+        except Exception as e:
+            LOG.warning(
+                "Unable to set vocabulary size %s on output config", vocab_key, exc_info=e
+            )
 
     module_layers = {}
     for module_name in arch_info.modules:

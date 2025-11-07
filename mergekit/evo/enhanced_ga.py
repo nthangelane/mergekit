@@ -65,6 +65,16 @@ class EnhancedGAOptimizer:
 
         # Determine genome type and capabilities
         self.is_multi_method = isinstance(genome, MultiMethodGenome)
+        self._last_eval_stats: Dict[str, float] = {
+            "evaluations": 0,
+            "cache_hits": 0,
+            "failed_evals": 0,
+        }
+        self._prev_generation_breeding: Dict[str, float] = {
+            "crossover_children": 0,
+            "crossover_type": getattr(self.params, "crossover", "arithmetic"),
+            "immigrants": 0,
+        }
         
         x0 = self.genome.initial_genotype(random=self.random_init)
         if isinstance(x0, torch.Tensor):
@@ -110,8 +120,10 @@ class EnhancedGAOptimizer:
                     "gen_std": gen_std,
                     "best_so_far": float(best_score),
                     "timestamp": datetime.datetime.now().isoformat(),
-                    "generation": int(max(1, fevals // self.pop_size))
+                    "generation": int(max(1, fevals // self.pop_size)),
                 }
+                info.update(self._last_eval_stats)
+                info.update(self._prev_generation_breeding)
                 self.on_population_evaluated(res_list, pop, fevals, info)
             if gen_best_score > best_score:
                 best_score = gen_best_score
@@ -136,14 +148,17 @@ class EnhancedGAOptimizer:
             next_pop = [*elites]
             # Inject random immigrants if requested
             n_imm = int(self.params.immigrant_fraction * self.pop_size)
+            immigrants_added = 0
             
             # Breed children with enhanced operations
+            crossover_children = 0
             while len(next_pop) < self.pop_size:
                 p1 = pop[self._select_parent(fitness)]
                 p2 = pop[self._select_parent(fitness)]
                 child = self._enhanced_crossover(p1, p2)
                 child = self._enhanced_mutate(child)
                 next_pop.append(child.astype(np.float32))
+                crossover_children += 1
                 
             # Replace tail with immigrants
             for i in range(n_imm):
@@ -153,8 +168,14 @@ class EnhancedGAOptimizer:
                 if isinstance(x0, torch.Tensor):
                     x0 = x0.view(-1).numpy()
                 next_pop[-1 - i] = x0.astype(np.float32)
+                immigrants_added += 1
 
             pop = np.stack(next_pop, axis=0)
+            self._prev_generation_breeding = {
+                "crossover_children": float(crossover_children),
+                "crossover_type": getattr(self.params, "crossover", "arithmetic"),
+                "immigrants": float(immigrants_added),
+            }
 
         return best_x, best_score
 
@@ -284,6 +305,12 @@ class EnhancedGAOptimizer:
         fitness = np.array(
             [r["score"] if r["score"] is not None else -np.inf for r in results_final]
         )
+        failures = sum(1 for r in results_final if r.get("score") is None)
+        self._last_eval_stats = {
+            "evaluations": float(len(to_eval)),
+            "cache_hits": float(len(pop) - len(to_eval)),
+            "failed_evals": float(failures),
+        }
         return fitness, results_final
 
     def _select_parent(self, fitness: np.ndarray) -> int:
