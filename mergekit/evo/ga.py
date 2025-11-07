@@ -16,9 +16,7 @@
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
-
 import numpy as np
-
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.strategy import EvaluationStrategyBase
 
@@ -44,6 +42,10 @@ class GAParams:
     sigma_decay: float = 0.5
     min_mutation_sigma: float = 0.005
 
+
+def _uniform_crossover(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+    mask = np.random.randint(0, 2, size=x1.shape, dtype=np.bool_)
+    return np.where(mask, x1, x2)
 
 class GAOptimizer:
     """Simple genetic algorithm optimizer for model genome parameters.

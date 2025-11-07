@@ -1,0 +1,40 @@
+# GA evolution config tailored for Apple M1 laptops (16 GB unified memory).
+# Uses tiny Pythia checkpoints that fit comfortably on CPU/MPS and keeps the
+# population small to limit concurrent memory usage.
+
+genome:
+  merge_method: linear
+  models:
+    - EleutherAI/pythia-70m-deduped
+    - EleutherAI/pythia-70m 
+    - EleutherAI/pythia-70m-deduped
+  layer_granularity: 0      # Full layer range grouped together
+
+tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: ppl,none
+  - name: lambada_openai
+    weight: 0.6
+    metric: acc,none
+  - name: sst2
+    weight: 0.4
+    metric: acc,none
+  - name: sciq
+    weight: 0.5
+    metric: acc,none
+
+random_init: false          # Start from equal weighting for deterministic runs
+
+# Conservative GA hyperparameters for memory-limited hardware
+ga:
+  population_size: 4        # Keep populations tiny to fit in memory
+  elite_fraction: 0.5       # Retain top 2 individuals each generation
+  mutation_rate: 0.25
+  mutation_sigma: 0.06
+  crossover: arithmetic
+  tournament_size: 2
+
+# Evaluation limits keep lm-eval fast on CPU / MPS
+limit: 48
+num_fewshot: 0
