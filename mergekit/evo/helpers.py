@@ -135,11 +135,17 @@ def evaluate_model(
     # monkeypatch_tqdm()
     monkeypatch_lmeval_vllm()
     try:
+        extra_model_kwargs = dict(model_kwargs or {})
+        requested_device = extra_model_kwargs.pop("device", None)
         model_args = {
             "pretrained": merged_path,
             "dtype": "bfloat16",
-            **(model_kwargs or {}),
+            **extra_model_kwargs,
         }
+
+        eval_kwargs = dict(kwargs)
+        device_arg = eval_kwargs.pop("device", None)
+
         if vllm:
             model_args["gpu_memory_utilization"] = 0.8
             model_args["tensor_parallel_size"] = 1
@@ -147,8 +153,13 @@ def evaluate_model(
             model_args["max_model_len"] = 4096
         else:
             model_args["use_cache"] = True
-            if torch.cuda.is_available():
-                model_args.setdefault("device", "cuda")
+            if device_arg is None:
+                device_arg = requested_device
+            if device_arg is None and torch.cuda.is_available():
+                device_arg = "cuda"
+
+        if device_arg is not None:
+            eval_kwargs["device"] = device_arg
 
         res = _eval_model(
             "vllm" if vllm else "huggingface",
@@ -158,7 +169,7 @@ def evaluate_model(
             limit=limit,
             batch_size=batch_size,
             task_manager=task_manager,
-            **kwargs,
+            **eval_kwargs,
         )
         return res
     finally:
@@ -182,9 +193,9 @@ def evaluate_model_cpu(
         model_args = {
             "pretrained": merged_path,
             "dtype": "float32",
-            "device": "cpu",
             "use_cache": True,
         }
+        eval_kwargs: Dict[str, Any] = {"device": "cpu"}
         res = _eval_model(
             "huggingface",
             tasks,
@@ -193,6 +204,7 @@ def evaluate_model_cpu(
             limit=limit,
             batch_size=batch_size,
             task_manager=task_manager,
+            **eval_kwargs,
         )
         return res
     finally:
