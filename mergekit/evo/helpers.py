@@ -147,6 +147,8 @@ def evaluate_model(
             model_args["max_model_len"] = 4096
         else:
             model_args["use_cache"] = True
+            if torch.cuda.is_available():
+                model_args.setdefault("device", "cuda")
 
         res = _eval_model(
             "vllm" if vllm else "huggingface",
