@@ -15,8 +15,10 @@ import ray
 import ray.util.queue
 import ray.util.scheduling_strategies
 import torch
+import transformers
 
 from mergekit.evo.config import TaskConfiguration
+from mergekit.config import MergeConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
 from mergekit.evo.monkeypatch import monkeypatch_lmeval_vllm
 
@@ -28,6 +30,139 @@ except ImportError:
 
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
+
+
+LOG = logging.getLogger(__name__)
+
+_SIGNATURE_FIELDS = (
+    "architectures",
+    "model_type",
+    "hidden_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "intermediate_size",
+    "max_position_embeddings",
+    "sliding_window",
+    "rope_scaling",
+    "rope_theta",
+    "vocab_size",
+)
+
+
+def _normalize_signature_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple(
+            (key, _normalize_signature_value(val))
+            for key, val in sorted(value.items())
+        )
+    if isinstance(value, list):
+        return tuple(_normalize_signature_value(v) for v in value)
+    return value
+
+
+def _extract_model_signature(config: "transformers.PretrainedConfig") -> Dict[str, Any]:
+    cfg_dict = config.to_dict()
+
+    def _get(key: str) -> Any:
+        if hasattr(config, key):
+            return getattr(config, key)
+        return cfg_dict.get(key)
+
+    signature: Dict[str, Any] = {}
+    signature["architectures"] = tuple(_get("architectures") or []) or None
+    # Prefer hidden_size but fall back to d_model for encoder-decoder configs
+    hidden_size = _get("hidden_size") or _get("d_model")
+    signature["hidden_size"] = hidden_size
+
+    for field in _SIGNATURE_FIELDS:
+        if field in signature:
+            continue
+        signature[field] = _get(field)
+
+    # Normalize complex structures so they can be compared/hashable
+    for key, value in list(signature.items()):
+        if value is not None:
+            signature[key] = _normalize_signature_value(value)
+
+    return signature
+
+
+def _format_signature_value(value: Any) -> str:
+    if isinstance(value, tuple):
+        # Reconstruct dict-style display for normalized tuples
+        try:
+            if all(isinstance(item, tuple) and len(item) == 2 for item in value):
+                inner = ", ".join(
+                    f"{k}: {_format_signature_value(v)}" for k, v in value
+                )
+                return "{" + inner + "}"
+        except Exception:  # pragma: no cover - defensive formatting
+            pass
+        return "(" + ", ".join(_format_signature_value(v) for v in value) + ")"
+    return repr(value)
+
+
+def _find_signature_incompatibilities(
+    signatures: Dict[str, Dict[str, Any]]
+) -> List[str]:
+    mismatches: List[str] = []
+    for field in _SIGNATURE_FIELDS:
+        values: Dict[Any, List[str]] = {}
+        missing: List[str] = []
+        for model_name, sig in signatures.items():
+            value = sig.get(field)
+            if value is None:
+                missing.append(model_name)
+                continue
+            values.setdefault(value, []).append(model_name)
+
+        if len(values) > 1:
+            parts = []
+            for value, models in values.items():
+                parts.append(
+                    f"{', '.join(sorted(models))} -> {_format_signature_value(value)}"
+                )
+            mismatches.append(f"{field}: {'; '.join(parts)}")
+        elif values and missing:
+            present_value, present_models = next(iter(values.items()))
+            parts = [
+                f"{', '.join(sorted(present_models))} -> {_format_signature_value(present_value)}",
+                f"{', '.join(sorted(missing))} -> <missing>",
+            ]
+            mismatches.append(f"{field}: {'; '.join(parts)}")
+    return mismatches
+
+
+def _validate_merge_compatibility(
+    merge_config: MergeConfiguration, merge_options: MergeOptions
+) -> None:
+    referenced_models = merge_config.referenced_models()
+    if len(referenced_models) <= 1:
+        return
+
+    signatures: Dict[str, Dict[str, Any]] = {}
+    for model_ref in referenced_models:
+        try:
+            cfg = model_ref.config(trust_remote_code=merge_options.trust_remote_code)
+        except Exception as exc:  # pragma: no cover - network or HF errors
+            LOG.warning("Failed to load config for %s", model_ref, exc_info=exc)
+            continue
+        signatures[str(model_ref)] = _extract_model_signature(cfg)
+
+    if len(signatures) <= 1:
+        return
+
+    mismatches = _find_signature_incompatibilities(signatures)
+    if mismatches:
+        message = "Incompatible model configurations detected:\n  - " + "\n  - ".join(
+            mismatches
+        )
+        if merge_options.allow_crimes:
+            LOG.warning("%s", message)
+        else:
+            raise InvalidGenotypeError(message)
 
 
 def _eval_model(
@@ -223,18 +358,25 @@ def merge_model(
     # monkeypatch_tqdm()
     try:
         # Handle both traditional and multi-method genomes
-        if hasattr(genome, 'genotype_to_merge_config'):
+        if hasattr(genome, "genotype_to_merge_config"):
             # MultiMethodGenome
             cfg = genome.genotype_to_merge_config(genotype)
         else:
             # Traditional ModelGenome
             cfg = genome.genotype_merge_config(genotype)
+        _validate_merge_compatibility(cfg, merge_options)
     except (InvalidGenotypeError, MultiMethodInvalidGenotypeError) as e:
-        logging.error("Invalid genotype", exc_info=e)
+        logging.error("Invalid genotype: %s", e)
         return None
+
     os.makedirs(model_storage_path, exist_ok=True)
     res = tempfile.mkdtemp(prefix="merged", dir=model_storage_path)
-    run_merge(cfg, out_path=res, options=merge_options)
+    try:
+        run_merge(cfg, out_path=res, options=merge_options)
+    except Exception as exc:  # pragma: no cover - run_merge handles many cases
+        logging.error("Merge execution failed", exc_info=exc)
+        shutil.rmtree(res, ignore_errors=True)
+        return None
     return res
 
 

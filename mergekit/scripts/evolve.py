@@ -23,7 +23,7 @@ except ImportError:
     wandb = None
 
 
-from mergekit.common import ModelReference
+from mergekit.common import ModelReference, call_with_dtype
 from mergekit.evo.config import (
     EvolMergeConfiguration,
     ModelGenomeDefinition,
@@ -396,11 +396,12 @@ def _reshard_model(
         logging.info(f"Using existing resharded model at {out_path}")
         return ModelReference(model=out_path)
 
-    model_hf = transformers.AutoModelForCausalLM.from_pretrained(
+    model_hf = call_with_dtype(
+        transformers.AutoModelForCausalLM.from_pretrained,
         merged.model.path,
         revision=merged.model.revision,
         trust_remote_code=trust_remote_code,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         cache_dir=os.path.join(storage_path, "transformers_cache"),
     )
     model_hf.save_pretrained(

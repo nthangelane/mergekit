@@ -26,7 +26,11 @@ except ImportError:
 
 
 from mergekit.architecture import arch_info_for_config
-from mergekit.common import get_torch_accelerator_module, get_torch_accelerator_type
+from mergekit.common import (
+    call_with_dtype,
+    get_torch_accelerator_module,
+    get_torch_accelerator_type,
+)
 from mergekit.config import MergeConfiguration
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
@@ -198,7 +202,8 @@ class InMemoryMergeEvaluator(MergeActorBase):
             trust_remote_code=self.merge_options.trust_remote_code,
         )
         cfg_out.use_cache = True
-        cfg_out.torch_dtype = torch.bfloat16
+        setattr(cfg_out, "dtype", torch.bfloat16)
+        setattr(cfg_out, "torch_dtype", torch.bfloat16)
 
         if self.arch_info is not None:
             different = False
@@ -225,18 +230,19 @@ class InMemoryMergeEvaluator(MergeActorBase):
 
         model_kwargs = {
             "trust_remote_code": self.merge_options.trust_remote_code,
-            "torch_dtype": torch.bfloat16,
         }
         if is_flash_attn_2_available():
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
         with NoInit():
+            inner_model = call_with_dtype(
+                transformers.AutoModelForCausalLM.from_config,
+                cfg_out,
+                dtype=torch.bfloat16,
+                **model_kwargs,
+            )
             inner_model = (
-                transformers.AutoModelForCausalLM.from_config(
-                    cfg_out,
-                    **model_kwargs,
-                )
-                .bfloat16()
+                inner_model.bfloat16()
                 .to(self.merge_options.device)
                 .eval()
                 .requires_grad_(False)

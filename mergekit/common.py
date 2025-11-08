@@ -5,6 +5,7 @@ import binascii
 import logging
 import os
 import os.path
+import warnings
 from typing import (
     Any,
     Callable,
@@ -30,6 +31,36 @@ from transformers import AutoConfig, PretrainedConfig
 from typing_extensions import TypeVar
 
 from mergekit.io import LazyTensorLoader, ShardedTensorIndex
+
+
+def call_with_dtype(
+    factory: Callable,
+    *args,
+    dtype: Optional[torch.dtype] = None,
+    **kwargs,
+):
+    """Call a transformers factory function with a dtype kwarg, falling back to torch_dtype.
+
+    Older versions of transformers only accept ``torch_dtype``. Newer versions prefer ``dtype``.
+    This helper attempts ``dtype`` first to avoid deprecation warnings, then retries with
+    ``torch_dtype`` if the call failed because the argument was unexpected.
+    """
+
+    if dtype is None:
+        return factory(*args, **kwargs)
+
+    try:
+        return factory(*args, dtype=dtype, **kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "dtype" not in message:
+            raise
+        warnings.warn(
+            "Falling back to torch_dtype for compatibility with older transformers releases.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return factory(*args, torch_dtype=dtype, **kwargs)
 
 
 def set_config_value(config: PretrainedConfig, key: str, value: Any):
@@ -122,10 +153,12 @@ class ModelReference(BaseModel, frozen=True):
             auto_cls = get_auto_cls(config.architectures[0])
 
             logging.info(f"Loading {self.model} for merge...")
-            model = auto_cls.from_pretrained(
+            dtype = dtype_from_name(lora_merge_dtype)
+            model = call_with_dtype(
+                auto_cls.from_pretrained,
                 self.model.path,
                 revision=self.model.revision,
-                torch_dtype=dtype_from_name(lora_merge_dtype),
+                dtype=dtype,
                 low_cpu_mem_usage=True,
                 trust_remote_code=trust_remote_code,
             )

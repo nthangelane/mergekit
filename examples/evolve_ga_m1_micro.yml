@@ -3,12 +3,25 @@
 # population small to limit concurrent memory usage.
 
 genome:
-  merge_method: linear
+  type: multi_method        # Enable method-aware evolution
+
   models:
-    - EleutherAI/pythia-70m-deduped
-    - EleutherAI/pythia-70m 
-    - EleutherAI/pythia-70m-deduped
+    - Qwen/Qwen2.5-0.5B
+    - Qwen/Qwen2.5-0.5B-Instruct
+    - Qwen/Qwen2-0.5B-Instruct
+    - Qwen/Qwen1.5-0.5B
+    - Qwen/Qwen1.5-0.5B-Chat
+
+  base_model: Qwen/Qwen2.5-0.5B
+  allowed_methods:
+    - slerp                 # Fast interpolation when tensors align
+    - linear                # Classic weighted averaging
+    - dare_ties             # Sparse task vectors for exploration
+
   layer_granularity: 0      # Full layer range grouped together
+  enable_method_evolution: true
+  enable_model_selection: true
+  max_models_per_layer: 2   # Slerp works on pairs; keep selections tiny for 16 GB RAM
 
 tasks:
   - name: wikitext
@@ -32,9 +45,15 @@ ga:
   elite_fraction: 0.5       # Retain top 2 individuals each generation
   mutation_rate: 0.25
   mutation_sigma: 0.06
-  crossover: arithmetic
+  crossover: semantic       # Unlock semantic crossover for multi-method genome
+  semantic_crossover_prob: 0.85
+  method_mutation_rate: 0.2
+  model_mutation_rate: 0.15
+  parameter_mutation_rate: 0.3
   tournament_size: 2
 
 # Evaluation limits keep lm-eval fast on CPU / MPS
 limit: 48
 num_fewshot: 0
+
+

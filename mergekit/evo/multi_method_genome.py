@@ -172,11 +172,25 @@ class MultiMethodGenomeDefinition(BaseModel, frozen=True):
             min_models = METHOD_MIN_MODELS.get(method, 2)
             max_models = METHOD_MAX_MODELS.get(method, None)
             
-            if len(self.models) < min_models:
-                raise ValueError(f"Method {method_name} requires at least {min_models} models, got {len(self.models)}")
-            
-            if max_models is not None and len(self.models) > max_models:
-                raise ValueError(f"Method {method_name} supports at most {max_models} models, got {len(self.models)}")
+            available_models = len(self.models)
+            max_per_layer = self.max_models_per_layer or available_models
+            effective_upper = min(available_models, max_per_layer)
+
+            if available_models < min_models:
+                raise ValueError(
+                    f"Method {method_name} requires at least {min_models} models, got {available_models}"
+                )
+
+            if max_per_layer < min_models:
+                raise ValueError(
+                    f"Method {method_name} requires at least {min_models} models per layer, but max_models_per_layer is {max_per_layer}"
+                )
+
+            if max_models is not None and effective_upper > max_models:
+                raise ValueError(
+                    f"Method {method_name} supports at most {max_models} models per layer, "
+                    f"but up to {effective_upper} would be selected. Reduce max_models_per_layer or remove the method."
+                )
         
         return self
 
@@ -453,26 +467,58 @@ class MultiMethodGenome:
         # For now, fall back to the first layer group's method
         return self._simple_config(layer_groups[0])
         
-    def _slerp_config(self, selected_models: List[Tuple[ModelReference, float]], t: float) -> MergeConfiguration:
+    def _slerp_config(
+        self,
+        selected_models: List[Tuple[ModelReference, float]],
+        t: float,
+        layer_idx: int = 0,
+    ) -> MergeConfiguration:
         """Create a SLERP configuration."""
         if len(selected_models) < 2:
             raise ValueError("SLERP requires at least 2 models")
-            
-        # Use top 2 models for SLERP
-        model1, model2 = selected_models[0][0], selected_models[1][0]
-        
-        config_dict = {
-            "merge_method": "slerp",
-            "slices": [{
-                "sources": [
-                    {"model": model1},
-                    {"model": model2}
-                ],
-                "parameters": {"t": float(np.clip(t, 0, 1))}
-            }],
-            "dtype": "bfloat16"
+
+        # Use top 2 models for SLERP ordered by weight
+        ordered = sorted(selected_models, key=lambda item: item[1], reverse=True)[:2]
+        (model1, weight1), (model2, weight2) = ordered
+
+        # Determine layer range
+        if self.definition.layer_granularity > 0:
+            start = layer_idx * self.definition.layer_granularity
+            end = min(start + self.definition.layer_granularity, self.num_layers)
+        else:
+            start, end = 0, self.num_layers
+
+        slice_entry: Dict[str, Any] = {
+            "sources": [
+                {
+                    "model": model1,
+                    "layer_range": [start, end],
+                    "parameters": {"weight": float(weight1)},
+                },
+                {
+                    "model": model2,
+                    "layer_range": [start, end],
+                    "parameters": {"weight": float(weight2)},
+                },
+            ],
+            "parameters": {"t": float(np.clip(t, 0, 1))},
         }
-        
+
+        config_dict: Dict[str, Any] = {
+            "merge_method": "slerp",
+            "slices": [slice_entry],
+            "dtype": "bfloat16",
+        }
+
+        # Ensure base model is recorded for downstream tooling
+        if self.definition.base_model is not None:
+            config_dict["base_model"] = self.definition.base_model
+        else:
+            config_dict["base_model"] = model1
+
+        if self.definition.tokenizer_source:
+            config_dict["tokenizer_source"] = self.definition.tokenizer_source
+
         return MergeConfiguration.model_validate(config_dict)
 
 

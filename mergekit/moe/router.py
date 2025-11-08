@@ -11,7 +11,7 @@ import transformers
 from transformers import AutoModelForCausalLM, LlamaForCausalLM, MistralForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from mergekit.common import ModelReference
+from mergekit.common import ModelReference, call_with_dtype
 from mergekit.moe.config import Expert
 
 
@@ -113,10 +113,11 @@ def get_gate_params(
             )
 
     elif mode in ("hidden", "hidden_avg", "hidden_last"):
-        model = AutoModelForCausalLM.from_pretrained(
+        model = call_with_dtype(
+            AutoModelForCausalLM.from_pretrained,
             model_ref.model.path,
             revision=model_ref.model.revision,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map=device,
             low_cpu_mem_usage=True,
             load_in_4bit=load_in_4bit,
