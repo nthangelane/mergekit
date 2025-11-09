@@ -449,6 +449,10 @@ Or download your merge:
 
 `!arcee merging download bio-merge`
 
+### Self-hosted Ray on Amazon EKS
+
+Prefer to run merges inside your own AWS account? Follow the [EKS deployment guide](docs/deploy_eks.md) to build the MergeKit container image, install Ray on an EKS cluster, and submit GA jobs with the helper CLI (`mergekit-eks`). The workflow is optional and lives entirely under `deploy/`, so you can keep it separate from local experiments.
+
 ## Citation
 
 If you find `mergekit` useful in your research, please consider citing the [paper](https://aclanthology.org/2024.emnlp-industry.36/):

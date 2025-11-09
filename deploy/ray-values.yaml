@@ -1,0 +1,11 @@
+# Minimal overrides for the KubeRay operator Helm chart.
+# Apply with: helm upgrade --install kuberay-operator kuberay/kuberay-operator -f deploy/ray-values.yaml
+
+image:
+  repository: quay.io/kuberay/operator
+  tag: v1.5.0
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false

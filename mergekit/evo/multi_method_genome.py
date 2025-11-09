@@ -481,8 +481,14 @@ class MultiMethodGenome:
         ordered = sorted(selected_models, key=lambda item: item[1], reverse=True)[:2]
         (model1, weight1), (model2, weight2) = ordered
 
-        # Determine layer range
-        if self.definition.layer_granularity > 0:
+        # Determine layer range. When we have multiple layer groups, fall back to
+        # the full model range so the resulting configuration keeps
+        # num_hidden_layers consistent with the base architecture. Downstream
+        # support for per-block SLERP will reintroduce narrower ranges once the
+        # complex config path is implemented.
+        if self.definition.layer_granularity > 0 and self.num_layer_groups > 1:
+            start, end = 0, self.num_layers
+        elif self.definition.layer_granularity > 0:
             start = layer_idx * self.definition.layer_granularity
             end = min(start + self.definition.layer_granularity, self.num_layers)
         else:

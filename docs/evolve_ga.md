@@ -301,6 +301,25 @@ Notes:
 - `--vllm` is GPU-only; omit it on CPU.
 - Serial strategy automatically switches to a CPU path when no GPUs are detected.
 
+### Apple M1 Micro Example
+
+For 16 GB Apple Silicon laptops, the configuration at `examples/evolve_ga_m1_micro.yml` showcases a multi-method genome tuned for minimal memory:
+
+- Uses `layer_granularity: 4` so the optimizer can pick different methods for four-layer blocks without exploding VRAM/UMA usage.
+- Caps `max_models_per_layer` to 2, keeping SLERP/NuSLERP compatible while still letting `dare_*` methods explore task vectors.
+- Reuses the base tokenizer and normalizes parameter slices to avoid drifting embeddings across Qwen 0.5B checkpoints.
+- Nudges semantic GA parameters (method/model/parameter mutation rates) to maintain diversity even with a tiny population.
+
+Launch it directly:
+
+```bash
+mergekit-evolve-ga \
+  --strategy pool \
+  --max-fevals 48 \
+  --storage-path /tmp/mk-ga-m1 \
+  examples/evolve_ga_m1_micro.yml
+```
+
 ## Installation
 
 Install the package and GA extras (quote the extras on zsh):

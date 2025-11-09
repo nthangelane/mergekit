@@ -8,8 +8,6 @@ genome:
   models:
     - Qwen/Qwen2.5-0.5B
     - Qwen/Qwen2.5-0.5B-Instruct
-    - Qwen/Qwen2-0.5B-Instruct
-    - Qwen/Qwen1.5-0.5B
     - Qwen/Qwen1.5-0.5B-Chat
 
   base_model: Qwen/Qwen2.5-0.5B
@@ -28,24 +26,42 @@ genome:
   enable_model_selection: true
 
 tasks:
-  - name: wikitext
-    weight: 1
-    metric: ppl,none
-  - name: lambada_openai
-    weight: 0.6
+  - name: tinyMMLU
+    weight: 0.28
     metric: acc,none
+  - name: tinyTruthfulQA
+    weight: 0.18
+    metric: acc,none
+  - name: tinyHellaswag
+    weight: 0.12
+    metric: acc,none
+  - name: tinyARC
+    weight: 0.12
+    metric: acc,none
+  - name: tinyWinogrande
+    weight: 0.08
+    metric: acc,none
+  - name: tinyGSM8k
+    weight: 0.07
+    metric: acc,none
+  - name: wikitext
+    weight: 0.07        # use 1/ppl internally so “higher is better”
+    metric: ppl,none
   - name: sst2
-    weight: 0.4
+    weight: 0.04
     metric: acc,none
   - name: sciq
-    weight: 0.5
+    weight: 0.04
+    metric: acc,none
+  - name: lambada_openai
+    weight: 0.00        # optional: include to log, but not in fitness
     metric: acc,none
 
 random_init: false # Start from equal weighting for deterministic runs
 
 # Conservative GA hyperparameters for memory-limited hardware
 ga:
-  population_size: 6 # Slightly larger to explore per-block method combos
+  population_size: 10 # Slightly larger to explore per-block method combos
   elite_fraction: 0.5 # Retain top 3 individuals each generation
   mutation_rate: 0.24
   mutation_sigma: 0.05
@@ -54,8 +70,8 @@ ga:
   method_mutation_rate: 0.22
   model_mutation_rate: 0.18
   parameter_mutation_rate: 0.28
-  tournament_size: 2
+  tournament_size: 5
 
 # Evaluation limits keep lm-eval fast on CPU / MPS
-limit: 48
+limit: 10000
 num_fewshot: 0

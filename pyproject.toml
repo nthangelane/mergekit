@@ -35,6 +35,7 @@ test = ["pytest~=8.4.0"]
 evolve = ["ray", "cma", "lm_eval", "wandb", "mlflow"]
 vllm = ["vllm==0.7.2", "lm_eval[vllm]"]
 evolve-ga = ["ray", "lm_eval", "wandb", "mlflow"]
+eks = ["kubernetes>=29.0.0", "boto3>=1.34.0", "python-dotenv>=1.0.0"]
 
 [project.urls]
 repository = "https://github.com/cg123/mergekit"
@@ -52,6 +53,7 @@ mergekit-evolve = "mergekit.scripts.evolve:main"
 mergekit-pytorch = "mergekit.scripts.merge_raw_pytorch:main"
 mergekit-multi = "mergekit.scripts.multimerge:main"
 mergekit-evolve-ga = "mergekit.scripts.evolve_ga:main"
+mergekit-eks = "mergekit.scripts.run_on_eks:cli"
 
 [tool.setuptools]
 packages = [

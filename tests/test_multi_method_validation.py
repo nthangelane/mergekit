@@ -1,6 +1,10 @@
+from pathlib import Path
+
 import pytest
+import yaml
 
 from mergekit.common import ModelReference
+from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.multi_method_genome import MultiMethodGenome, MultiMethodGenomeDefinition
 
 
@@ -84,3 +88,36 @@ def test_slerp_config_includes_layer_ranges(monkeypatch):
     assert source0.layer_range == (0, 4)
     assert source1.layer_range == (0, 4)
     assert config.slices[0].parameters["t"] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_m1_micro_example_uses_layer_blocks(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 24
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    config_path = Path(__file__).resolve().parents[1] / "examples" / "evolve_ga_m1_micro.yml"
+    config_data = yaml.safe_load(config_path.read_text())
+
+    evol_config = EvolMergeConfiguration.model_validate(config_data)
+    assert isinstance(evol_config.genome, MultiMethodGenomeDefinition)
+    assert evol_config.genome.layer_granularity == 4
+    assert "nuslerp" in evol_config.genome.allowed_methods
+
+    genome = MultiMethodGenome(evol_config.genome)
+    assert genome.num_layer_groups == 6  # 24 layers / 4-block granularity
+    assert genome.max_models == 2
