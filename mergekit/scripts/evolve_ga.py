@@ -14,9 +14,10 @@
 # along with this program. If not, see http://www.gnu.org/licenses/.
 
 import logging
+import math
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import click
 import numpy as np
@@ -26,6 +27,8 @@ import torch
 import tqdm
 import transformers
 import yaml
+import lm_eval.tasks
+
 
 try:
     import wandb
@@ -34,6 +37,7 @@ except ImportError:
 
 
 from mergekit.common import ModelReference, call_with_dtype
+from mergekit.evo.helpers import _eval_model
 from mergekit.evo.config import (
     EvolMergeConfiguration,
     ModelGenomeDefinition,
@@ -51,6 +55,14 @@ from mergekit.evo.strategy import (
 from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
+
+
+LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
+
+
+def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
+    """Emit a structured log message for high-level run stages."""
+    LOGGER.log(level, "[%s] %s", stage, message)
 
 
 @click.command("mergekit-evolve-ga")
@@ -164,6 +176,13 @@ from mergekit.options import MergeOptions
     help="Maximum time to run the optimization in seconds",
 )
 @click.option(
+    "--baseline/--no-baseline",
+    "run_baseline",
+    is_flag=True,
+    default=True,
+    help="Run baseline evaluations for source models before GA search",
+)
+@click.option(
     "--hf-model-id",
     type=str,
     default=None,
@@ -200,24 +219,54 @@ def main(
     save_final_model: bool,
     reshard: bool,
     timeout: Optional[float],
+    run_baseline: bool,
     hf_model_id: Optional[str],
 ):
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    LOGGER.setLevel(logging.INFO)
+
+    stage_log("Stage-Init", f"Seeding RNG with value {random_seed}")
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
 
-    config = EvolMergeConfiguration.model_validate(
-        yaml.safe_load(open(genome_config_path, "r", encoding="utf-8"))
-    )
+    stage_log("Stage-Init", f"Loading genome configuration from {genome_config_path}")
+    with open(genome_config_path, "r", encoding="utf-8") as config_file:
+        raw_config = yaml.safe_load(config_file)
+    config = EvolMergeConfiguration.model_validate(raw_config)
 
+    stage_log("Stage-Init", "Validating configuration settings...")
     check_for_naughty_config(config, allow=allow_benchmark_tasks)
 
+    storage_path = os.path.abspath(storage_path)
+    os.makedirs(storage_path, exist_ok=True)
+    stage_log("Stage-Init", f"Storage path: {storage_path}")
+
+    task_search_path = list(task_search_path)
+
+    baseline_csv_path = None
+    if run_baseline:
+        baseline_csv_path = run_baseline_evaluations(
+            config,
+            storage_path,
+            batch_size,
+            merge_cuda,
+            num_gpus,
+            task_search_path,
+            trust_remote_code,
+        )
+    else:
+        stage_log("Stage-Baseline", "Skipping baseline evaluation (--no-baseline).")
+
     # Initialize experiment tracking
+    stage_log("Stage-Tracking", "Initializing experiment tracker...")
     tracker = None
     if use_wandb and use_mlflow:
         raise ValueError(
             "Cannot use both wandb and mlflow at the same time. Choose one."
         )
     elif use_wandb:
+        stage_log("Stage-Tracking", "Using Weights & Biases for experiment tracking.")
         tracker = create_tracker("wandb")
         tracker.initialize(
             project_name=wandb_project or "mergekit-evolve-ga",
@@ -225,6 +274,7 @@ def main(
             entity=wandb_entity,
         )
     elif use_mlflow:
+        stage_log("Stage-Tracking", "Using MLflow for experiment tracking.")
         tracker = create_tracker("mlflow")
         tracker.initialize(
             project_name=mlflow_experiment or "mergekit-evolve-ga",
@@ -232,6 +282,7 @@ def main(
             tracking_uri=mlflow_tracking_uri,
         )
     else:
+        stage_log("Stage-Tracking", "Experiment tracking disabled (logging to console only).")
         tracker = create_tracker("none")
         tracker.initialize(project_name="no-tracking", config={})
 
@@ -252,6 +303,10 @@ def main(
 
     # convert models to single-shard safetensors
     if reshard:
+        stage_log(
+            "Stage-Reshard",
+            "Converting source models to single-shard safetensors...",
+        )
         resharded_models = []
         resharded_base = None
         for model in tqdm.tqdm(config.genome.models, desc="Resharding models"):
@@ -270,7 +325,9 @@ def main(
                 merge_options.lora_merge_cache,
                 trust_remote_code,
             )
+        stage_log("Stage-Reshard", "Resharding complete.")
     else:
+        stage_log("Stage-Reshard", "Skipping reshard step (--no-reshard).")
         resharded_models = config.genome.models
         resharded_base = config.genome.base_model
 
@@ -318,6 +375,7 @@ def main(
     if crossover is not None and crossover not in {"arithmetic", "uniform", "sbx"}:
         raise click.BadParameter("--crossover must be one of: arithmetic, uniform, sbx")
 
+    stage_log("Stage-GA", f"Initializing evaluation strategy '{strategy}'...")
     strat = strat_cls(
         config,
         genome,
@@ -533,14 +591,22 @@ def main(
             on_new_best=on_best,
         )
 
+    if baseline_csv_path:
+        stage_log(
+            "Stage-GA",
+            f"Baseline metrics located at {baseline_csv_path}",
+        )
+    else:
+        stage_log("Stage-GA", "No baseline metrics available for this run.")
+
+    stage_log("Stage-GA", "Starting GA optimization loop...")
     try:
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
     except KeyboardInterrupt:
         ray.shutdown()
 
-    print("!!! OPTIMIZATION COMPLETE (GA) !!!")
-    print(f"Best score: {best_score:.4f}")
-    print()
+    stage_log("Stage-GA", "Optimization complete.")
+    stage_log("Stage-GA", f"Best score achieved: {best_score:.4f}")
 
     # pause for a bit to let any CUDA-using processes clean up
     time.sleep(1.0)
@@ -557,16 +623,16 @@ def main(
             genome_pretty = ModelGenome(config.genome, trust_remote_code=trust_remote_code)
             best_config = genome_pretty.genotype_merge_config(best_x)
             
-        print("Best merge configuration:")
+        stage_log("Stage-GA", "Best merge configuration computed.")
         print(best_config.to_yaml())
 
         if save_final_model:
-            print("Saving final model...")
+            stage_log("Stage-GA", "Saving final merged model artifacts...")
             run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
             
             # Upload to Hugging Face if requested
             if hf_model_id:
-                print(f"\nUploading model to Hugging Face: {hf_model_id}")
+                stage_log("Stage-GA", f"Uploading final model to Hugging Face: {hf_model_id}")
                 try:
                     from huggingface_hub import upload_folder
                     
@@ -576,16 +642,191 @@ def main(
                         folder_path=final_model_path,
                         repo_type="model",
                     )
-                    print(f"✅ Model successfully uploaded to {hf_model_id}")
+                    stage_log("Stage-GA", f"Model successfully uploaded to {hf_model_id}")
                 except Exception as e:
-                    print(f"⚠️  Failed to upload model to Hugging Face: {e}")
-                    print(f"   You can manually upload from: {os.path.join(storage_path, 'final_model')}")
+                    stage_log(
+                        "Stage-GA",
+                        f"Failed to upload model to Hugging Face: {e}",
+                        level=logging.ERROR,
+                    )
+                    stage_log(
+                        "Stage-GA",
+                        f"You can manually upload from: {os.path.join(storage_path, 'final_model')}",
+                    )
     else:
-        print("No valid solution found. All evaluations failed.")
-        print("This may indicate:")
-        print("- Model compatibility issues")
-        print("- Evaluation environment problems")
-        print("- Insufficient population size or evaluations")
+        stage_log(
+            "Stage-GA",
+            "No valid solution found. All evaluations failed.",
+            level=logging.ERROR,
+        )
+        stage_log("Stage-GA", "Possible causes:")
+        stage_log("Stage-GA", "- Model compatibility issues")
+        stage_log("Stage-GA", "- Evaluation environment problems")
+        stage_log("Stage-GA", "- Insufficient population size or evaluations")
+
+
+def run_baseline_evaluations(
+    config: EvolMergeConfiguration,
+    storage_path: str,
+    batch_size: Optional[int],
+    merge_cuda: bool,
+    num_gpus: Optional[int],
+    task_search_path: List[str],
+    trust_remote_code: bool,
+) -> Optional[str]:
+    """Execute baseline evaluations for all models defined in the genome."""
+    stage_log("Stage-Baseline", "Starting baseline evaluation phase...")
+
+    storage_dir = os.path.abspath(storage_path)
+    os.makedirs(storage_dir, exist_ok=True)
+
+    models: List[ModelReference] = list(config.genome.models)
+    if getattr(config.genome, "base_model", None) is not None:
+        models.append(config.genome.base_model)
+
+    if not models:
+        stage_log("Stage-Baseline", "No models found in the genome; skipping baselines.")
+        return None
+
+    task_manager = lm_eval.tasks.TaskManager(
+        include_path=list(task_search_path) or None
+    )
+
+    use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
+    device = "cuda" if use_cuda else "cpu"
+    stage_log(
+        "Stage-Baseline",
+        f"Using {'CUDA' if use_cuda else 'CPU'} for baseline evaluations.",
+    )
+
+    metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
+    baseline_rows: List[Dict[str, Optional[float]]] = []
+    successes = 0
+    failures = 0
+
+    for model_ref in models:
+        model_name = str(model_ref)
+        row: Dict[str, Optional[float]] = {
+            "model": model_name,
+            "weighted_score": None,
+            "error": None,
+        }
+        for column in metric_columns:
+            row.setdefault(column, None)
+
+        stage_log("Stage-Baseline", f"Evaluating {model_name}...")
+        model_args = {
+            "pretrained": model_name,
+            "dtype": "float32",
+            "use_cache": True,
+            "trust_remote_code": trust_remote_code,
+        }
+        eval_kwargs = {"device": device}
+
+        try:
+            result = _eval_model(
+                "huggingface",
+                config.tasks,
+                model_args,
+                num_fewshot=config.num_fewshot,
+                limit=config.limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                **eval_kwargs,
+            )
+        except Exception as exc:  # pragma: no cover - evaluation depends on environment
+            failures += 1
+            row["error"] = str(exc)
+            stage_log(
+                "Stage-Baseline",
+                f"Evaluation failed for {model_name}: {exc}",
+                level=logging.ERROR,
+            )
+            LOGGER.debug("Baseline evaluation error", exc_info=exc)
+            baseline_rows.append(row)
+            continue
+
+        successes += 1
+        weighted_score = result.get("score")
+        row["weighted_score"] = weighted_score
+
+        for task_cfg in config.tasks:
+            task_results = result["results"].get(task_cfg.name, {})
+            metric_value = task_results.get(task_cfg.metric)
+
+            if metric_value is None:
+                metric_alternatives = {
+                    "ppl,none": [
+                        "word_perplexity,none",
+                        "perplexity,none",
+                        "byte_perplexity,none",
+                    ],
+                    "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
+                    "acc_norm,none": [
+                        "acc_norm,none",
+                        "acc,none",
+                        "accuracy,none",
+                    ],
+                }
+                for alt_metric in metric_alternatives.get(task_cfg.metric, []):
+                    if alt_metric in task_results:
+                        metric_value = task_results[alt_metric]
+                        break
+
+                if metric_value is None:
+                    lowered_metric = task_cfg.metric.lower()
+                    for metric_name, value in task_results.items():
+                        lowered_name = metric_name.lower()
+                        if "stderr" in lowered_name:
+                            continue
+                        if (
+                            ("ppl" in lowered_metric or "perplexity" in lowered_metric)
+                            and "perplexity" in lowered_name
+                        ):
+                            metric_value = value
+                            break
+                        if "acc" in lowered_metric and "acc" in lowered_name:
+                            metric_value = value
+                            break
+
+            if isinstance(metric_value, float) and math.isnan(metric_value):
+                metric_value = None
+
+            row[f"{task_cfg.name}:{task_cfg.metric}"] = metric_value
+
+        baseline_rows.append(row)
+
+    if not baseline_rows:
+        stage_log("Stage-Baseline", "No baseline results recorded; skipping CSV output.")
+        return None
+
+    baseline_df = pandas.DataFrame(baseline_rows)
+    ordered_columns = ["model", "weighted_score", *metric_columns, "error"]
+    # Ensure DataFrame includes expected columns even if absent from rows
+    for column in ordered_columns:
+        if column not in baseline_df.columns:
+            baseline_df[column] = None
+    baseline_df = baseline_df[ordered_columns]
+    baseline_df.sort_values(
+        "weighted_score",
+        ascending=False,
+        inplace=True,
+        na_position="last",
+    )
+
+    baseline_csv_path = os.path.join(storage_dir, "baseline_results.csv")
+    baseline_df.to_csv(baseline_csv_path, index=False)
+
+    stage_log(
+        "Stage-Baseline",
+        f"Baseline metrics saved to {baseline_csv_path}",
+    )
+    stage_log(
+        "Stage-Baseline",
+        f"Completed evaluations: {successes}; failures: {failures}",
+    )
+
+    return baseline_csv_path
 
 
 def _reshard_model(
