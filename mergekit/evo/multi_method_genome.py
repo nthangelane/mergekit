@@ -432,20 +432,49 @@ class MultiMethodGenome:
         # Build model configs
         models = []
         for model_ref, weight in selected_models:
-            model_config = {"model": model_ref}
-            
+            model_config: Dict[str, Any] = {"model": model_ref}
+
             # Add parameters
-            if method_name in ["linear", "task_arithmetic"]:
-                model_config["parameters"] = {"weight": float(weight * layer_group.parameters[0])}
+            if method_name in ["linear", "task_arithmetic", "nuslerp", "karcher", "model_stock"]:
+                model_config["parameters"] = {
+                    "weight": float(weight * layer_group.parameters[0])
+                }
             elif method_name in ["ties", "dare_ties"]:
                 model_config["parameters"] = {
                     "weight": float(weight * layer_group.parameters[0]),
-                    "density": float(layer_group.parameters[1])
+                    "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
+                }
+            elif method_name in ["dare_linear", "della_linear"]:
+                model_config["parameters"] = {
+                    "weight": float(weight * layer_group.parameters[0]),
+                    "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
+                }
+                # Additional epsilon parameter for DELLA linear variants
+                if method_name == "della_linear" and len(layer_group.parameters) > 2:
+                    model_config["parameters"]["epsilon"] = float(
+                        np.clip(layer_group.parameters[2], 0.0, 1.0)
+                    )
+            elif method_name in ["breadcrumbs", "breadcrumbs_ties"]:
+                model_config["parameters"] = {
+                    "weight": float(weight * layer_group.parameters[0]),
+                    "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
+                    "gamma": float(np.clip(layer_group.parameters[2], 0.0, 1.0)),
+                }
+            elif method_name == "della":
+                model_config["parameters"] = {
+                    "weight": float(weight * layer_group.parameters[0]),
+                    "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
+                    "epsilon": float(np.clip(layer_group.parameters[2], 0.0, 1.0)),
                 }
             elif method_name == "slerp":
                 # SLERP is handled differently - return a slice-based config
                 return self._slerp_config(selected_models, layer_group.parameters[0])
-                
+            elif method_name == "passthrough":
+                # No additional parameters required for passthrough, but keep model reference
+                pass
+            elif method_name == "arcee_fusion":
+                pass
+
             models.append(model_config)
             
         config_dict = {
