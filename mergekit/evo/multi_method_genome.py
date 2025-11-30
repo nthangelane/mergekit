@@ -435,7 +435,7 @@ class MultiMethodGenome:
             model_config: Dict[str, Any] = {"model": model_ref}
 
             # Add parameters
-            if method_name in ["linear", "task_arithmetic", "nuslerp", "karcher", "model_stock"]:
+            if method_name in ["linear", "task_arithmetic", "karcher", "model_stock"]:
                 model_config["parameters"] = {
                     "weight": float(weight * layer_group.parameters[0])
                 }
@@ -469,6 +469,8 @@ class MultiMethodGenome:
             elif method_name == "slerp":
                 # SLERP is handled differently - return a slice-based config
                 return self._slerp_config(selected_models, layer_group.parameters[0])
+            elif method_name == "nuslerp":
+                return self._nuslerp_config(layer_group, selected_models)
             elif method_name == "passthrough":
                 # No additional parameters required for passthrough, but keep model reference
                 pass
@@ -550,6 +552,74 @@ class MultiMethodGenome:
             config_dict["base_model"] = self.definition.base_model
         else:
             config_dict["base_model"] = model1
+
+        if self.definition.tokenizer_source:
+            config_dict["tokenizer_source"] = self.definition.tokenizer_source
+
+        return MergeConfiguration.model_validate(config_dict)
+
+    def _nuslerp_config(
+        self,
+        layer_group: LayerGroupGenome,
+        selected_models: List[Tuple[ModelReference, float]],
+    ) -> MergeConfiguration:
+        """Create a NuSLERP configuration ensuring the base model is excluded from sources."""
+
+        filtered = [
+            (model, weight)
+            for model, weight in selected_models
+            if model != self.definition.base_model
+        ]
+
+        if len(filtered) < 2:
+            weights = layer_group.model_selection
+            ordered_idx = np.argsort(-np.abs(weights))
+            filtered = []
+            for idx in ordered_idx:
+                if idx >= self.num_models:
+                    continue
+                model_ref = self.definition.models[idx]
+                if model_ref == self.definition.base_model:
+                    continue
+                filtered.append((model_ref, weights[idx]))
+                if len(filtered) == 2:
+                    break
+
+        if len(filtered) < 2:
+            for model_ref in self.definition.models:
+                if model_ref == self.definition.base_model:
+                    continue
+                if any(existing[0] == model_ref for existing in filtered):
+                    continue
+                filtered.append((model_ref, 1.0))
+                if len(filtered) == 2:
+                    break
+
+        if len(filtered) < 2:
+            raise ValueError(
+                "NuSLERP requires at least two non-base models to interpolate"
+            )
+
+        ordered = sorted(filtered, key=lambda item: abs(item[1]), reverse=True)[:2]
+        scale = float(layer_group.parameters[0])
+
+        models: List[Dict[str, Any]] = []
+        for model_ref, weight in ordered:
+            models.append(
+                {
+                    "model": model_ref,
+                    "parameters": {"weight": float(weight * scale)},
+                }
+            )
+
+        config_dict: Dict[str, Any] = {
+            "merge_method": "nuslerp",
+            "models": models,
+            "dtype": "bfloat16",
+        }
+
+        if self.definition.base_model is not None:
+            config_dict["base_model"] = self.definition.base_model
 
         if self.definition.tokenizer_source:
             config_dict["tokenizer_source"] = self.definition.tokenizer_source

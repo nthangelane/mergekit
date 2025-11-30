@@ -300,18 +300,18 @@ def evaluate_model(
         if device_arg is not None:
             eval_kwargs["device"] = device_arg
 
-        try:
-            res = _eval_model(
-                "vllm" if vllm else "huggingface",
-                tasks,
-                model_args,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                bootstrap_iters=0,
-                **eval_kwargs,
-            )
+            try:
+                res = _eval_model(
+                    "vllm" if vllm else "huggingface",
+                    tasks,
+                    model_args,
+                    num_fewshot=num_fewshot,
+                    limit=limit,
+                    batch_size=batch_size,
+                    task_manager=task_manager,
+                    bootstrap_iters=0,
+                    **eval_kwargs,
+                )
         except ValueError as exc:
             message = str(exc).lower()
             if "chat template" in message and eval_kwargs.get("apply_chat_template"):
@@ -334,6 +334,7 @@ def evaluate_model(
                 )
             else:
                 raise
+            _apply_metric_guards(res)
         return res
     finally:
         if merged_path:
@@ -407,6 +408,7 @@ def evaluate_model_cpu(
                 )
             else:
                 raise
+            _apply_metric_guards(res)
         return res
     finally:
         if merged_path:
@@ -459,3 +461,66 @@ merge_model_ray_cpu = ray.remote(
     max_retries=3,
     retry_exceptions=[ConnectionError],
 )(merge_model)
+
+
+def _apply_metric_guards(result: dict) -> None:
+    """Clamp obviously invalid evaluation metrics to safe defaults.
+
+    Marks a result as failed (score=None) when perplexity explodes, accuracy vanishes,
+    or metric payloads are malformed. Keeps downstream consumers from learning from
+    catastrophic merges while still logging raw outputs for debugging.
+    """
+
+    if not result:
+        return
+
+    score = result.get("score")
+    metrics = result.get("results") or {}
+
+    if score is None:
+        return
+
+    for task_name, task_metrics in metrics.items():
+        if not isinstance(task_metrics, dict):
+            continue
+
+        perplexity = task_metrics.get("perplexity,none")
+        accuracy = task_metrics.get("acc,none")
+
+        if perplexity is not None:
+            try:
+                if float(perplexity) > 1e5:
+                    logging.warning(
+                        "Perplexity %.3g for task %s exceeds guard threshold; marking evaluation as failed",
+                        float(perplexity),
+                        task_name,
+                    )
+                    result["score"] = None
+                    return
+            except (TypeError, ValueError):
+                logging.warning(
+                    "Non-numeric perplexity %r for task %s; marking evaluation as failed",
+                    perplexity,
+                    task_name,
+                )
+                result["score"] = None
+                return
+
+        if accuracy is not None:
+            try:
+                if float(accuracy) < 1e-3:
+                    logging.warning(
+                        "Accuracy %.3g for task %s below guard threshold; marking evaluation as failed",
+                        float(accuracy),
+                        task_name,
+                    )
+                    result["score"] = None
+                    return
+            except (TypeError, ValueError):
+                logging.warning(
+                    "Non-numeric accuracy %r for task %s; marking evaluation as failed",
+                    accuracy,
+                    task_name,
+                )
+                result["score"] = None
+                return
