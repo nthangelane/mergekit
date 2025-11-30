@@ -1,0 +1,36 @@
+# Merge configuration for small GPT-2-style models, suitable for ~16 GB RAM CPU hosts.
+
+genome:
+  merge_method: multi_method
+  layer_granularity: 0   # whole-model / whole-layer merges
+  base_model: openai-community/gpt2        # anchor model for relative methods
+  models:
+    - openai-community/gpt2                # base English WebText GPT-2 small
+    - cwestnedge/gpt2-small-pubmed         # biomedical domain
+    - dbddv01/gpt2-french-small            # French
+  max_models_per_layer: 2                  # limit selections for pairwise methods
+  allowed_methods:
+    - linear                               # linear weight-space merges
+    - task_arithmetic                      # task-vector style blending
+    - ties                                 # TIES sparse merge
+    - dare_ties                            # DARE + TIES hybrid
+    - dare_linear                          # DARE with dense linear mix
+    - slerp                                # spherical interpolation anchor
+    - nuslerp                              # non-uniform SLERP variant
+
+tasks:
+  - name: lambada_openai
+    weight: 0.4
+    metric: acc,none
+
+ga:
+  population_size: 36
+  elite_fraction: 0.2
+  mutation_rate: 0.3
+  mutation_sigma: 0.08
+  crossover: semantic
+  tournament_size: 7
+
+random_init: false
+limit: 64
+num_fewshot: 0

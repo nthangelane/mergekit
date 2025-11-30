@@ -47,10 +47,15 @@ def select_dtype(
     if config.dtype:
         out_dtype = dtype_from_name(config.dtype)
 
-    if out_dtype is None and base_cfg.torch_dtype:
-        out_dtype = base_cfg.torch_dtype
-        if isinstance(out_dtype, str):
-            out_dtype = dtype_from_name(out_dtype)
+    if out_dtype is None:
+        base_dtype = getattr(base_cfg, "dtype", None)
+        if base_dtype is None:
+            base_dtype = getattr(base_cfg, "torch_dtype", None)
+        if base_dtype is not None:
+            if isinstance(base_dtype, str):
+                out_dtype = dtype_from_name(base_dtype)
+            else:
+                out_dtype = base_dtype
     return out_dtype
 
 

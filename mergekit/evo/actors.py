@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import gc
+import os
 import logging
 import tempfile
 from typing import Optional, Union
@@ -30,11 +31,17 @@ from mergekit.common import (
     call_with_dtype,
     get_torch_accelerator_module,
     get_torch_accelerator_type,
+    set_config_dtype_field,
 )
 from mergekit.config import MergeConfiguration
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
-from mergekit.evo.helpers import _eval_model, evaluate_model, merge_model
+from mergekit.evo.helpers import (
+    _eval_model,
+    evaluate_model,
+    evaluate_model_cpu,
+    merge_model,
+)
 from mergekit.evo.monkeypatch import (
     NoInit,
     monkeypatch_lmeval_shuffle,
@@ -113,16 +120,20 @@ class OnDiskMergeEvaluator(MergeActorBase):
             LOG.error("Model merge failed")
             return {"score": None, "results": None}
 
-        model_kwargs = {}
+        model_kwargs = {
+            "device": "cpu",
+            "dtype": "float32",
+            "device_map": None,
+            "low_cpu_mem_usage": False,
+        }
         if self.quantization_config is not None:
             model_kwargs["quantization_config"] = self.quantization_config
         LOG.info(f"Model merged to {merged_path}")
-        return evaluate_model(
+        return evaluate_model_cpu(
             merged_path,
             self.config.tasks,
             num_fewshot=self.config.num_fewshot,
             limit=self.config.limit,
-            vllm=self.vllm,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
             apply_chat_template=self.config.apply_chat_template,
@@ -142,6 +153,7 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
 
     def evaluate_genotype(self, genotype: torch.Tensor) -> dict:
         gc.collect()
+        os.environ.setdefault("TRANSFORMERS_NO_CUDA", "1")
         LOG.info("Merging model (CPU)")
         merged_path = merge_model(
             genotype, self.genome, self.model_storage_path, self.merge_options
@@ -150,16 +162,20 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
             LOG.error("Model merge failed")
             return {"score": None, "results": None}
 
-        model_kwargs = {}
+        model_kwargs = {
+            "device": "cpu",
+            "dtype": "float32",
+            "device_map": None,
+            "low_cpu_mem_usage": False,
+        }
         if self.quantization_config is not None:
             model_kwargs["quantization_config"] = self.quantization_config
         LOG.info(f"Model merged to {merged_path}")
-        return evaluate_model(
+        return evaluate_model_cpu(
             merged_path,
             self.config.tasks,
             num_fewshot=self.config.num_fewshot,
             limit=self.config.limit,
-            vllm=False,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
             apply_chat_template=self.config.apply_chat_template,
@@ -202,8 +218,7 @@ class InMemoryMergeEvaluator(MergeActorBase):
             trust_remote_code=self.merge_options.trust_remote_code,
         )
         cfg_out.use_cache = True
-        setattr(cfg_out, "dtype", torch.bfloat16)
-        setattr(cfg_out, "torch_dtype", torch.bfloat16)
+        set_config_dtype_field(cfg_out, torch.bfloat16)
 
         if self.arch_info is not None:
             different = False
@@ -211,7 +226,7 @@ class InMemoryMergeEvaluator(MergeActorBase):
                 if key in ["architectures", "model_type"]:
                     # to get to here we must have --allow-crimes set, so let it ride
                     continue
-                elif key in ["use_cache", "torch_dtype"]:
+                elif key in ["use_cache", "dtype", "torch_dtype"]:
                     continue
                 elif key.endswith("_token_id"):
                     # update our config but don't fail if it's different

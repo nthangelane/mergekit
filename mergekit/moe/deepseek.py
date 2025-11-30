@@ -11,6 +11,7 @@ import tqdm
 import transformers
 
 from mergekit.architecture import arch_info_for_config
+from mergekit.common import set_config_dtype_field
 from mergekit.moe.arch import MoEOutputArchitecture
 from mergekit.moe.common import copy_tensor_out, initialize_io, select_dtype
 from mergekit.moe.config import MoEMergeConfig
@@ -117,7 +118,7 @@ class DeepseekMoE(MoEOutputArchitecture):
             config.experts_per_token,
         )
         if out_dtype is not None:
-            out_cfg["torch_dtype"] = str(out_dtype).removeprefix("torch.")
+            set_config_dtype_field(out_cfg, str(out_dtype).removeprefix("torch."))
         with open(os.path.join(out_path, "config.json"), "w", encoding="utf-8") as f:
             json.dump(out_cfg, f, indent=4)
 

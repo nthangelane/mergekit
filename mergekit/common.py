@@ -33,6 +33,44 @@ from typing_extensions import TypeVar
 from mergekit.io import LazyTensorLoader, ShardedTensorIndex
 
 
+def _coerce_dtype_value(dtype: Optional[Union[str, torch.dtype]]) -> Optional[str]:
+    """Normalize dtype inputs into a string value suitable for serialization."""
+    if dtype is None:
+        return None
+    if isinstance(dtype, str):
+        return dtype
+    if isinstance(dtype, torch.dtype):
+        return str(dtype).split(".")[-1]
+    return str(dtype)
+
+
+def set_config_dtype_field(
+    target: Union["transformers.PretrainedConfig", Dict[str, Any]],
+    dtype: Optional[Union[str, torch.dtype]],
+) -> None:
+    """Assign the preferred ``dtype`` field and drop deprecated ``torch_dtype`` usage."""
+
+    value = _coerce_dtype_value(dtype)
+    if value is None:
+        return
+
+    if isinstance(target, dict):
+        # ensure stale values do not survive serialization
+        target.pop("torch_dtype", None)
+        target["dtype"] = value
+        return
+
+    setattr(target, "dtype", value)
+    # Some configs expose torch_dtype via __dict__, others via descriptors
+    if hasattr(target, "__dict__") and "torch_dtype" in target.__dict__:
+        target.__dict__.pop("torch_dtype", None)
+    else:  # pragma: no cover - defensive path for descriptor-based configs
+        try:
+            delattr(target, "torch_dtype")
+        except AttributeError:
+            pass
+
+
 def call_with_dtype(
     factory: Callable,
     *args,

@@ -16,7 +16,9 @@
 import logging
 import math
 import os
+import shutil
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import click
@@ -25,9 +27,11 @@ import pandas
 import ray
 import torch
 import tqdm
-import transformers
 import yaml
-import lm_eval.tasks
+
+
+# Default to disabling tokenizer parallelism to avoid fork-safety warnings.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 try:
@@ -52,6 +56,7 @@ from mergekit.evo.strategy import (
     BufferedRayEvaluationStrategy,
     SerialEvaluationStrategy,
 )
+from mergekit.evo.task_utils import create_task_manager
 from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
@@ -63,6 +68,28 @@ LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
 def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
     """Emit a structured log message for high-level run stages."""
     LOGGER.log(level, "[%s] %s", stage, message)
+
+
+def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]] = None) -> None:
+    """Purge transient merged model directories to keep disk usage in check."""
+
+    merged_dir = Path(storage_path) / "merged"
+    if not merged_dir.exists():
+        return
+
+    keep_resolved = {p.resolve() for p in (keep or [])}
+    for entry in merged_dir.iterdir():
+        try:
+            resolved = entry.resolve()
+        except FileNotFoundError:  # pragma: no cover - concurrent cleanup window
+            continue
+
+        if resolved in keep_resolved:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
 
 
 @click.command("mergekit-evolve-ga")
@@ -245,6 +272,7 @@ def main(
     task_search_path = list(task_search_path)
 
     baseline_csv_path = None
+    baseline_best_score: Optional[float] = None
     if run_baseline:
         baseline_csv_path = run_baseline_evaluations(
             config,
@@ -255,6 +283,19 @@ def main(
             task_search_path,
             trust_remote_code,
         )
+        if baseline_csv_path:
+            try:
+                baseline_df = pandas.read_csv(baseline_csv_path)
+                if "weighted_score" in baseline_df.columns:
+                    numeric_scores = baseline_df["weighted_score"].dropna()
+                    if not numeric_scores.empty:
+                        baseline_best_score = float(numeric_scores.max())
+            except Exception as exc:  # pragma: no cover - defensive logging only
+                stage_log(
+                    "Stage-Baseline",
+                    f"Failed to parse baseline_results.csv for summary metrics: {exc}",
+                    level=logging.WARNING,
+                )
     else:
         stage_log("Stage-Baseline", "Skipping baseline evaluation (--no-baseline).")
 
@@ -396,7 +437,12 @@ def main(
         tracker.log_best_individual(x, score, step, genome)
 
     def save_best_config(x: np.ndarray):
-        best_yaml = genome.genotype_merge_config(x).to_yaml()
+        if genome_type == 'multi_method':
+            merge_config = genome.genotype_to_merge_config(x)
+        else:
+            merge_config = genome.genotype_merge_config(x)
+
+        best_yaml = merge_config.to_yaml()
         config_path = os.path.join(storage_path, "best_config.yaml")
         with open(config_path, "w") as f:
             f.write(best_yaml)
@@ -453,6 +499,51 @@ def main(
 
     best_x = None
     best_score = -np.inf
+    generation_durations: List[float] = []
+    generation_best_history: List[float] = []
+    last_global_best = float("-inf")
+    total_generations = max(1, math.ceil(max_fevals / max(ga_params.population_size, 1)))
+
+    def _format_time(seconds: Optional[float]) -> str:
+        if seconds is None or not math.isfinite(seconds) or seconds <= 0:
+            return "--"
+        if seconds >= 3600:
+            hours = seconds / 3600.0
+            return f"{hours:.1f}h"
+        if seconds >= 60:
+            minutes = seconds / 60.0
+            return f"{minutes:.1f}m"
+        return f"{seconds:.0f}s"
+
+    def on_generation_start(
+        generation_idx: int,
+        fevals_completed: int,
+        fevals_limit: int,
+        population_size: int,
+        current_best: float,
+    ) -> None:
+        completed = len(generation_durations)
+        avg_seconds = (
+            sum(generation_durations) / completed if completed > 0 else None
+        )
+        remaining_generations = max(total_generations - completed, 0)
+        eta_seconds = (
+            avg_seconds * remaining_generations if avg_seconds is not None else None
+        )
+
+        current_best_str = (
+            f"{current_best:.4f}"
+            if math.isfinite(current_best) and current_best > float("-inf")
+            else "--"
+        )
+        print(
+            f"[GA] === Generation {generation_idx}/{total_generations} ==="
+        )
+        print(
+            f"[GA] Progress: fevals={fevals_completed}/{fevals_limit} | "
+            f"current best={current_best_str} | avg/gen={_format_time(avg_seconds)} | "
+            f"ETA~{_format_time(eta_seconds)}"
+        )
 
     def on_pop(res_list: List[dict], pop_arr: np.ndarray, step: int, info: dict):
         # population stats
@@ -475,10 +566,64 @@ def main(
         crossover_type = info.get("crossover_type", ga_params.crossover)
         immigrants = int(info.get("immigrants", 0))
 
+        nonlocal last_global_best
+
+        if gen_best is not None:
+            generation_best_history.append(gen_best)
+        prev_best = last_global_best if math.isfinite(last_global_best) else None
+        gen_best_val = gen_best if gen_best is not None else float("-inf")
+        new_global_best = (
+            gen_best_val
+            if prev_best is None
+            else max(prev_best, gen_best_val)
+        )
+        improvement = (
+            None
+            if prev_best is None
+            else new_global_best - prev_best
+        )
+        last_global_best = new_global_best
+
+        gen_best_str = (
+            f"{gen_best:.6f}" if gen_best is not None else "None"
+        )
+        gen_mean_str = (
+            f"{gen_mean:.6f}" if gen_mean is not None else "None"
+        )
+        gen_std_str = (
+            f"{gen_std:.6f}" if gen_std is not None else "None"
+        )
+        global_best_str = (
+            f"{new_global_best:.6f}"
+            if math.isfinite(new_global_best) and new_global_best > float("-inf")
+            else "None"
+        )
+        if improvement is None:
+            delta_str = "init"
+        else:
+            delta_str = f"{improvement:+.6f}"
+
         print(
-            f"[GA] gen={generation} best={gen_best} mean={gen_mean} std={gen_std} "
+            f"[GA] gen={generation} best={gen_best_str} mean={gen_mean_str} std={gen_std_str} "
+            f"global_best={global_best_str} Δbest={delta_str} "
             f"evaluated={evaluations} cache_hits={cache_hits} failed={failed_evals} "
             f"crossover_children={crossover_children} type={crossover_type} immigrants={immigrants}"
+        )
+
+        generation_durations.append(max(float(eval_seconds), 0.0))
+        completed_generations = len(generation_durations)
+        avg_seconds = (
+            sum(generation_durations) / completed_generations
+            if completed_generations > 0
+            else None
+        )
+        remaining_generations = max(total_generations - completed_generations, 0)
+        eta_seconds = (
+            avg_seconds * remaining_generations if avg_seconds is not None else None
+        )
+        print(
+            f"[GA] Progress update: completed={completed_generations}/{total_generations} "
+            f"avg/gen={_format_time(avg_seconds)} | ETA~{_format_time(eta_seconds)}"
         )
 
         # Write/append CSV history for offline tracking
@@ -538,6 +683,8 @@ def main(
                 top_scores[f"population/top{k}"] = float(v)
             tracker.log_metrics(top_scores, step=step)
 
+        prune_stale_merged_artifacts(storage_path)
+
     def on_best(x: np.ndarray, score: float, step: int):
         nonlocal best_x, best_score
         best_x = x.copy()
@@ -578,6 +725,7 @@ def main(
             seed=random_seed,
             on_population_evaluated=on_pop,
             on_new_best=on_best,
+            on_generation_start=on_generation_start,
         )
     else:
         # Use traditional optimizer
@@ -589,6 +737,7 @@ def main(
             seed=random_seed,
             on_population_evaluated=on_pop,
             on_new_best=on_best,
+            on_generation_start=on_generation_start,
         )
 
     if baseline_csv_path:
@@ -596,10 +745,16 @@ def main(
             "Stage-GA",
             f"Baseline metrics located at {baseline_csv_path}",
         )
+        if baseline_best_score is not None and math.isfinite(baseline_best_score):
+            stage_log(
+                "Stage-GA",
+                f"Best baseline weighted_score: {baseline_best_score:.4f}",
+            )
     else:
         stage_log("Stage-GA", "No baseline metrics available for this run.")
 
     stage_log("Stage-GA", "Starting GA optimization loop...")
+    prune_stale_merged_artifacts(storage_path)
     try:
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
     except KeyboardInterrupt:
@@ -607,6 +762,43 @@ def main(
 
     stage_log("Stage-GA", "Optimization complete.")
     stage_log("Stage-GA", f"Best score achieved: {best_score:.4f}")
+
+    if generation_best_history:
+        initial_best = generation_best_history[0]
+        final_best = max(generation_best_history)
+        delta_overall = final_best - initial_best
+        summary_parts = [
+            f"generations={len(generation_best_history)}",
+            f"initial_best={initial_best:.4f}",
+            f"final_best={final_best:.4f}",
+            f"Δbest={delta_overall:+.4f}",
+        ]
+        if (
+            baseline_best_score is not None
+            and math.isfinite(baseline_best_score)
+        ):
+            baseline_delta = final_best - baseline_best_score
+            summary_parts.append(
+                f"baseline_best={baseline_best_score:.4f}"
+            )
+            summary_parts.append(f"Δvs_baseline={baseline_delta:+.4f}")
+            if baseline_best_score != 0.0:
+                pct_change = (baseline_delta / baseline_best_score) * 100.0
+                pct_str = (
+                    f"Δvs_baseline_pct={pct_change:+.2f}%"
+                    if math.isfinite(pct_change)
+                    else "Δvs_baseline_pct=undefined"
+                )
+            else:  # pragma: no cover - guard against zero baseline best
+                pct_str = "Δvs_baseline_pct=undefined"
+            summary_parts.append(pct_str)
+
+        stage_log(
+            "Stage-GA",
+            "Run summary: " + " ".join(summary_parts),
+        )
+    else:
+        stage_log("Stage-GA", "Run summary: no successful generations recorded.")
 
     # pause for a bit to let any CUDA-using processes clean up
     time.sleep(1.0)
@@ -653,6 +845,7 @@ def main(
                         "Stage-GA",
                         f"You can manually upload from: {os.path.join(storage_path, 'final_model')}",
                     )
+        prune_stale_merged_artifacts(storage_path)
     else:
         stage_log(
             "Stage-GA",
@@ -663,6 +856,7 @@ def main(
         stage_log("Stage-GA", "- Model compatibility issues")
         stage_log("Stage-GA", "- Evaluation environment problems")
         stage_log("Stage-GA", "- Insufficient population size or evaluations")
+        prune_stale_merged_artifacts(storage_path)
 
 
 def run_baseline_evaluations(
@@ -688,9 +882,7 @@ def run_baseline_evaluations(
         stage_log("Stage-Baseline", "No models found in the genome; skipping baselines.")
         return None
 
-    task_manager = lm_eval.tasks.TaskManager(
-        include_path=list(task_search_path) or None
-    )
+    task_manager = create_task_manager(task_search_path)
 
     use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
     device = "cuda" if use_cuda else "cpu"
@@ -732,6 +924,7 @@ def run_baseline_evaluations(
                 limit=config.limit,
                 batch_size=batch_size,
                 task_manager=task_manager,
+                bootstrap_iters=0,
                 **eval_kwargs,
             )
         except Exception as exc:  # pragma: no cover - evaluation depends on environment

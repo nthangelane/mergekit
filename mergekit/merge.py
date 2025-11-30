@@ -15,7 +15,12 @@ import transformers
 from mergekit._data import chat_templates
 from mergekit.architecture import ModelArchitecture, get_architecture_info
 from mergekit.card import generate_card
-from mergekit.common import ModelReference, get_config_value, set_config_value
+from mergekit.common import (
+    ModelReference,
+    get_config_value,
+    set_config_dtype_field,
+    set_config_value,
+)
 from mergekit.config import MergeConfiguration
 from mergekit.graph import Executor
 from mergekit.io.tasks import LoaderCache
@@ -287,9 +292,9 @@ def _model_out_config(
     else:
         res = config.referenced_models()[0].config(trust_remote_code=trust_remote_code)
     if config.out_dtype:
-        res.torch_dtype = config.out_dtype
+        set_config_dtype_field(res, config.out_dtype)
     elif config.dtype:
-        res.torch_dtype = config.dtype
+        set_config_dtype_field(res, config.dtype)
 
     vocab_key = arch_info.vocab_size_config_key or "vocab_size"
     max_vocab_size = None

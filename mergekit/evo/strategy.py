@@ -29,6 +29,7 @@ from mergekit.evo.helpers import (
     merge_model_ray,
     merge_model_ray_cpu,
 )
+from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
 
 
@@ -55,7 +56,7 @@ class EvaluationStrategyBase(ABC):
         )
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.task_manager = lm_eval.tasks.TaskManager(include_path=task_search_path)
+        self.task_manager = create_task_manager(task_search_path)
         self.model_storage_path = model_storage_path
         self.quantization_config = quantization_config
         if self.model_storage_path:

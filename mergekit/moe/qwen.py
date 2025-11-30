@@ -13,6 +13,7 @@ import transformers
 from transformers.models.qwen2_moe import Qwen2MoeConfig
 
 from mergekit.architecture.json_definitions import NAME_TO_ARCH
+from mergekit.common import set_config_dtype_field
 from mergekit.moe.arch import MoEOutputArchitecture
 from mergekit.moe.common import copy_tensor_out, initialize_io, select_dtype
 from mergekit.moe.config import MoEMergeConfig
@@ -109,7 +110,7 @@ class QwenMoE(MoEOutputArchitecture):
             config.experts_per_token,
         )
         if out_dtype is not None:
-            out_cfg.torch_dtype = out_dtype
+            set_config_dtype_field(out_cfg, out_dtype)
         out_cfg.save_pretrained(out_path)
 
         shared_def = config.shared_experts[0]

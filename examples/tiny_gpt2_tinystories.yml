@@ -1,0 +1,32 @@
+# Merge configuration for extremely small models suitable for memory-constrained hosts.
+# Designed for experimentation on machines with ~16 GB system RAM and without GPUs.
+
+# Linear merge genome across compatible GPT-2 style models.
+genome:
+  merge_method: multi_method
+  layer_granularity: 0
+  models:
+    - roneneldan/TinyStories-1M
+    - roneneldan/TinyStories-1M
+  allowed_methods:
+    - linear
+
+# Evaluate on lightweight language modeling tasks.
+tasks:
+
+  - name: lambada_openai
+    weight: 0.4
+    metric: acc,none
+
+# GA hyperparameters kept intentionally tiny for quick iteration.
+ga:
+  population_size: 6
+  elite_fraction: 0.25
+  mutation_rate: 0.3
+  mutation_sigma: 0.1
+  crossover: semantic
+  tournament_size: 3
+
+random_init: false
+limit: 64
+num_fewshot: 0

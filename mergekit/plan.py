@@ -167,10 +167,9 @@ class MergePlanner:
             any_weight = False
             for model, w_in in zip(models, weights_in):
                 index = LoaderCache().get(model).index
-                if any(
-                    name in index.tensor_paths
-                    for name in [w_in.name] + (w_in.aliases or [])
-                ):
+                alias_names = list(w_in.aliases) if w_in.aliases else []
+                candidate_names = [w_in.name] + alias_names
+                if any(name in index.tensor_paths for name in candidate_names):
                     any_weight = True
                     break
 

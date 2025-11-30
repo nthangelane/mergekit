@@ -14,6 +14,7 @@ from mergekit.evo.strategy import EvaluationStrategyBase
 
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, float]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
+OnGenerationStart = Callable[[int, int, int, int, float], None]
 
 
 @dataclass
@@ -54,6 +55,7 @@ class EnhancedGAOptimizer:
         seed: Optional[int] = None,
         on_population_evaluated: Optional[OnPopulationEvaluated] = None,
         on_new_best: Optional[OnNewBest] = None,
+        on_generation_start: Optional[OnGenerationStart] = None,
     ):
         self.genome = genome
         self.strategy = strategy
@@ -62,6 +64,7 @@ class EnhancedGAOptimizer:
         self.rs = np.random.RandomState(seed) if seed is not None else np.random
         self.on_population_evaluated = on_population_evaluated
         self.on_new_best = on_new_best
+        self.on_generation_start = on_generation_start
 
         # Determine genome type and capabilities
         self.is_multi_method = isinstance(genome, MultiMethodGenome)
@@ -98,6 +101,15 @@ class EnhancedGAOptimizer:
         while fevals < max_fevals and (
             timeout is None or (time.time() - start_time) < timeout
         ):
+            generation_idx = fevals // self.pop_size + 1
+            if self.on_generation_start:
+                self.on_generation_start(
+                    generation_idx,
+                    fevals,
+                    max_fevals,
+                    self.pop_size,
+                    float(best_score),
+                )
             t0 = time.time()
             fitness, res_list = self._evaluate_population(pop)
             fevals += self.pop_size
@@ -120,7 +132,7 @@ class EnhancedGAOptimizer:
                     "gen_std": gen_std,
                     "best_so_far": float(best_score),
                     "timestamp": datetime.datetime.now().isoformat(),
-                    "generation": int(max(1, fevals // self.pop_size)),
+                    "generation": int(generation_idx),
                 }
                 info.update(self._last_eval_stats)
                 info.update(self._prev_generation_breeding)

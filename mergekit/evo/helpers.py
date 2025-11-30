@@ -270,11 +270,15 @@ def evaluate_model(
     # monkeypatch_tqdm()
     monkeypatch_lmeval_vllm()
     try:
+        if not merged_path:
+            logging.error("No merged model path provided; skipping evaluation.")
+            return {"score": None, "results": {}}
         extra_model_kwargs = dict(model_kwargs or {})
         requested_device = extra_model_kwargs.pop("device", None)
         model_args = {
             "pretrained": merged_path,
             "dtype": "bfloat16",
+            "local_files_only": True,
             **extra_model_kwargs,
         }
 
@@ -296,19 +300,44 @@ def evaluate_model(
         if device_arg is not None:
             eval_kwargs["device"] = device_arg
 
-        res = _eval_model(
-            "vllm" if vllm else "huggingface",
-            tasks,
-            model_args,
-            num_fewshot=num_fewshot,
-            limit=limit,
-            batch_size=batch_size,
-            task_manager=task_manager,
-            **eval_kwargs,
-        )
+        try:
+            res = _eval_model(
+                "vllm" if vllm else "huggingface",
+                tasks,
+                model_args,
+                num_fewshot=num_fewshot,
+                limit=limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                bootstrap_iters=0,
+                **eval_kwargs,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                logging.warning(
+                    "Chat template requested but tokenizer lacks template; retrying without chat formatting."
+                )
+                fallback_kwargs = dict(eval_kwargs)
+                fallback_kwargs["apply_chat_template"] = False
+                fallback_kwargs["fewshot_as_multiturn"] = False
+                res = _eval_model(
+                    "vllm" if vllm else "huggingface",
+                    tasks,
+                    model_args,
+                    num_fewshot=num_fewshot,
+                    limit=limit,
+                    batch_size=batch_size,
+                    task_manager=task_manager,
+                    bootstrap_iters=0,
+                    **fallback_kwargs,
+                )
+            else:
+                raise
         return res
     finally:
-        shutil.rmtree(merged_path)
+        if merged_path:
+            shutil.rmtree(merged_path, ignore_errors=True)
 
 
 evaluate_model_ray = ray.remote(num_cpus=1, num_gpus=1.0)(evaluate_model)
@@ -321,29 +350,67 @@ def evaluate_model_cpu(
     limit: Optional[int],
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    model_kwargs: Optional[Dict[str, Any]] = None,
+    **kwargs,
 ) -> dict:
     """CPU-only evaluation using HuggingFace backend and float32."""
     monkeypatch_lmeval_vllm()
     try:
+        if not merged_path:
+            logging.error("No merged model path provided; skipping CPU evaluation.")
+            return {"score": None, "results": {}}
+        extra_kwargs = dict(model_kwargs or {})
+        # Force CPU execution regardless of caller-specified overrides
+        device_override = extra_kwargs.pop("device", "cpu")
+        extra_kwargs.setdefault("dtype", "float32")
+        extra_kwargs.setdefault("device_map", None)
+        extra_kwargs.setdefault("low_cpu_mem_usage", False)
         model_args = {
             "pretrained": merged_path,
-            "dtype": "float32",
             "use_cache": True,
+            "local_files_only": True,
+            **extra_kwargs,
         }
-        eval_kwargs: Dict[str, Any] = {"device": "cpu"}
-        res = _eval_model(
-            "huggingface",
-            tasks,
-            model_args,
-            num_fewshot=num_fewshot,
-            limit=limit,
-            batch_size=batch_size,
-            task_manager=task_manager,
-            **eval_kwargs,
-        )
+        eval_kwargs: Dict[str, Any] = {"device": device_override}
+        eval_kwargs.update(kwargs)
+        try:
+            res = _eval_model(
+                "huggingface",
+                tasks,
+                model_args,
+                num_fewshot=num_fewshot,
+                limit=limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                bootstrap_iters=0,
+                **eval_kwargs,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                logging.warning(
+                    "Chat template requested but tokenizer lacks template; retrying without chat formatting."
+                )
+                fallback_kwargs = dict(eval_kwargs)
+                fallback_kwargs["apply_chat_template"] = False
+                fallback_kwargs["fewshot_as_multiturn"] = False
+                res = _eval_model(
+                    "huggingface",
+                    tasks,
+                    model_args,
+                    num_fewshot=num_fewshot,
+                    limit=limit,
+                    batch_size=batch_size,
+                    task_manager=task_manager,
+                    bootstrap_iters=0,
+                    **fallback_kwargs,
+                )
+            else:
+                raise
         return res
     finally:
-        shutil.rmtree(merged_path)
+        if merged_path:
+            shutil.rmtree(merged_path, ignore_errors=True)
 
 
 evaluate_model_ray_cpu = ray.remote(num_cpus=1)(evaluate_model_cpu)
