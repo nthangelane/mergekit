@@ -20,14 +20,14 @@ genome:
 
 tasks:
   - name: lambada_openai
-    weight: 0.4
-    metric: acc,none
+    weight: 1.0
+    metric: acc
 
 ga:
   population_size: 36
   elite_fraction: 0.2
   mutation_rate: 0.3
-  mutation_sigma: 0.08
+  mutation_sigma: 0.28
   crossover: semantic
   tournament_size: 7
 

@@ -34,6 +34,18 @@ from mergekit.options import MergeOptions
 
 LOG = logging.getLogger(__name__)
 
+_CHAT_TEMPLATE_WARNING_EMITTED = False
+
+
+def _emit_chat_template_retry_warning() -> None:
+    """Log the chat template fallback warning only once per process."""
+    global _CHAT_TEMPLATE_WARNING_EMITTED
+    if not _CHAT_TEMPLATE_WARNING_EMITTED:
+        LOG.warning(
+            "Chat template requested but tokenizer lacks template; retrying without chat formatting."
+        )
+        _CHAT_TEMPLATE_WARNING_EMITTED = True
+
 _SIGNATURE_FIELDS = (
     "architectures",
     "model_type",
@@ -300,24 +312,22 @@ def evaluate_model(
         if device_arg is not None:
             eval_kwargs["device"] = device_arg
 
-            try:
-                res = _eval_model(
-                    "vllm" if vllm else "huggingface",
-                    tasks,
-                    model_args,
-                    num_fewshot=num_fewshot,
-                    limit=limit,
-                    batch_size=batch_size,
-                    task_manager=task_manager,
-                    bootstrap_iters=0,
-                    **eval_kwargs,
-                )
+        try:
+            res = _eval_model(
+                "vllm" if vllm else "huggingface",
+                tasks,
+                model_args,
+                num_fewshot=num_fewshot,
+                limit=limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                bootstrap_iters=0,
+                **eval_kwargs,
+            )
         except ValueError as exc:
             message = str(exc).lower()
             if "chat template" in message and eval_kwargs.get("apply_chat_template"):
-                logging.warning(
-                    "Chat template requested but tokenizer lacks template; retrying without chat formatting."
-                )
+                _emit_chat_template_retry_warning()
                 fallback_kwargs = dict(eval_kwargs)
                 fallback_kwargs["apply_chat_template"] = False
                 fallback_kwargs["fewshot_as_multiturn"] = False
@@ -334,6 +344,7 @@ def evaluate_model(
                 )
             else:
                 raise
+        else:
             _apply_metric_guards(res)
         return res
     finally:
@@ -389,9 +400,7 @@ def evaluate_model_cpu(
         except ValueError as exc:
             message = str(exc).lower()
             if "chat template" in message and eval_kwargs.get("apply_chat_template"):
-                logging.warning(
-                    "Chat template requested but tokenizer lacks template; retrying without chat formatting."
-                )
+                _emit_chat_template_retry_warning()
                 fallback_kwargs = dict(eval_kwargs)
                 fallback_kwargs["apply_chat_template"] = False
                 fallback_kwargs["fewshot_as_multiturn"] = False
@@ -408,6 +417,7 @@ def evaluate_model_cpu(
                 )
             else:
                 raise
+        else:
             _apply_metric_guards(res)
         return res
     finally:

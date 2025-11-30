@@ -18,6 +18,7 @@ import math
 import os
 import shutil
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -549,6 +550,65 @@ def main(
         # population stats
         log_population(res_list, step)
 
+        base_model_counter: Counter[str] = Counter()
+        method_counter: Counter[str] = Counter()
+
+        def _record_base_model(model_ref) -> None:
+            if model_ref:
+                try:
+                    base_model_counter[str(model_ref)] += 1
+                except Exception:  # pragma: no cover - defensive string conversion
+                    base_model_counter[repr(model_ref)] += 1
+
+        def _tally_config(genotype_candidate: np.ndarray) -> None:
+            try:
+                cfg = (
+                    genome.genotype_to_merge_config(genotype_candidate)
+                    if hasattr(genome, "genotype_to_merge_config")
+                    else genome.genotype_merge_config(genotype_candidate)
+                )
+            except Exception as exc:  # pragma: no cover - diagnostic only
+                logging.debug(
+                    "Unable to decode genotype for GA history counters", exc_info=exc
+                )
+                return
+
+            method = getattr(cfg, "merge_method", None)
+            if method:
+                method_counter[str(method)] += 1
+
+            _record_base_model(getattr(cfg, "base_model", None))
+
+            if cfg.slices:
+                for slice_def in cfg.slices:
+                    _record_base_model(getattr(slice_def, "base_model", None))
+
+            if cfg.modules:
+                for module_def in cfg.modules.values():
+                    if module_def.slices:
+                        for slice_def in module_def.slices:
+                            _record_base_model(getattr(slice_def, "base_model", None))
+
+        if isinstance(pop_arr, np.ndarray):
+            if pop_arr.ndim <= 1:
+                genotype_iterable = [pop_arr]
+            else:
+                genotype_iterable = [pop_arr[i] for i in range(pop_arr.shape[0])]
+        else:
+            genotype_iterable = list(pop_arr)
+
+        for genotype_candidate in genotype_iterable:
+            _tally_config(genotype_candidate)
+
+        def _format_counter(counter: Counter[str]) -> str:
+            if not counter:
+                return ""
+            items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+            return ";".join(f"{key}:{value}" for key, value in items)
+
+        base_model_counts_str = _format_counter(base_model_counter)
+        merge_method_counts_str = _format_counter(method_counter)
+
         # Compute CSV row values
         generation = int(
             info.get("generation", max(1, step // ga_params.population_size))
@@ -632,12 +692,13 @@ def main(
             header = (
                 "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,"
                 "eval_seconds,timestamp,evaluations,cache_hits,failed_evals,crossover_children,"
-                "crossover_type,immigrants\n"
+                "crossover_type,immigrants,base_model_counts,merge_method_counts\n"
             )
             line = (
                 f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},"
                 f"{ga_params.mutation_sigma},{eval_seconds},{timestamp},{evaluations},"
-                f"{cache_hits},{failed_evals},{crossover_children},{crossover_type},{immigrants}\n"
+                f"{cache_hits},{failed_evals},{crossover_children},{crossover_type},{immigrants},"
+                f"{base_model_counts_str},{merge_method_counts_str}\n"
             )
             if not os.path.exists(hist_path):
                 with open(hist_path, "w", encoding="utf-8") as f:

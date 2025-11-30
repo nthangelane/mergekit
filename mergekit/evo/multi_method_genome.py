@@ -283,7 +283,11 @@ class MultiMethodGenome:
     def decode_genotype(self, genotype: Union[torch.Tensor, np.ndarray]) -> List[LayerGroupGenome]:
         """Decode a flat genotype into structured layer group genomes."""
         if isinstance(genotype, np.ndarray):
-            genotype = torch.from_numpy(genotype).float()
+            # Copy ensures we do not keep a read-only NumPy view that would warn when
+            # converted into a tensor during Ray deserialization.
+            genotype = torch.tensor(genotype, dtype=torch.float32)
+        else:
+            genotype = genotype.float()
             
         layer_groups = []
         
