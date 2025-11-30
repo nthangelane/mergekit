@@ -76,6 +76,7 @@ class GAOptimizer:
         self.on_generation_start = on_generation_start
 
         x0 = self.genome.initial_genotype(random=self.random_init).view(-1).numpy()
+        self._baseline_genotype = x0.astype(np.float32)
         self.dim = x0.shape[0]
 
         self.pop_size = max(2, int(self.params.population_size))
@@ -96,6 +97,8 @@ class GAOptimizer:
             timeout is None or (time.time() - start_time) < timeout
         ):
             generation_idx = fevals // self.pop_size + 1
+            # Ensure every generation evaluates a known-good linear baseline so we never regress
+            pop[0] = self._baseline_genotype.copy()
             if self.on_generation_start:
                 self.on_generation_start(
                     generation_idx,
@@ -170,6 +173,8 @@ class GAOptimizer:
                 )
 
             pop = np.stack(next_pop, axis=0)
+            # Re-seed the baseline individual for the next generation's evaluation pass
+            pop[0] = self._baseline_genotype.copy()
 
         return best_x, best_score
 
@@ -180,7 +185,8 @@ class GAOptimizer:
         x0 = x0_t.view(-1).numpy()
         if not self.random_init:
             # seed with baseline equal-weights
-            pop.append(x0.copy().astype(np.float32))
+            baseline = self._baseline_genotype.copy()
+            pop.append(baseline)
             # seed with one-hot per model (weight channel index 0)
             n_layer_groups, n_models, n_param_sets, n_params = x0_t.shape
             for m in range(n_models):
