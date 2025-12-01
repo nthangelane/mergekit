@@ -311,20 +311,40 @@ class MultiMethodGenome:
             # Normalize and threshold model weights
             if self.definition.enable_model_selection:
                 model_weights = np.abs(model_weights)
-                model_weights = model_weights / (model_weights.sum() + 1e-8)
+                total = float(model_weights.sum())
+                if not np.isfinite(total) or total <= 1e-8:
+                    model_weights = np.ones_like(model_weights)
+                    total = float(model_weights.sum())
+                model_weights = model_weights / total
+
                 # Keep only top-k models
-                top_k = min(self.max_models, np.sum(model_weights > 0.1))
+                top_k = int(np.sum(model_weights > 0.1))
                 if top_k < 2:
                     top_k = 2  # Always use at least 2 models
+                top_k = min(self.max_models, top_k)
                 indices = np.argsort(-model_weights)[:top_k]
                 mask = np.zeros_like(model_weights)
                 mask[indices] = model_weights[indices]
-                model_weights = mask / (mask.sum() + 1e-8)
+
+                masked_total = float(mask.sum())
+                if masked_total <= 1e-8 or not np.isfinite(masked_total):
+                    mask[:] = 0.0
+                    mask[indices] = 1.0
+                    masked_total = float(mask.sum())
+                model_weights = mask / masked_total
+            else:
+                # Ensure deterministic, normalized weights when selection is disabled
+                total = float(np.sum(model_weights))
+                if total <= 1e-8 or not np.isfinite(total):
+                    model_weights = np.ones_like(model_weights) / max(1, len(model_weights))
+                else:
+                    model_weights = model_weights / total
             
             # Decode parameters
             param_start = model_end
             param_count = METHOD_PARAM_COUNTS[method]
             parameters = genotype[param_start:param_start + param_count].numpy()
+            parameters = np.nan_to_num(parameters, nan=0.0, posinf=1.0, neginf=0.0)
             
             # Apply parameter constraints
             parameters = self._constrain_parameters(method, parameters)
@@ -435,22 +455,27 @@ class MultiMethodGenome:
         
         # Build model configs
         models = []
+        weight_values: List[float] = []
         for model_ref, weight in selected_models:
             model_config: Dict[str, Any] = {"model": model_ref}
 
             # Add parameters
             if method_name in ["linear", "task_arithmetic", "karcher", "model_stock"]:
-                model_config["parameters"] = {
-                    "weight": float(weight * layer_group.parameters[0])
-                }
+                weight_value = float(weight * layer_group.parameters[0])
+                if not np.isfinite(weight_value):
+                    weight_value = 0.0
+                model_config["parameters"] = {"weight": weight_value}
+                weight_values.append(weight_value)
             elif method_name in ["ties", "dare_ties"]:
                 model_config["parameters"] = {
-                    "weight": float(weight * layer_group.parameters[0]),
+                    "weight": float(np.nan_to_num(weight * layer_group.parameters[0], nan=0.0)),
                     "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
                 }
+                weight_values.append(float(model_config["parameters"]["weight"]))
             elif method_name in ["dare_linear", "della_linear"]:
+                weight_val = float(np.nan_to_num(weight * layer_group.parameters[0], nan=0.0))
                 model_config["parameters"] = {
-                    "weight": float(weight * layer_group.parameters[0]),
+                    "weight": weight_val,
                     "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
                 }
                 # Additional epsilon parameter for DELLA linear variants
@@ -458,18 +483,23 @@ class MultiMethodGenome:
                     model_config["parameters"]["epsilon"] = float(
                         np.clip(layer_group.parameters[2], 0.0, 1.0)
                     )
+                weight_values.append(weight_val)
             elif method_name in ["breadcrumbs", "breadcrumbs_ties"]:
+                weight_val = float(np.nan_to_num(weight * layer_group.parameters[0], nan=0.0))
                 model_config["parameters"] = {
-                    "weight": float(weight * layer_group.parameters[0]),
+                    "weight": weight_val,
                     "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
                     "gamma": float(np.clip(layer_group.parameters[2], 0.0, 1.0)),
                 }
+                weight_values.append(weight_val)
             elif method_name == "della":
+                weight_val = float(np.nan_to_num(weight * layer_group.parameters[0], nan=0.0))
                 model_config["parameters"] = {
-                    "weight": float(weight * layer_group.parameters[0]),
+                    "weight": weight_val,
                     "density": float(np.clip(layer_group.parameters[1], 0.0, 1.0)),
                     "epsilon": float(np.clip(layer_group.parameters[2], 0.0, 1.0)),
                 }
+                weight_values.append(weight_val)
             elif method_name == "slerp":
                 # SLERP is handled differently - return a slice-based config
                 return self._slerp_config(selected_models, layer_group.parameters[0])
@@ -483,6 +513,14 @@ class MultiMethodGenome:
 
             models.append(model_config)
             
+        if weight_values:
+            total_weight = float(sum(weight_values))
+            if total_weight <= 1e-8 or not np.isfinite(total_weight):
+                equal_weight = 1.0 / len(weight_values)
+                for model_config in models:
+                    if "parameters" in model_config and "weight" in model_config["parameters"]:
+                        model_config["parameters"]["weight"] = float(equal_weight)
+
         config_dict = {
             "merge_method": method_name,
             "models": models,
@@ -493,6 +531,8 @@ class MultiMethodGenome:
             config_dict["base_model"] = self.definition.base_model
         if self.definition.tokenizer_source:
             config_dict["tokenizer_source"] = self.definition.tokenizer_source
+        elif self.definition.base_model:
+            config_dict["tokenizer_source"] = self.definition.base_model
             
         return MergeConfiguration.model_validate(config_dict)
         
@@ -559,6 +599,8 @@ class MultiMethodGenome:
 
         if self.definition.tokenizer_source:
             config_dict["tokenizer_source"] = self.definition.tokenizer_source
+        elif self.definition.base_model is not None:
+            config_dict["tokenizer_source"] = self.definition.base_model
 
         return MergeConfiguration.model_validate(config_dict)
 
@@ -627,6 +669,8 @@ class MultiMethodGenome:
 
         if self.definition.tokenizer_source:
             config_dict["tokenizer_source"] = self.definition.tokenizer_source
+        elif self.definition.base_model is not None:
+            config_dict["tokenizer_source"] = self.definition.base_model
 
         return MergeConfiguration.model_validate(config_dict)
 

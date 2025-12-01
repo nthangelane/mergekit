@@ -8,12 +8,19 @@ import time
 print("🔍 GA Run Status Check\n")
 
 # Check if main process is running
-result = subprocess.run(['ps', '-p', '10884'], capture_output=True)
-if result.returncode == 0:
-    print("✅ Main GA process (PID 10884) is running")
-else:
-    print("❌ Main GA process is NOT running")
-    exit(1)
+try:
+    # Look for the python process running evolve_ga
+    result = subprocess.run(['pgrep', '-f', 'mergekit.scripts.evolve_ga'], capture_output=True, text=True)
+    pids = result.stdout.strip().split('\n')
+    pids = [p for p in pids if p] # Filter empty strings
+    
+    if pids:
+        print(f"✅ Main GA process is running (PID: {', '.join(pids)})")
+    else:
+        print("❌ Main GA process is NOT running")
+        # Don't exit here, let it check for workers/logs too as they might be lingering
+except Exception as e:
+    print(f"⚠️  Error checking for process: {e}")
 
 # Check for Ray workers
 result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)

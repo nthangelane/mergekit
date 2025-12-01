@@ -18,6 +18,13 @@ echo "📊 Log file: workspace/ga_10gen_mac_cpu_run.log"
 echo "🌐 Ray Dashboard: http://127.0.0.1:8265 (once started)"
 echo ""
 
+CONFIG_FILE="workspace/ga_10gen_mac_cpu.yml"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "❌ Configuration file '$CONFIG_FILE' not found!"
+    echo "   Please create it or check the path."
+    exit 1
+fi
+
 nohup python -m mergekit.scripts.evolve_ga \
   workspace/ga_10gen_mac_cpu.yml \
   --storage-path workspace/ga_10gen_mac_storage \

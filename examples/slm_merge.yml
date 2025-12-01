@@ -4,8 +4,7 @@ genome:
   merge_method: multi_method
   layer_granularity: 0   # whole-model / whole-layer merges
   base_model: openai-community/gpt2        # anchor model for relative methods
-  models:
-    - openai-community/gpt2                # base English WebText GPT-2 small
+  models:              # base English WebText GPT-2 small
     - cwestnedge/gpt2-small-pubmed         # biomedical domain
     - dbddv01/gpt2-french-small            # French
   max_models_per_layer: 2                  # limit selections for pairwise methods

@@ -1,6 +1,7 @@
 # Copyright (C) 2025 Arcee AI
 # SPDX-License-Identifier: BUSL-1.1
 
+import math
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -35,7 +36,26 @@ class LinearMergeTask(Task[torch.Tensor]):
         keys = list(tensors.keys())
 
         tensors = [tensors[key] for key in keys]
-        weights = [self.tensor_parameters[key]["weight"] for key in keys]
+        weights: List[float] = []
+        for key in keys:
+            params = self.tensor_parameters[key]
+            try:
+                raw_weight = params["weight"]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Missing weight parameter for tensor {self.weight_info.name} sourced from {key}"
+                ) from exc
+            try:
+                weight_val = float(raw_weight)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid weight value {raw_weight!r} for tensor {self.weight_info.name}"
+                ) from exc
+            if not math.isfinite(weight_val):
+                raise ValueError(
+                    f"Non-finite weight {weight_val!r} for tensor {self.weight_info.name}"
+                )
+            weights.append(weight_val)
 
         rectify_embed_sizes(self.weight_info, tensors)
 
