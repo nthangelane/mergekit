@@ -49,6 +49,7 @@ from mergekit.evo.helpers import _eval_model
 from mergekit.evo.config import (
     EvolMergeConfiguration,
     ModelGenomeDefinition,
+    TaskConfiguration,
     check_for_naughty_config,
 )
 from mergekit.evo.ga import GAOptimizer, GAParams
@@ -916,6 +917,16 @@ def main(
             stage_log("Stage-GA", "Saving final merged model artifacts...")
             run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
 
+            _evaluate_and_write_final_comparison(
+                config,
+                storage_path,
+                batch_size,
+                merge_cuda,
+                num_gpus,
+                task_search_path,
+                trust_remote_code,
+            )
+
             # Append GA run details to the model card (README.md)
             try:
                 readme_path = os.path.join(storage_path, "final_model", "README.md")
@@ -1102,49 +1113,7 @@ def run_baseline_evaluations(
         weighted_score = result.get("score")
         row["weighted_score"] = weighted_score
 
-        for task_cfg in config.tasks:
-            task_results = result["results"].get(task_cfg.name, {})
-            metric_value = task_results.get(task_cfg.metric)
-
-            if metric_value is None:
-                metric_alternatives = {
-                    "ppl,none": [
-                        "word_perplexity,none",
-                        "perplexity,none",
-                        "byte_perplexity,none",
-                    ],
-                    "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
-                    "acc_norm,none": [
-                        "acc_norm,none",
-                        "acc,none",
-                        "accuracy,none",
-                    ],
-                }
-                for alt_metric in metric_alternatives.get(task_cfg.metric, []):
-                    if alt_metric in task_results:
-                        metric_value = task_results[alt_metric]
-                        break
-
-                if metric_value is None:
-                    lowered_metric = task_cfg.metric.lower()
-                    for metric_name, value in task_results.items():
-                        lowered_name = metric_name.lower()
-                        if "stderr" in lowered_name:
-                            continue
-                        if (
-                            ("ppl" in lowered_metric or "perplexity" in lowered_metric)
-                            and "perplexity" in lowered_name
-                        ):
-                            metric_value = value
-                            break
-                        if "acc" in lowered_metric and "acc" in lowered_name:
-                            metric_value = value
-                            break
-
-            if isinstance(metric_value, float) and math.isnan(metric_value):
-                metric_value = None
-
-            row[f"{task_cfg.name}:{task_cfg.metric}"] = metric_value
+        row.update(_collect_task_metrics(result, config.tasks))
 
         baseline_rows.append(row)
 
@@ -1179,6 +1148,176 @@ def run_baseline_evaluations(
     )
 
     return baseline_csv_path
+
+
+def _collect_task_metrics(
+    result: Dict[str, Any],
+    tasks: List[TaskConfiguration],
+) -> Dict[str, Optional[float]]:
+    metrics: Dict[str, Optional[float]] = {}
+    for task_cfg in tasks:
+        task_results = result.get("results", {}).get(task_cfg.name, {})
+        metric_value = task_results.get(task_cfg.metric)
+
+        if metric_value is None:
+            metric_alternatives = {
+                "ppl,none": [
+                    "word_perplexity,none",
+                    "perplexity,none",
+                    "byte_perplexity,none",
+                ],
+                "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
+                "acc_norm,none": [
+                    "acc_norm,none",
+                    "acc,none",
+                    "accuracy,none",
+                ],
+            }
+            for alt_metric in metric_alternatives.get(task_cfg.metric, []):
+                if alt_metric in task_results:
+                    metric_value = task_results[alt_metric]
+                    break
+
+            if metric_value is None:
+                lowered_metric = task_cfg.metric.lower()
+                for metric_name, value in task_results.items():
+                    lowered_name = metric_name.lower()
+                    if "stderr" in lowered_name:
+                        continue
+                    if (
+                        ("ppl" in lowered_metric or "perplexity" in lowered_metric)
+                        and "perplexity" in lowered_name
+                    ):
+                        metric_value = value
+                        break
+                    if "acc" in lowered_metric and "acc" in lowered_name:
+                        metric_value = value
+                        break
+
+        if isinstance(metric_value, float) and math.isnan(metric_value):
+            metric_value = None
+
+        metrics[f"{task_cfg.name}:{task_cfg.metric}"] = metric_value
+
+    return metrics
+
+
+def _evaluate_and_write_final_comparison(
+    config: EvolMergeConfiguration,
+    storage_path: str,
+    batch_size: Optional[int],
+    merge_cuda: bool,
+    num_gpus: Optional[int],
+    task_search_path: List[str],
+    trust_remote_code: bool,
+) -> None:
+    baseline_csv = os.path.join(storage_path, "baseline_results.csv")
+    final_model_path = os.path.join(storage_path, "final_model")
+    comparison_csv = os.path.join(storage_path, "ga_final_comparison.csv")
+
+    if not os.path.exists(final_model_path):
+        stage_log("Stage-GA", "final_model not found; skipping final comparison table.")
+        return
+
+    baseline_rows: List[Dict[str, Union[str, float, None]]] = []
+    if os.path.exists(baseline_csv):
+        baseline_rows = pandas.read_csv(baseline_csv).to_dict(orient="records")
+    else:
+        stage_log(
+            "Stage-GA",
+            "baseline_results.csv not found; comparison will include only final model.",
+            level=logging.WARNING,
+        )
+
+    task_manager = create_task_manager(task_search_path)
+    use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
+    device = "cuda" if use_cuda else "cpu"
+
+    model_args: Dict[str, Any] = {
+        "pretrained": final_model_path,
+        "dtype": "float32",
+        "use_cache": True,
+        "trust_remote_code": trust_remote_code,
+    }
+    eval_kwargs: Dict[str, Any] = {"device": device}
+
+    stage_log("Stage-GA", "Evaluating final merged model for comparison table...")
+    try:
+        result = _eval_model(
+            "huggingface",
+            config.tasks,
+            model_args,
+            num_fewshot=config.num_fewshot,
+            limit=config.limit,
+            batch_size=batch_size,
+            task_manager=task_manager,
+            bootstrap_iters=0,
+            **eval_kwargs,
+        )
+    except Exception as exc:  # pragma: no cover - depends on runtime
+        stage_log(
+            "Stage-GA",
+            f"Final model evaluation failed; skipping comparison table: {exc}",
+            level=logging.ERROR,
+        )
+        return
+
+    metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
+    final_row: Dict[str, Union[str, float, None]] = {
+        "model": "final_merged",
+        "weighted_score": result.get("score"),
+        "error": None,
+    }
+    final_row.update(_collect_task_metrics(result, config.tasks))
+
+    all_rows = baseline_rows + [final_row]
+    comparison_df = pandas.DataFrame(all_rows)
+    ordered_columns = ["model", "weighted_score", *metric_columns, "error"]
+    for column in ordered_columns:
+        if column not in comparison_df.columns:
+            comparison_df[column] = None
+    comparison_df = comparison_df[ordered_columns]
+    comparison_df.to_csv(comparison_csv, index=False)
+
+    _write_comparison_plot(comparison_df, os.path.join(storage_path, "ga_final_comparison.png"))
+
+
+def _write_comparison_plot(table: "pandas.DataFrame", output_path: str) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig_height = max(2.5, 0.35 * (len(table) + 1))
+        fig, ax = plt.subplots(figsize=(10, fig_height))
+        ax.axis("off")
+
+        display_df = table.copy()
+        if "weighted_score" in display_df.columns:
+            display_df["weighted_score"] = display_df["weighted_score"].map(
+                lambda v: f"{v:.4f}" if isinstance(v, (int, float)) else v
+            )
+
+        tbl = ax.table(
+            cellText=display_df.values,
+            colLabels=display_df.columns,
+            cellLoc="center",
+            loc="center",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.0, 1.2)
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=160)
+        plt.close(fig)
+    except Exception as exc:  # pragma: no cover - optional plotting
+        stage_log(
+            "Stage-GA",
+            f"Skipping comparison plot generation: {exc}",
+            level=logging.WARNING,
+        )
 
 
 def _write_ga_outputs(storage_path: str) -> None:
