@@ -13,12 +13,15 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program. If not, see http://www.gnu.org/licenses/.
 
+import csv
 import logging
 import math
 import os
+import re
 import shutil
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -216,6 +219,24 @@ def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]
     default=None,
     help="Hugging Face model ID to push final model to (e.g. username/model-name)",
 )
+@click.option(
+    "--hf-username",
+    type=str,
+    default=None,
+    help="Hugging Face username to auto-generate a repo name if --hf-model-id is not set",
+)
+@click.option(
+    "--hf-min-improvement",
+    type=float,
+    default=0.0,
+    help="Minimum absolute improvement over best baseline required to upload",
+)
+@click.option(
+    "--hf-min-improvement-pct",
+    type=float,
+    default=0.0,
+    help="Minimum percentage improvement over best baseline required to upload",
+)
 def main(
     genome_config_path: str,
     max_fevals: int,
@@ -249,6 +270,9 @@ def main(
     timeout: Optional[float],
     run_baseline: bool,
     hf_model_id: Optional[str],
+    hf_username: Optional[str],
+    hf_min_improvement: float,
+    hf_min_improvement_pct: float,
 ):
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -269,6 +293,13 @@ def main(
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
     stage_log("Stage-Init", f"Storage path: {storage_path}")
+
+    if not hf_model_id and hf_username:
+        base_ref = config.genome.base_model or config.genome.models[0]
+        base_short = re.sub(r"[^a-zA-Z0-9]+", "-", str(base_ref).split("/")[-1]).strip("-").lower()
+        date_stamp = datetime.now().strftime("%d%b").lower()
+        hf_model_id = f"{hf_username}/gaevolve-{date_stamp}-{base_short}"
+        stage_log("Stage-Init", f"Auto-generated Hugging Face repo: {hf_model_id}")
 
     task_search_path = list(task_search_path)
 
@@ -824,6 +855,8 @@ def main(
     stage_log("Stage-GA", "Optimization complete.")
     stage_log("Stage-GA", f"Best score achieved: {best_score:.4f}")
 
+    _write_ga_outputs(storage_path)
+
     if generation_best_history:
         initial_best = generation_best_history[0]
         final_best = max(generation_best_history)
@@ -882,30 +915,95 @@ def main(
         if save_final_model:
             stage_log("Stage-GA", "Saving final merged model artifacts...")
             run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
+
+            # Append GA run details to the model card (README.md)
+            try:
+                readme_path = os.path.join(storage_path, "final_model", "README.md")
+                task_lines = [
+                    f"- {task.name} (metric: {task.metric}, weight: {task.weight})"
+                    for task in config.tasks
+                ]
+                summary_lines = [
+                    "\n## Merge Run Details",
+                    "This model was produced via a GA-driven merge search.",
+                    f"- Run timestamp: {datetime.now().isoformat()}",
+                    f"- Max evaluations: {max_fevals}",
+                    f"- Population size: {ga_params.population_size}",
+                    f"- Elite fraction: {ga_params.elite_fraction}",
+                    f"- Mutation rate: {ga_params.mutation_rate}",
+                    f"- Mutation sigma: {ga_params.mutation_sigma}",
+                    f"- Crossover: {ga_params.crossover}",
+                    f"- Tournament size: {ga_params.tournament_size}",
+                    f"- Generations completed: {len(generation_best_history)}",
+                    f"- Best score: {best_score:.6f}",
+                ]
+                if baseline_best_score is not None and math.isfinite(baseline_best_score):
+                    summary_lines.append(f"- Best baseline score: {baseline_best_score:.6f}")
+                    summary_lines.append(
+                        f"- Δ vs baseline: {best_score - baseline_best_score:+.6f}"
+                    )
+                summary_lines.append("- Tasks:")
+                summary_lines.extend(task_lines)
+                with open(readme_path, "a", encoding="utf-8") as fp:
+                    fp.write("\n" + "\n".join(summary_lines) + "\n")
+            except Exception as exc:  # pragma: no cover - best-effort card update
+                stage_log(
+                    "Stage-GA",
+                    f"Unable to append GA details to README.md: {exc}",
+                    level=logging.WARNING,
+                )
             
             # Upload to Hugging Face if requested
             if hf_model_id:
-                stage_log("Stage-GA", f"Uploading final model to Hugging Face: {hf_model_id}")
-                try:
-                    from huggingface_hub import upload_folder
-                    
-                    final_model_path = os.path.join(storage_path, "final_model")
-                    upload_folder(
-                        repo_id=hf_model_id,
-                        folder_path=final_model_path,
-                        repo_type="model",
-                    )
-                    stage_log("Stage-GA", f"Model successfully uploaded to {hf_model_id}")
-                except Exception as e:
+                allow_upload = True
+                if baseline_best_score is None or not math.isfinite(baseline_best_score):
                     stage_log(
                         "Stage-GA",
-                        f"Failed to upload model to Hugging Face: {e}",
-                        level=logging.ERROR,
+                        "Baseline score unavailable; skipping upload due to improvement thresholds.",
+                        level=logging.WARNING,
                     )
+                    allow_upload = False
+                else:
+                    delta = best_score - baseline_best_score
+                    pct = (delta / baseline_best_score) * 100.0 if baseline_best_score != 0 else float("inf")
+                    if delta < hf_min_improvement or pct < hf_min_improvement_pct:
+                        stage_log(
+                            "Stage-GA",
+                            "Upload skipped: improvement thresholds not met. "
+                            f"Δ={delta:+.6f} (min {hf_min_improvement:+.6f}), "
+                            f"Δ%={pct:+.2f}% (min {hf_min_improvement_pct:.2f}%).",
+                            level=logging.WARNING,
+                        )
+                        allow_upload = False
+
+                if allow_upload:
                     stage_log(
                         "Stage-GA",
-                        f"You can manually upload from: {os.path.join(storage_path, 'final_model')}",
+                        f"Uploading final model to Hugging Face: {hf_model_id}",
                     )
+                    try:
+                        from huggingface_hub import upload_folder
+
+                        final_model_path = os.path.join(storage_path, "final_model")
+                        upload_folder(
+                            repo_id=hf_model_id,
+                            folder_path=final_model_path,
+                            repo_type="model",
+                        )
+                        stage_log(
+                            "Stage-GA",
+                            f"Model successfully uploaded to {hf_model_id}",
+                        )
+                    except Exception as e:
+                        stage_log(
+                            "Stage-GA",
+                            f"Failed to upload model to Hugging Face: {e}",
+                            level=logging.ERROR,
+                        )
+                        stage_log(
+                            "Stage-GA",
+                            f"You can manually upload from: {os.path.join(storage_path, 'final_model')}",
+                        )
         prune_stale_merged_artifacts(storage_path)
     else:
         stage_log(
@@ -1081,6 +1179,92 @@ def run_baseline_evaluations(
     )
 
     return baseline_csv_path
+
+
+def _write_ga_outputs(storage_path: str) -> None:
+    """Write a compact GA summary table and optional plot to the run outputs."""
+    history_path = os.path.join(storage_path, "ga_history.csv")
+    if not os.path.exists(history_path):
+        stage_log("Stage-GA", "ga_history.csv not found; skipping summary outputs.")
+        return
+
+    rows: List[Dict[str, str]] = []
+    with open(history_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        stage_log("Stage-GA", "ga_history.csv is empty; skipping summary outputs.")
+        return
+
+    summary_path = os.path.join(storage_path, "ga_summary.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write("gen  fevals  gen_best   best_so_far  eval_s  cache_hits  crossover\n")
+        for r in rows:
+            gen = int(r.get("generation", "0") or 0)
+            fevals = int(r.get("fevals", "0") or 0)
+            gen_best = float(r.get("gen_best", "nan") or float("nan"))
+            best_so_far_raw = r.get("best_so_far", "")
+            best_so_far = (
+                "NaN" if best_so_far_raw in ("", "None", "-inf") else best_so_far_raw
+            )
+            eval_s = float(r.get("eval_seconds", "0") or 0)
+            cache_hits = int(r.get("cache_hits", "0") or 0)
+            crossover = r.get("crossover_type", "")
+            f.write(
+                f"{gen:>2}  {fevals:>6}  {gen_best:>8.5f}  {best_so_far:>10}  "
+                f"{eval_s:>6.1f}     {cache_hits:>3}       {crossover}\n"
+            )
+
+        gen_best_vals = [float(r.get("gen_best", 0.0) or 0.0) for r in rows]
+        min_v = min(gen_best_vals)
+        max_v = max(gen_best_vals)
+        blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        if max_v == min_v:
+            spark = "".join(blocks[0] for _ in gen_best_vals)
+        else:
+            spark = "".join(
+                blocks[
+                    min(
+                        len(blocks) - 1,
+                        max(0, int((v - min_v) / (max_v - min_v) * (len(blocks) - 1))),
+                    )
+                ]
+                for v in gen_best_vals
+            )
+        f.write("\nGen-best sparkline:\n")
+        f.write(spark + "\n")
+        f.write(f"min={min_v:.5f} max={max_v:.5f}\n")
+
+    # Optional plot (best/mean over generations)
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        gens = [int(r.get("generation", "0") or 0) for r in rows]
+        gen_best = [float(r.get("gen_best", 0.0) or 0.0) for r in rows]
+        gen_mean = [float(r.get("gen_mean", 0.0) or 0.0) for r in rows]
+
+        plot_path = os.path.join(storage_path, "ga_history_plot.png")
+        plt.figure(figsize=(7.5, 4.5))
+        plt.plot(gens, gen_best, marker="o", label="gen_best")
+        plt.plot(gens, gen_mean, marker="x", label="gen_mean")
+        plt.xlabel("Generation")
+        plt.ylabel("Score")
+        plt.title("GA Progress")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=160)
+        plt.close()
+    except Exception as exc:  # pragma: no cover - optional plotting
+        stage_log(
+            "Stage-GA",
+            f"Skipping ga_history_plot.png generation: {exc}",
+            level=logging.WARNING,
+        )
 
 
 def _reshard_model(

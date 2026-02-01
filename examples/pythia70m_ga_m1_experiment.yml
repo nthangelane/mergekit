@@ -1,0 +1,62 @@
+# Minimal GA evolution config for Apple M1 16GB (CPU / MPS-friendly).
+# Uses ONLY Pythia-70M-shaped checkpoints to avoid "Incompatible model configurations".
+
+genome:
+  type: multi_method
+
+  # All models below are Pythia-70M compatible (same architecture/shapes),
+  # so MergeKit can legally merge them in one run.
+  models:
+    - EleutherAI/pythia-70m-deduped                 # baseline
+    - lomahony/pythia-70m-helpful-sft               # helpful/chat style SFT
+    - mlabonne/chesspythia-70m                      # chess domain FT
+    - Pravincoder/Pythia-legal-finetuned-llm        # legal domain FT
+    - vineetsharma/databricks-dolly-15k-pythia-70m-deduped-v1  # instruction FT
+
+  base_model: EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+
+  allowed_methods:
+    - linear
+    - dare_linear
+    - ties
+    - task_arithmetic
+
+  # Whole-model granularity keeps memory + bookkeeping small.
+  layer_granularity: 0
+  max_models_per_layer: 2
+
+  normalize: true
+  allow_negative_weights: false
+
+  # Let GA evolve both "which models" and "which merge method"
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: lambada_openai
+    weight: 0.6
+    metric: acc,none
+  - name: sciq
+    weight: 0.4
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 8
+  elite_fraction: 0.375   # keep top 3
+  mutation_rate: 0.25
+  mutation_sigma: 0.06
+
+  crossover: semantic
+  semantic_crossover_prob: 0.5
+
+  method_mutation_rate: 0.2
+  model_mutation_rate: 0.15
+  parameter_mutation_rate: 0.25
+  tournament_size: 2
+
+# Tight eval limits for M1
+limit: 64
+num_fewshot: 0
