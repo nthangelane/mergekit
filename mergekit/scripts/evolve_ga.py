@@ -20,7 +20,7 @@ import shutil
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import click
 import numpy as np
@@ -953,13 +953,13 @@ def run_baseline_evaluations(
     )
 
     metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
-    baseline_rows: List[Dict[str, Optional[float]]] = []
+    baseline_rows: List[Dict[str, Union[str, float, None]]] = []
     successes = 0
     failures = 0
 
     for model_ref in models:
         model_name = str(model_ref)
-        row: Dict[str, Optional[float]] = {
+        row: Dict[str, Union[str, float, None]] = {
             "model": model_name,
             "weighted_score": None,
             "error": None,
@@ -968,13 +968,13 @@ def run_baseline_evaluations(
             row.setdefault(column, None)
 
         stage_log("Stage-Baseline", f"Evaluating {model_name}...")
-        model_args = {
+        model_args: Dict[str, Any] = {
             "pretrained": model_name,
             "dtype": "float32",
             "use_cache": True,
             "trust_remote_code": trust_remote_code,
         }
-        eval_kwargs = {"device": device}
+        eval_kwargs: Dict[str, Any] = {"device": device}
 
         try:
             result = _eval_model(

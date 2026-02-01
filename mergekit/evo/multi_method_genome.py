@@ -521,7 +521,7 @@ class MultiMethodGenome:
                     if "parameters" in model_config and "weight" in model_config["parameters"]:
                         model_config["parameters"]["weight"] = float(equal_weight)
 
-        config_dict = {
+        config_dict: Dict[str, Any] = {
             "merge_method": method_name,
             "models": models,
             "dtype": "bfloat16"
