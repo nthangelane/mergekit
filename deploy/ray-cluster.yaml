@@ -89,6 +89,8 @@ spec:
                   value: /data/hf
                 - name: MERGEKIT_DATA_DIR
                   value: /data/artifacts
+                - name: RAY_memory_usage_threshold
+                  value: "0.99"
                 - name: TOKENIZERS_PARALLELISM
                   value: "false"
               readinessProbe:
