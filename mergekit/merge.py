@@ -62,6 +62,18 @@ def _materialize_symlinked_output_files(out_path: str, file_names: List[str]) ->
         _link_or_copy_file(real_src_path, path)
 
 
+def _has_missing_or_broken_output_files(out_path: str, file_names: List[str]) -> bool:
+    for file_name in file_names:
+        path = os.path.join(out_path, file_name)
+        if os.path.islink(path):
+            if not os.path.exists(os.path.realpath(path)):
+                return True
+            continue
+        if not os.path.exists(path):
+            return True
+    return False
+
+
 def run_merge(
     merge_config: MergeConfiguration,
     out_path: str,
@@ -149,21 +161,31 @@ def run_merge(
         ) as fp:
             fp.write(config_source)
 
+    tokenizer_asset_files = [
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer.model",
+        "added_tokens.json",
+        "merges.txt",
+    ]
+
     if tokenizer is not None:
         LOG.info("Saving tokenizer")
         _set_chat_template(tokenizer, merge_config)
         tokenizer.save_pretrained(out_path, safe_serialization=True)
         _materialize_symlinked_output_files(
             out_path,
-            [
-                "tokenizer_config.json",
-                "special_tokens_map.json",
-                "tokenizer.json",
-                "tokenizer.model",
-                "added_tokens.json",
-                "merges.txt",
-            ],
+            tokenizer_asset_files,
         )
+        if options.copy_tokenizer and _has_missing_or_broken_output_files(
+            out_path, tokenizer_asset_files
+        ):
+            LOG.warning(
+                "Tokenizer save produced missing or broken assets; repairing from donor tokenizer files."
+            )
+            _copy_tokenizer(merge_config, out_path, options=options)
+            _materialize_symlinked_output_files(out_path, tokenizer_asset_files)
     else:
         if options.copy_tokenizer:
             try:
@@ -175,14 +197,7 @@ def run_merge(
                 )
             _materialize_symlinked_output_files(
                 out_path,
-                [
-                    "tokenizer_config.json",
-                    "special_tokens_map.json",
-                    "tokenizer.json",
-                    "tokenizer.model",
-                    "added_tokens.json",
-                    "merges.txt",
-                ],
+                tokenizer_asset_files,
             )
         elif merge_config.chat_template:
             LOG.warning(
