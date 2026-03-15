@@ -135,12 +135,35 @@ def test_status_reports_nodes_pods_and_ray_resources():
     )
 
 
+def test_dashboard_prints_local_url_and_port_forward_command():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "dashboard",
+            "--ray-cluster-name",
+            "demo-ray",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Ray dashboard: http://127.0.0.1:8265" in result.output
+    assert (
+        "kubectl port-forward -n test-ns svc/demo-ray-head-svc 8265:8265 10001:10001"
+        in result.output
+    )
+
+
 def test_deploy_manifests_are_valid_yaml():
     deploy_dir = Path(DEPLOY_DIR)
     manifests = [
         deploy_dir / "ray-cluster.yaml",
         deploy_dir / "ray-job.yaml",
         deploy_dir / "storage.yaml",
+        deploy_dir / "fluent-bit.yaml",
     ]
 
     for manifest in manifests:
@@ -192,6 +215,10 @@ def test_deploy_manifests_are_valid_yaml():
     claim_names = {doc["metadata"]["name"] for doc in storage_docs if doc}
     assert {"mergekit-shared-pv", "mergekit-shared-pvc"}.issubset(claim_names)
 
+    fluent_docs = list(yaml.safe_load_all((deploy_dir / "fluent-bit.yaml").read_text()))
+    fluent_kinds = {doc["kind"] for doc in fluent_docs if doc}
+    assert {"Namespace", "ConfigMap", "DaemonSet"}.issubset(fluent_kinds)
+
     ray_job = yaml.safe_load((deploy_dir / "ray-job.yaml").read_text())
     assert ray_job.get("kind") == "RayJob"
     assert ray_job["spec"]["clusterSelector"] == {
@@ -237,6 +264,9 @@ def test_submit_renders_valid_mergekit_command():
 
     assert result.exit_code == 0, result.output
     assert f"kubectl apply -n test-ns -f {DEPLOY_DIR / 'ray-job.yaml'}" in result.output
+    assert (
+        "verify Ray gpu-workers pods are Ready and pass CUDA preflight" in result.output
+    )
 
 
 def test_build_entrypoint_includes_vllm_tensor_parallel_flags():
@@ -262,6 +292,44 @@ def test_build_entrypoint_includes_vllm_tensor_parallel_flags():
     assert "--num-gpus 10" in entrypoint
 
 
+def test_build_finalist_entrypoint_uses_ray_remote_gpu_worker():
+    entrypoint = run_on_eks._build_finalist_entrypoint(
+        storage_subpath="runs/demo",
+        trust_remote_code=True,
+        merge_cuda=True,
+    )
+
+    assert 'ray.init(address="auto")' in entrypoint
+    assert "@ray.remote(num_cpus=1, num_gpus=1)" in entrypoint
+    assert "/data/artifacts/runs/demo" in entrypoint
+    assert "final_model" in entrypoint
+
+
+def test_submit_finalist_renders_ray_job_and_preflight():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "submit-finalist",
+            "--ray-cluster-name",
+            "demo-ray",
+            "--job-name",
+            "demo-finalist",
+            "--storage-subpath",
+            "runs/demo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"kubectl apply -n test-ns -f {DEPLOY_DIR / 'ray-job.yaml'}" in result.output
+    assert (
+        "verify Ray gpu-workers pods are Ready and pass CUDA preflight" in result.output
+    )
+
+
 def test_submit_rejects_tensor_parallel_without_vllm():
     runner = CliRunner()
     result = runner.invoke(
@@ -280,6 +348,25 @@ def test_submit_rejects_tensor_parallel_without_vllm():
 
     assert result.exit_code != 0
     assert "--tensor-parallel-size > 1 requires --vllm" in result.output
+
+
+def test_submit_rejects_inline_final_model_save_for_gpu_search():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "submit",
+            "--num-gpus",
+            "1",
+            "--save-final-model",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must use --no-save-final-model" in result.output
 
 
 def test_worker_scale_bounds_reports_20_to_30_worker_shapes():
@@ -347,6 +434,34 @@ def test_explicit_cli_override_beats_scale_profile():
     assert "gpu=20..28" in result.output
 
 
+def test_research_3b_scale_profile_sets_four_l4_workers():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "bootstrap",
+            "--cluster-name",
+            "demo",
+            "--region",
+            "us-west-2",
+            "--scale-profile",
+            "research-3b-l4x4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Using scale profile 'research-3b-l4x4'" in result.output
+    assert "gpu=4..4" in result.output
+    assert (
+        f"kubectl apply -n amazon-cloudwatch -f {DEPLOY_DIR / 'fluent-bit.yaml'}"
+        in result.output
+    )
+    assert run_on_eks.CLOUDWATCH_AGENT_POLICY_ARN in result.output
+
+
 def test_ensure_efs_node_role_permissions_attaches_only_when_missing(
     monkeypatch, capsys
 ):
@@ -385,6 +500,51 @@ def test_ensure_efs_node_role_permissions_attaches_only_when_missing(
     run_on_eks._ensure_efs_node_role_permissions("demo", "us-east-1", dry_run=False)
 
     assert attached == [("demo-cpu-role", run_on_eks.EFS_UTILS_POLICY_ARN)]
+    assert "Attached" in capsys.readouterr().out
+
+
+def test_ensure_cloudwatch_node_role_permissions_attaches_only_when_missing(
+    monkeypatch, capsys
+):
+    attached = []
+
+    class FakeEksClient:
+        def list_nodegroups(self, clusterName):
+            assert clusterName == "demo"
+            return {"nodegroups": ["cpu", "gpu"]}
+
+        def describe_nodegroup(self, clusterName, nodegroupName):
+            roles = {
+                "cpu": "arn:aws:iam::123456789012:role/demo-cpu-role",
+                "gpu": "arn:aws:iam::123456789012:role/demo-gpu-role",
+            }
+            return {"nodegroup": {"nodeRole": roles[nodegroupName]}}
+
+    class FakeIamClient:
+        def list_attached_role_policies(self, RoleName):
+            if RoleName == "demo-cpu-role":
+                return {"AttachedPolicies": []}
+            return {
+                "AttachedPolicies": [
+                    {"PolicyArn": run_on_eks.CLOUDWATCH_AGENT_POLICY_ARN}
+                ]
+            }
+
+        def attach_role_policy(self, RoleName, PolicyArn):
+            attached.append((RoleName, PolicyArn))
+
+    fake_boto3 = types.SimpleNamespace(
+        client=lambda service_name, region_name=None: (
+            FakeEksClient() if service_name == "eks" else FakeIamClient()
+        )
+    )
+    monkeypatch.setitem(__import__("sys").modules, "boto3", fake_boto3)
+
+    run_on_eks._ensure_cloudwatch_node_role_permissions(
+        "demo", "us-east-1", dry_run=False
+    )
+
+    assert attached == [("demo-cpu-role", run_on_eks.CLOUDWATCH_AGENT_POLICY_ARN)]
     assert "Attached" in capsys.readouterr().out
 
 

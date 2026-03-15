@@ -65,6 +65,7 @@ All Kubernetes manifests live in `deploy/`:
 - `ray-cluster.yaml` – Creates a `RayCluster` custom resource that references the MergeKit image.
 - `ray-job.yaml` – Submits a GA run using the `examples/evolve_ga_m1_micro.yml` config.
 - `storage.yaml` – PersistentVolumeClaims for Hugging Face cache data and GA artifacts (defaults assume an AWS EFS CSI storage class `efs-sc`; adjust to suit your cluster).
+- `fluent-bit.yaml` – EKS-only Fluent Bit DaemonSet that ships mergekit namespace container logs to CloudWatch.
 
 You can apply each resource manually (Helm + kubectl) or use the helper CLI.
 
@@ -76,11 +77,27 @@ The new console script wraps the essential steps so you can bootstrap, submit wo
 # Install Python dependencies (once)
 pip install -e .[eks]
 
-# Create cluster resources
-MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks bootstrap --cluster-name mergekit-ga --region us-east-1
+# Recommended 3B research shape: 4x L4 Ray workers
+MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks bootstrap \
+  --cluster-name mergekit-ga \
+  --region us-east-1 \
+  --scale-profile research-3b-l4x4
 
 # Submit the GA workload
-MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks submit --region us-east-1
+MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks submit \
+  --region us-east-1 \
+  --num-gpus 4 \
+  --strategy pool \
+  --baseline \
+  --no-save-final-model
+
+# Open the Ray dashboard
+mergekit-eks dashboard --region us-east-1
+
+# Materialize the finalist later on a GPU worker
+MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks submit-finalist \
+  --region us-east-1 \
+  --storage-subpath runs/aws-smoke
 
 # Inspect status
 mergekit-eks status --region us-east-1
@@ -91,6 +108,14 @@ MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks teardown --cluster-name mergekit-ga 
 
 All commands accept `--dry-run` to print the exact `eksctl`, `helm`, and `kubectl` invocations without executing them. Namespaces default to `mergekit`; override with `--namespace` if needed. The status command prints the Ray pods and the EKS cluster metadata (via the AWS SDK) when not in dry-run mode.
 
+When GPU workers are part of the EKS shape, bootstrap also:
+
+- Attaches CloudWatch log permissions to the managed nodegroup roles
+- Deploys Fluent Bit for CloudWatch log persistence
+- Keeps those changes scoped to the EKS path only; local `mergekit-evolve-ga` runs are unchanged
+
+The `dashboard` command standardises Ray UI access for every run by port-forwarding `svc/<ray-cluster-name>-head-svc` and printing the local dashboard URL.
+
 ### Option B — Manual commands
 
 If you prefer to manage resources yourself, run the following (matching the helper CLI sequence):
@@ -100,6 +125,7 @@ helm repo add kuberay https://ray-project.github.io/kuberay-helm
 helm repo update
 helm upgrade --install kuberay-operator kuberay/kuberay-operator -f deploy/ray-values.yaml --namespace mergekit --create-namespace
 kubectl apply -n mergekit -f deploy/storage.yaml
+kubectl apply -n amazon-cloudwatch -f deploy/fluent-bit.yaml
 MERGEKIT_IMAGE=$MERGEKIT_IMAGE envsubst < deploy/ray-cluster.yaml | kubectl apply -n mergekit -f -
 MERGEKIT_IMAGE=$MERGEKIT_IMAGE envsubst < deploy/ray-job.yaml | kubectl apply -n mergekit -f -
 ```
@@ -114,6 +140,16 @@ kubectl get rayjobs -n mergekit
 ## Storage considerations
 
 The manifests reference two persistent volume claims—`hf-cache-pvc` and `artifacts-pvc`—so that model checkpoints and GA outputs survive restarts. Create them ahead of time or adjust the manifests to match your storage class (e.g. by enabling AWS EBS CSI dynamic provisioning).
+
+For the current implementation, the active GA workspace is still a shared filesystem mount. Use S3 as the durable archive layer for configs, plots, summaries, and finalist models, not as the live mutable workspace for search jobs.
+
+## GPU run guardrails
+
+EKS GPU submissions now enforce three operational rules:
+
+1. A GPU preflight runs before each GPU-backed submission. It waits for Ready `gpu-workers` pods, checks `nvidia-smi`, and verifies `torch.cuda.is_available()` on the workers.
+2. Standard search jobs must use `--no-save-final-model`. This avoids the head-pod CUDA failure path and keeps large final merges out of the search loop.
+3. Final models are materialized separately with `mergekit-eks submit-finalist`, which schedules the merge on a GPU worker through Ray.
 
 ## Customising jobs
 

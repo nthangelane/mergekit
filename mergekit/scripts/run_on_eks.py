@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional, Sequence
@@ -45,6 +46,7 @@ REQUIRED_BINARIES = {
     "aws": "AWS CLI",
 }
 EFS_UTILS_POLICY_ARN = "arn:aws:iam::aws:policy/AmazonElasticFileSystemsUtils"
+CLOUDWATCH_AGENT_POLICY_ARN = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 DEFAULT_COST_TAGS = {
     "Project": "master-research",
     "Application": "mergekit-ga",
@@ -76,6 +78,17 @@ SCALE_PROFILES: dict[str, dict[str, object]] = {
         "gpu_worker_gpus": 2,
         "gpu_nodes": 5,
         "gpu_max_nodes": 7,
+    },
+    "research-3b-l4x4": {
+        "description": "4x L4 Ray workers for 3B baseline and GA research runs.",
+        "cpu_node_type": "m6i.2xlarge",
+        "cpu_nodes": 2,
+        "cpu_max_nodes": 3,
+        "gpu_node_type": "g6.12xlarge",
+        "gpu_gpus_per_node": 4,
+        "gpu_worker_gpus": 1,
+        "gpu_nodes": 1,
+        "gpu_max_nodes": 1,
     },
 }
 
@@ -167,6 +180,21 @@ def _run_command(
         return
 
     subprocess.run(list(cmd), check=True, env={**os.environ, **(env or {})})
+
+
+def _capture_command(
+    cmd: Iterable[str],
+    *,
+    env: Optional[Dict[str, str]] = None,
+) -> str:
+    result = subprocess.run(
+        list(cmd),
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env or {})},
+    )
+    return result.stdout
 
 
 def _render_template(
@@ -311,6 +339,45 @@ def _ensure_efs_node_role_permissions(
 
         iam.attach_role_policy(RoleName=role_name, PolicyArn=EFS_UTILS_POLICY_ARN)
         click.echo(f"Attached {EFS_UTILS_POLICY_ARN} to node role {role_name}.")
+
+
+def _ensure_cloudwatch_node_role_permissions(
+    cluster_name: str, region: str, *, dry_run: bool
+) -> None:
+    if dry_run:
+        click.echo(
+            f"→ ensure managed nodegroup roles include {CLOUDWATCH_AGENT_POLICY_ARN}"
+        )
+        return
+
+    import boto3
+
+    eks = boto3.client("eks", region_name=region)
+    iam = boto3.client("iam")
+
+    nodegroup_names = eks.list_nodegroups(clusterName=cluster_name).get(
+        "nodegroups", []
+    )
+    for nodegroup_name in nodegroup_names:
+        nodegroup = eks.describe_nodegroup(
+            clusterName=cluster_name, nodegroupName=nodegroup_name
+        )["nodegroup"]
+        role_arn = nodegroup["nodeRole"]
+        role_name = role_arn.rsplit("/", 1)[-1]
+
+        attached = iam.list_attached_role_policies(RoleName=role_name).get(
+            "AttachedPolicies", []
+        )
+        if any(
+            policy.get("PolicyArn") == CLOUDWATCH_AGENT_POLICY_ARN
+            for policy in attached
+        ):
+            continue
+
+        iam.attach_role_policy(
+            RoleName=role_name, PolicyArn=CLOUDWATCH_AGENT_POLICY_ARN
+        )
+        click.echo(f"Attached {CLOUDWATCH_AGENT_POLICY_ARN} to node role {role_name}.")
 
 
 def _wait_for_efs_mount_targets(
@@ -652,9 +719,6 @@ def _build_entrypoint(
         strategy,
         "--num-gpus",
         str(num_gpus),
-        "--vllm" if vllm else "--no-vllm",
-        "--tensor-parallel-size",
-        str(tensor_parallel_size),
         "--random-seed",
         str(random_seed),
         "--merge-cuda" if merge_cuda else "--no-merge-cuda",
@@ -662,6 +726,12 @@ def _build_entrypoint(
         "--reshard" if reshard else "--no-reshard",
         "--baseline" if run_baseline else "--no-baseline",
     ]
+    if vllm:
+        cmd.append("--vllm")
+    else:
+        cmd.append("--no-vllm")
+    if tensor_parallel_size > 1:
+        cmd.extend(["--tensor-parallel-size", str(tensor_parallel_size)])
     if limit is not None:
         cmd.extend(["--limit", str(limit)])
     cmd.extend(extra_args)
@@ -688,6 +758,177 @@ def _ray_worker_scale_bounds(
         "total_workers": cpu_workers + gpu_workers,
         "total_workers_max": cpu_workers_max + gpu_workers_max,
     }
+
+
+def _pod_is_ready(pod: Mapping[str, object]) -> bool:
+    status = pod.get("status", {})
+    if not isinstance(status, Mapping):
+        return False
+    if status.get("phase") != "Running":
+        return False
+    conditions = status.get("conditions", [])
+    if not isinstance(conditions, list):
+        return False
+    for condition in conditions:
+        if (
+            isinstance(condition, Mapping)
+            and condition.get("type") == "Ready"
+            and condition.get("status") == "True"
+        ):
+            return True
+    return False
+
+
+def _gpu_limit_for_pod(pod: Mapping[str, object]) -> int:
+    spec = pod.get("spec", {})
+    if not isinstance(spec, Mapping):
+        return 0
+    containers = spec.get("containers", [])
+    if not isinstance(containers, list):
+        return 0
+    total = 0
+    for container in containers:
+        if not isinstance(container, Mapping):
+            continue
+        resources = container.get("resources", {})
+        if not isinstance(resources, Mapping):
+            continue
+        limits = resources.get("limits", {})
+        if not isinstance(limits, Mapping):
+            continue
+        try:
+            total += int(limits.get("nvidia.com/gpu", 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _gpu_preflight(namespace: str, required_gpus: int, *, dry_run: bool) -> None:
+    if required_gpus <= 0:
+        return
+
+    if dry_run:
+        click.echo(
+            "→ verify Ray gpu-workers pods are Ready and pass CUDA preflight before job submission"
+        )
+        return
+
+    deadline = time.time() + 600
+    ready_pods: list[dict] = []
+    ready_gpus = 0
+    while time.time() < deadline:
+        data = json.loads(
+            _capture_command(
+                [
+                    "kubectl",
+                    "get",
+                    "pods",
+                    "-n",
+                    namespace,
+                    "-l",
+                    "ray.io/group=gpu-workers",
+                    "-o",
+                    "json",
+                ]
+            )
+        )
+        items = data.get("items", [])
+        if isinstance(items, list):
+            ready_pods = [
+                pod for pod in items if isinstance(pod, dict) and _pod_is_ready(pod)
+            ]
+        else:
+            ready_pods = []
+        ready_gpus = sum(_gpu_limit_for_pod(pod) for pod in ready_pods)
+        if ready_pods and ready_gpus >= required_gpus:
+            break
+        time.sleep(10)
+
+    if ready_gpus < required_gpus:
+        raise click.ClickException(
+            f"GPU preflight failed: need {required_gpus} ready GPU(s), found {ready_gpus}."
+        )
+
+    smoke = textwrap.dedent(
+        """
+        nvidia-smi >/dev/null &&
+        python - <<'PY'
+        import torch
+        if not torch.cuda.is_available():
+            raise SystemExit("torch.cuda.is_available() is False")
+        if torch.cuda.device_count() < 1:
+            raise SystemExit("No CUDA devices detected")
+        x = torch.randn(8, 8, device="cuda")
+        print(f"cuda_ok={torch.cuda.get_device_name(0)} sum={float(x.sum().item())}")
+        PY
+        """
+    ).strip()
+
+    for pod in ready_pods:
+        name = pod.get("metadata", {}).get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        click.echo(f"Running GPU preflight on pod {name}...")
+        try:
+            _run_command(
+                [
+                    "kubectl",
+                    "exec",
+                    "-n",
+                    namespace,
+                    name,
+                    "--",
+                    "bash",
+                    "-lc",
+                    smoke,
+                ]
+            )
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(
+                f"GPU preflight failed on pod {name} with exit code {exc.returncode}."
+            ) from exc
+
+
+def _build_finalist_entrypoint(
+    *,
+    storage_subpath: str,
+    trust_remote_code: bool,
+    merge_cuda: bool,
+) -> str:
+    storage_root = f"/data/artifacts/{storage_subpath}"
+    script = textwrap.dedent(
+        f"""
+        import ray
+        import yaml
+        from mergekit.config import MergeConfiguration
+        from mergekit.merge import run_merge
+        from mergekit.options import MergeOptions
+
+        ray.init(address="auto")
+
+        CONFIG_PATH = {storage_root!r} + "/best_config.yaml"
+        OUT_PATH = {storage_root!r} + "/final_model"
+        CACHE_PATH = {storage_root!r} + "/transformers_cache"
+
+        @ray.remote(num_cpus=1, num_gpus=1)
+        def materialize() -> None:
+            merge_options = MergeOptions(
+                cuda={merge_cuda!r},
+                low_cpu_memory={merge_cuda!r},
+                read_to_gpu={merge_cuda!r},
+                transformers_cache=CACHE_PATH,
+                trust_remote_code={trust_remote_code!r},
+            )
+            merge_options.apply_global_options()
+            with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+                config_source = handle.read()
+            config = MergeConfiguration.model_validate(yaml.safe_load(config_source))
+            run_merge(config, OUT_PATH, options=merge_options, config_source=config_source)
+
+        ray.get(materialize.remote())
+        """
+    ).strip()
+    return shlex.join(["python", "-c", script])
 
 
 def _uses_default_source(ctx: click.Context, parameter_name: str) -> bool:
@@ -912,6 +1153,48 @@ def bootstrap(
         rendered_cluster_config.unlink(missing_ok=True)
 
     _ensure_kubeconfig(cluster_name, region, dry_run=dry_run)
+    _run_command(
+        [
+            "eksctl",
+            "scale",
+            "nodegroup",
+            "--cluster",
+            cluster_name,
+            "--region",
+            region,
+            "--name",
+            f"{cluster_name}-cpu",
+            "--nodes",
+            str(cpu_nodes),
+            "--nodes-min",
+            "1",
+            "--nodes-max",
+            str(cpu_max_nodes),
+            "--wait",
+        ],
+        dry_run=dry_run,
+    )
+    _run_command(
+        [
+            "eksctl",
+            "scale",
+            "nodegroup",
+            "--cluster",
+            cluster_name,
+            "--region",
+            region,
+            "--name",
+            f"{cluster_name}-gpu",
+            "--nodes",
+            str(gpu_nodes),
+            "--nodes-min",
+            "0",
+            "--nodes-max",
+            str(gpu_max_nodes),
+            "--wait",
+        ],
+        dry_run=dry_run,
+    )
 
     _run_command(
         [
@@ -945,6 +1228,8 @@ def bootstrap(
     _ensure_efs_node_role_permissions(cluster_name, region, dry_run=dry_run)
     efs_file_system_id = _ensure_efs(cluster_name, region, dry_run=dry_run)
     _ensure_cost_allocation_tags(cluster_name, region, dry_run=dry_run)
+    if gpu_nodes > 0:
+        _ensure_cloudwatch_node_role_permissions(cluster_name, region, dry_run=dry_run)
 
     replacements = {
         "MERGEKIT_IMAGE": image,
@@ -968,7 +1253,30 @@ def bootstrap(
             dry_run=dry_run,
         )
 
+    if gpu_nodes > 0:
+        fluent_bit_manifest = DEPLOY_DIR / "fluent-bit.yaml"
+        if fluent_bit_manifest.exists():
+            _kubectl_manifest(
+                "apply",
+                fluent_bit_manifest,
+                "amazon-cloudwatch",
+                replacements={
+                    "AWS_REGION": region,
+                    "CLUSTER_NAME": cluster_name,
+                    "MERGEKIT_NAMESPACE": namespace,
+                },
+                dry_run=dry_run,
+            )
+
     cluster_manifest = DEPLOY_DIR / "ray-cluster.yaml"
+    _kubectl_manifest(
+        "delete",
+        cluster_manifest,
+        namespace,
+        replacements=replacements,
+        dry_run=dry_run,
+        extra_args=["--ignore-not-found"],
+    )
     _kubectl_manifest(
         "apply",
         cluster_manifest,
@@ -1058,6 +1366,12 @@ def submit(
         raise click.ClickException(
             "--tensor-parallel-size cannot exceed --num-gpus for a submitted run."
         )
+    if num_gpus > 0 and save_final_model:
+        raise click.ClickException(
+            "EKS GPU search runs must use --no-save-final-model. Submit the search first, then materialize the finalist separately."
+        )
+    if num_gpus > 0:
+        _gpu_preflight(namespace, num_gpus, dry_run=dry_run)
 
     entrypoint = _build_entrypoint(
         config_path=config_path,
@@ -1093,6 +1407,65 @@ def submit(
     if not dry_run:
         click.echo(
             f"RayJob submitted. Inspect with `kubectl get rayjobs -n {namespace}`."
+        )
+
+
+@cli.command("submit-finalist")
+@click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
+@click.option("--job-name", default="mergekit-finalist-job", show_default=True)
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
+@click.option(
+    "--storage-subpath",
+    required=True,
+    help="Existing run storage directory containing best_config.yaml",
+)
+@click.option(
+    "--trust-remote-code/--no-trust-remote-code", default=False, show_default=True
+)
+@click.option("--merge-cuda/--no-merge-cuda", default=True, show_default=True)
+@click.pass_context
+def submit_finalist(
+    ctx: click.Context,
+    ray_cluster_name: str,
+    job_name: str,
+    region: str,
+    storage_subpath: str,
+    trust_remote_code: bool,
+    merge_cuda: bool,
+) -> None:
+    """Materialize a saved finalist on a GPU worker after search completes."""
+
+    dry_run = ctx.obj["dry_run"]
+    namespace = ctx.obj["namespace"]
+
+    _verify_prerequisites(skip=dry_run)
+    _gpu_preflight(namespace, 1, dry_run=dry_run)
+    entrypoint = _build_finalist_entrypoint(
+        storage_subpath=storage_subpath,
+        trust_remote_code=trust_remote_code,
+        merge_cuda=merge_cuda,
+    )
+
+    _kubectl_manifest(
+        "apply",
+        DEPLOY_DIR / "ray-job.yaml",
+        namespace,
+        replacements={
+            "AWS_REGION": region,
+            "RAY_CLUSTER_NAME": ray_cluster_name,
+            "RAY_JOB_NAME": job_name,
+            "MERGEKIT_ENTRYPOINT": entrypoint,
+        },
+        dry_run=dry_run,
+    )
+
+    if not dry_run:
+        click.echo(
+            f"Finalist materialization job submitted. Inspect with `kubectl get rayjobs -n {namespace}`."
         )
 
 
@@ -1155,6 +1528,20 @@ def teardown(
             storage_manifest,
             namespace,
             replacements=replacements,
+            dry_run=dry_run,
+            extra_args=["--ignore-not-found"],
+        )
+    fluent_bit_manifest = DEPLOY_DIR / "fluent-bit.yaml"
+    if fluent_bit_manifest.exists():
+        _kubectl_manifest(
+            "delete",
+            fluent_bit_manifest,
+            "amazon-cloudwatch",
+            replacements={
+                **replacements,
+                "CLUSTER_NAME": cluster_name,
+                "MERGEKIT_NAMESPACE": namespace,
+            },
             dry_run=dry_run,
             extra_args=["--ignore-not-found"],
         )
@@ -1221,6 +1608,37 @@ def status(
     if not dry_run:
         cluster = _describe_cluster(cluster_name, region)
         click.echo(json.dumps(cluster, indent=2, default=str))
+
+
+@cli.command()
+@click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
+@click.option("--local-port", default=8265, show_default=True)
+@click.option("--ray-client-port", default=10001, show_default=True)
+@click.pass_context
+def dashboard(
+    ctx: click.Context,
+    ray_cluster_name: str,
+    local_port: int,
+    ray_client_port: int,
+) -> None:
+    """Port-forward the Ray dashboard and print the local URL."""
+
+    dry_run = ctx.obj["dry_run"]
+    namespace = ctx.obj["namespace"]
+
+    click.echo(f"Ray dashboard: http://127.0.0.1:{local_port}")
+    _run_command(
+        [
+            "kubectl",
+            "port-forward",
+            "-n",
+            namespace,
+            f"svc/{ray_cluster_name}-head-svc",
+            f"{local_port}:8265",
+            f"{ray_client_port}:10001",
+        ],
+        dry_run=dry_run,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entrypoint

@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amazon-cloudwatch
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit-read
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit-read
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: amazon-cloudwatch
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-cluster-info
+  namespace: amazon-cloudwatch
+data:
+  cluster.name: "__CLUSTER_NAME__"
+  logs.region: "__AWS_REGION__"
+  mergekit.namespace: "__MERGEKIT_NAMESPACE__"
+  http.server: "On"
+  http.port: "2020"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: amazon-cloudwatch
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush                     1
+        Daemon                    Off
+        Log_Level                 info
+        Parsers_File              parsers.conf
+        HTTP_Server               ${HTTP_SERVER}
+        HTTP_Listen               0.0.0.0
+        HTTP_Port                 ${HTTP_PORT}
+        storage.path              /var/fluent-bit/state/flb-storage/
+        storage.sync              normal
+        storage.backlog.mem_limit 64M
+
+    @INCLUDE application-log.conf
+
+  application-log.conf: |
+    [INPUT]
+        Name               tail
+        Tag                kube.*
+        Path               /var/log/containers/*.log
+        Exclude_Path       /var/log/containers/fluent-bit*
+        Parser             cri
+        DB                 /var/fluent-bit/state/flb_container.db
+        Mem_Buf_Limit      50MB
+        Skip_Long_Lines    On
+        Refresh_Interval   10
+        Rotate_Wait        30
+        storage.type       filesystem
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+        Labels              On
+        Annotations         Off
+
+    [FILTER]
+        Name                grep
+        Match               kube.*
+        Regex               $kubernetes['namespace_name'] ^${MERGEKIT_NAMESPACE}$
+
+    [OUTPUT]
+        Name                cloudwatch_logs
+        Match               kube.*
+        region              ${AWS_REGION}
+        log_group_name      /aws/eks/${CLUSTER_NAME}/mergekit
+        log_stream_prefix   from-fluent-bit-
+        auto_create_group   true
+
+  parsers.conf: |
+    [PARSER]
+        Name                cri
+        Format              regex
+        Regex               ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key            time
+        Time_Format         %Y-%m-%dT%H:%M:%S.%L%z
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+    spec:
+      serviceAccountName: fluent-bit
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: fluent-bit
+          image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-cluster-info
+                  key: logs.region
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-cluster-info
+                  key: cluster.name
+            - name: MERGEKIT_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-cluster-info
+                  key: mergekit.namespace
+            - name: HTTP_SERVER
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-cluster-info
+                  key: http.server
+            - name: HTTP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: fluent-bit-cluster-info
+                  key: http.port
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              memory: 400Mi
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+            - name: fluentbitstate
+              mountPath: /var/fluent-bit/state
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: fluentbitstate
+          hostPath:
+            path: /var/fluent-bit/state
+            type: DirectoryOrCreate
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config
