@@ -47,12 +47,12 @@ We just started a corrected run with the `--no-merge-cuda` flag:
 
 **✅ Flags Applied**:
 - `--no-merge-cuda` (CPU-only, no CUDA)
-- `--strategy serial` (per-generation logging)  
+- `--strategy serial` (per-generation logging)
 - `--num-workers 1` (single CPU worker)
 - `--save-final-model` (save best result)
 
-**Log File**: `workspace/ga_10gen_mac_cpu_run.log`  
-**Expected**: 10 `[GA]` lines (was failing before)  
+**Log File**: `workspace/ga_10gen_mac_cpu_run.log`
+**Expected**: 10 `[GA]` lines (was failing before)
 **Status**: ⏳ Running now...
 
 ---

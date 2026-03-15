@@ -324,7 +324,9 @@ def _model_out_config(
             set_config_value(res, vocab_key, max_vocab_size)
         except Exception as e:
             LOG.warning(
-                "Unable to set vocabulary size %s on output config", vocab_key, exc_info=e
+                "Unable to set vocabulary size %s on output config",
+                vocab_key,
+                exc_info=e,
             )
 
     module_layers = {}

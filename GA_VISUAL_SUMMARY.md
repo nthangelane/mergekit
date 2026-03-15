@@ -36,10 +36,10 @@ Fixed Config             Serial Evaluation       Callback Behavior       Result
 
 ### ❌ Your Original Run
 
-**Config**: No `generations` parameter, `pool` strategy  
-**Evaluations**: 120 models  
-**Generations Logged**: 1  
-**Convergence Data Points**: 1  
+**Config**: No `generations` parameter, `pool` strategy
+**Evaluations**: 120 models
+**Generations Logged**: 1
+**Convergence Data Points**: 1
 
 ```
 Log Output:
@@ -60,7 +60,7 @@ Fitness
 0.5B│
     ├─────────────────▶ Generation
     Gen 1
-    
+
 Very boring, no convergence visible
 ```
 
@@ -68,10 +68,10 @@ Very boring, no convergence visible
 
 ### ✅ New Run (In Progress)
 
-**Config**: `generations: 10`, `--strategy serial`  
-**Evaluations**: ~100-120 models  
-**Generations Logged**: 10 (expected)  
-**Convergence Data Points**: 10 (expected)  
+**Config**: `generations: 10`, `--strategy serial`
+**Evaluations**: ~100-120 models
+**Generations Logged**: 10 (expected)
+**Convergence Data Points**: 10 (expected)
 
 ```
 Log Output (Expected):
@@ -106,7 +106,7 @@ Fitness
     │         ●
     ├─────────────────▶ Generation
     1 2 3 4 5 6 7 8 9 10
-    
+
 Clear downward trend = model improving
 ```
 
@@ -234,6 +234,6 @@ python plot_ga_results.py workspace/ga_10gen_visual_run.log \
 
 ---
 
-**Current Time**: Run 2 estimated to complete in 15-20 minutes on CPU  
-**Location**: Check `workspace/ga_10gen_visual_run.log`  
+**Current Time**: Run 2 estimated to complete in 15-20 minutes on CPU
+**Location**: Check `workspace/ga_10gen_visual_run.log`
 **Next**: Extract metrics and generate improved plots

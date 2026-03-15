@@ -18,20 +18,21 @@ import ray.util.scheduling_strategies
 import torch
 import transformers
 
-from mergekit.evo.config import TaskConfiguration
 from mergekit.config import MergeConfiguration
+from mergekit.evo.config import TaskConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
 from mergekit.evo.monkeypatch import monkeypatch_lmeval_vllm
 
 # Try to import multi-method genome exception
 try:
-    from mergekit.evo.multi_method_genome import InvalidGenotypeError as MultiMethodInvalidGenotypeError
+    from mergekit.evo.multi_method_genome import (
+        InvalidGenotypeError as MultiMethodInvalidGenotypeError,
+    )
 except ImportError:
     MultiMethodInvalidGenotypeError = InvalidGenotypeError
 
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
-
 
 LOG = logging.getLogger(__name__)
 
@@ -134,7 +135,9 @@ def _infer_higher_is_better(metric_name: str) -> bool:
     return True
 
 
-def _metric_score_sign(results: Dict[str, Any], task_name: str, metric_name: str) -> float:
+def _metric_score_sign(
+    results: Dict[str, Any], task_name: str, metric_name: str
+) -> float:
     higher_is_better = (
         results.get("higher_is_better", {}).get(task_name, {}).get(metric_name)
     )
@@ -158,6 +161,7 @@ def _failure_result(
         "error_message": error_message,
     }
 
+
 _SIGNATURE_FIELDS = (
     "architectures",
     "model_type",
@@ -178,8 +182,7 @@ _SIGNATURE_FIELDS = (
 def _normalize_signature_value(value: Any) -> Any:
     if isinstance(value, dict):
         return tuple(
-            (key, _normalize_signature_value(val))
-            for key, val in sorted(value.items())
+            (key, _normalize_signature_value(val)) for key, val in sorted(value.items())
         )
     if isinstance(value, list):
         return tuple(_normalize_signature_value(v) for v in value)
@@ -229,7 +232,7 @@ def _format_signature_value(value: Any) -> str:
 
 
 def _find_signature_incompatibilities(
-    signatures: Dict[str, Dict[str, Any]]
+    signatures: Dict[str, Dict[str, Any]],
 ) -> List[str]:
     mismatches: List[str] = []
     for field in _SIGNATURE_FIELDS:
@@ -460,7 +463,9 @@ def evaluate_model(
                 )
             except ValueError as exc:
                 message = str(exc).lower()
-                if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                if "chat template" in message and eval_kwargs.get(
+                    "apply_chat_template"
+                ):
                     _emit_chat_template_retry_warning()
                     fallback_kwargs = dict(eval_kwargs)
                     fallback_kwargs["apply_chat_template"] = False
@@ -541,7 +546,9 @@ def evaluate_model_cpu(
                 )
             except ValueError as exc:
                 message = str(exc).lower()
-                if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                if "chat template" in message and eval_kwargs.get(
+                    "apply_chat_template"
+                ):
                     _emit_chat_template_retry_warning()
                     fallback_kwargs = dict(eval_kwargs)
                     fallback_kwargs["apply_chat_template"] = False
@@ -688,9 +695,7 @@ def _apply_metric_guards(result: dict) -> None:
         if perplexity is not None:
             try:
                 if float(perplexity) > 1e5:
-                    message = (
-                        f"Perplexity {float(perplexity):.3g} for task {task_name} exceeds guard threshold"
-                    )
+                    message = f"Perplexity {float(perplexity):.3g} for task {task_name} exceeds guard threshold"
                     logging.warning(
                         "%s; marking evaluation as failed",
                         message,
@@ -701,9 +706,7 @@ def _apply_metric_guards(result: dict) -> None:
                     result.setdefault("error_message", message)
                     return
             except (TypeError, ValueError):
-                message = (
-                    f"Non-numeric perplexity {perplexity!r} for task {task_name}"
-                )
+                message = f"Non-numeric perplexity {perplexity!r} for task {task_name}"
                 logging.warning(
                     "%s; marking evaluation as failed",
                     message,
@@ -717,9 +720,7 @@ def _apply_metric_guards(result: dict) -> None:
         if accuracy is not None:
             try:
                 if float(accuracy) < 1e-3:
-                    message = (
-                        f"Accuracy {float(accuracy):.3g} for task {task_name} below guard threshold"
-                    )
+                    message = f"Accuracy {float(accuracy):.3g} for task {task_name} below guard threshold"
                     logging.warning(
                         "%s; marking evaluation as failed",
                         message,

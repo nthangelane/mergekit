@@ -27,9 +27,9 @@ from mergekit.evo.helpers import (
     evaluate_model_cpu,
     evaluate_model_ray,
     evaluate_model_ray_cpu,
-    merge_model_with_details,
     merge_model_ray,
     merge_model_ray_cpu,
+    merge_model_with_details,
     merge_model_with_details_ray,
 )
 from mergekit.evo.task_utils import create_task_manager
@@ -461,9 +461,13 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
 
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
         import sys
-        print(f"\n[SERIAL] Evaluating {len(genotypes)} genotypes in serial mode...", flush=True)
+
+        print(
+            f"\n[SERIAL] Evaluating {len(genotypes)} genotypes in serial mode...",
+            flush=True,
+        )
         sys.stdout.flush()
-        
+
         if self.num_gpus and self.num_gpus > 0:
             print(f"[SERIAL] Using GPU path with {self.num_gpus} GPUs", flush=True)
             sys.stdout.flush()

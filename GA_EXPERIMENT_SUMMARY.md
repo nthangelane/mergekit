@@ -7,9 +7,9 @@ Your original run completed successfully but had a **logging visibility issue**:
 - ❌ Only 1 generation summary was logged (should have been ~10)
 - 📊 Plot showed 1 data point instead of convergence curve
 
-**Root Cause**: Missing `generations` parameter + Ray callback batching  
-**Status**: ✅ Fixed with new explicit 10-gen config and `--strategy serial`  
-**New Run**: In progress with proper generation logging  
+**Root Cause**: Missing `generations` parameter + Ray callback batching
+**Status**: ✅ Fixed with new explicit 10-gen config and `--strategy serial`
+**New Run**: In progress with proper generation logging
 
 See: `GA_QUICK_REFERENCE.md` for details (5-min read)
 

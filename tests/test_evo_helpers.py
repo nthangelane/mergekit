@@ -19,7 +19,9 @@ def test_eval_model_negates_lower_is_better_metrics(monkeypatch):
             },
         }
 
-    monkeypatch.setattr("mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        "mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate
+    )
 
     result = _eval_model(
         "huggingface",
@@ -45,7 +47,9 @@ def test_eval_model_preserves_higher_is_better_metrics(monkeypatch):
             },
         }
 
-    monkeypatch.setattr("mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        "mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate
+    )
 
     result = _eval_model(
         "huggingface",
@@ -64,12 +68,12 @@ def test_eval_model_falls_back_to_metric_name_when_direction_is_missing(monkeypa
                     "perplexity,none": 8.0,
                 }
             },
-            "higher_is_better": {
-                "wikitext": {}
-            },
+            "higher_is_better": {"wikitext": {}},
         }
 
-    monkeypatch.setattr("mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate)
+    monkeypatch.setattr(
+        "mergekit.evo.helpers.lm_eval.simple_evaluate", fake_simple_evaluate
+    )
 
     result = _eval_model(
         "huggingface",

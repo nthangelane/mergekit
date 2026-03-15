@@ -7,7 +7,7 @@ This document provides a comprehensive overview of the enhanced genetic algorith
 ## Table of Contents
 
 1. [System Architecture](#system-architecture)
-2. [Multi-Method Genome](#multi-method-genome) 
+2. [Multi-Method Genome](#multi-method-genome)
 3. [Semantic Operations](#semantic-operations)
 4. [Configuration Guide](#configuration-guide)
 5. [Usage Examples](#usage-examples)
@@ -59,7 +59,7 @@ The system supports evolution across 15 different merge methods:
 - **dare_linear**: DARE with linear interpolation
 - **della_linear**: DELLA with linear weights
 
-#### SLERP Variants  
+#### SLERP Variants
 - **slerp**: Spherical linear interpolation
 
 #### Task Arithmetic Family
@@ -104,7 +104,7 @@ parent_b = DareTiesGenome(density=0.8, epsilon=0.01)
 child = blend(parent_a, parent_b)  # Invalid - mixed incompatible parameters
 
 # Semantic (intelligent):
-parent_a = LinearGenome(weights=[0.3, 0.7]) 
+parent_a = LinearGenome(weights=[0.3, 0.7])
 parent_b = DareTiesGenome(density=0.8, epsilon=0.01)
 child = semantic_crossover(parent_a, parent_b)  # Valid DARE-TIES genome
 ```
@@ -162,18 +162,18 @@ multi_method_genome:
     - model_c
   base_model: base_model
   layer_granularity: 8
-  
+
   allowed_methods:
     - linear
     - dare_ties
     - task_arithmetic
     - slerp
-  
+
   semantic_crossover:
     method_inheritance_prob: 0.6
     parameter_compatibility_check: true
     constraint_aware: true
-    
+
   semantic_mutation:
     method_mutation_prob: 0.1
     parameter_constraint_enforcement: true
@@ -251,7 +251,7 @@ multi_method_genome:
     method_mutation_prob: 0.1
 ```
 
-#### Step 3: Update GA Configuration  
+#### Step 3: Update GA Configuration
 ```yaml
 # Before:
 ga:

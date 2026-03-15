@@ -9,7 +9,7 @@ genome:
     - EleutherAI/pythia-70m-deduped
     - EleutherAI/pythia-160m-deduped
     - roneneldan/TinyStories-33M
-    
+
 
   base_model: EleutherAI/pythia-70m-deduped
   tokenizer_source: base

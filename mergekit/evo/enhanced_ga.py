@@ -35,21 +35,22 @@ def _summarize_failure_reasons(results: List[dict]) -> str:
 @dataclass
 class EnhancedGAParams:
     """Enhanced GA parameters supporting semantic operations."""
+
     population_size: int = 32
     elite_fraction: float = 0.125
     mutation_rate: float = 0.15
     mutation_sigma: float = 0.05
     crossover: str = "semantic"  # "semantic", "arithmetic", "uniform", "sbx"
     tournament_size: int = 4
-    
+
     # Semantic operation parameters
     method_mutation_rate: float = 0.05  # Chance to change merge method
-    model_mutation_rate: float = 0.1    # Chance to modify model selection
-    parameter_mutation_rate: float = 0.2 # Chance to modify parameters
-    
+    model_mutation_rate: float = 0.1  # Chance to modify model selection
+    parameter_mutation_rate: float = 0.2  # Chance to modify parameters
+
     # Multi-method specific
     semantic_crossover_prob: float = 0.8  # Use semantic vs generic crossover
-    
+
     # Original parameters
     cache_round: float = 1e-4
     immigrant_fraction: float = 0.0
@@ -96,7 +97,7 @@ class EnhancedGAOptimizer:
             "crossover_type": getattr(self.params, "crossover", "arithmetic"),
             "immigrants": 0,
         }
-        
+
         x0 = self.genome.initial_genotype(random=self.random_init)
         if isinstance(x0, torch.Tensor):
             x0 = x0.view(-1).numpy()
@@ -141,6 +142,7 @@ class EnhancedGAOptimizer:
 
             if self.on_population_evaluated:
                 import datetime
+
                 info = {
                     "eval_seconds": float(eval_seconds),
                     "mutation_sigma": float(self.params.mutation_sigma),
@@ -179,7 +181,7 @@ class EnhancedGAOptimizer:
             # Inject random immigrants if requested
             n_imm = int(self.params.immigrant_fraction * self.pop_size)
             immigrants_added = 0
-            
+
             # Breed children with enhanced operations
             crossover_children = 0
             while len(next_pop) < self.pop_size:
@@ -189,7 +191,7 @@ class EnhancedGAOptimizer:
                 child = self._enhanced_mutate(child)
                 next_pop.append(child.astype(np.float32))
                 crossover_children += 1
-                
+
             # Replace tail with immigrants
             for i in range(n_imm):
                 if len(next_pop) - 1 - i < self.n_elite:
@@ -210,12 +212,14 @@ class EnhancedGAOptimizer:
         return best_x, best_score
 
     # --- Enhanced genetic operations ---
-    
+
     def _enhanced_crossover(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """Enhanced crossover with semantic awareness."""
-        if (self.is_multi_method and 
-            self.params.crossover == "semantic" and 
-            self.rs.random() < self.params.semantic_crossover_prob):
+        if (
+            self.is_multi_method
+            and self.params.crossover == "semantic"
+            and self.rs.random() < self.params.semantic_crossover_prob
+        ):
             # Use semantic crossover for multi-method genomes
             a_torch = torch.from_numpy(a).float()
             b_torch = torch.from_numpy(b).float()
@@ -224,7 +228,7 @@ class EnhancedGAOptimizer:
         else:
             # Fall back to traditional crossover
             return self._traditional_crossover(a, b)
-            
+
     def _traditional_crossover(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """Traditional crossover operations."""
         if self.params.crossover == "uniform":
@@ -253,15 +257,15 @@ class EnhancedGAOptimizer:
             # Use semantic mutation for multi-method genomes
             x_torch = torch.from_numpy(x).float()
             mutated_torch = self.genome.mutate_semantic(
-                x_torch, 
+                x_torch,
                 mutation_rate=self.params.mutation_rate,
-                mutation_sigma=self.params.mutation_sigma
+                mutation_sigma=self.params.mutation_sigma,
             )
             return mutated_torch.numpy()
         else:
             # Traditional mutation
             return self._traditional_mutate(x)
-            
+
     def _traditional_mutate(self, x: np.ndarray) -> np.ndarray:
         """Traditional Gaussian mutation."""
         x = x.copy()
@@ -272,19 +276,21 @@ class EnhancedGAOptimizer:
         return x
 
     # --- Population initialization ---
-    
+
     def _init_population(self) -> np.ndarray:
         pop = []
-        
+
         # Always start with a baseline individual
         x0 = self.genome.initial_genotype(random=False)
         if isinstance(x0, torch.Tensor):
             x0 = x0.view(-1).numpy()
         pop.append(x0.copy().astype(np.float32))
-        
-        if not self.random_init and hasattr(self.genome, 'models'):
+
+        if not self.random_init and hasattr(self.genome, "models"):
             # Add model-specific seeds for traditional genomes
-            if hasattr(self.genome, 'definition') and hasattr(self.genome.definition, 'models'):
+            if hasattr(self.genome, "definition") and hasattr(
+                self.genome.definition, "models"
+            ):
                 models = self.genome.definition.models
                 x0_t = self.genome.initial_genotype(random=False)
                 if len(x0_t.shape) == 4:  # Traditional genome format
@@ -306,11 +312,11 @@ class EnhancedGAOptimizer:
                 # Add noise to baseline
                 noisy = x0 + self.rs.randn(self.dim).astype(np.float32) * 0.05
                 pop.append(noisy.astype(np.float32))
-                
+
         return np.stack(pop[: self.pop_size], axis=0)
 
     # --- Evaluation and selection (unchanged) ---
-    
+
     def _evaluate_population(self, pop: np.ndarray) -> Tuple[np.ndarray, List[dict]]:
         keys = [self._hash(ind) for ind in pop]
         to_eval = []
@@ -373,15 +379,15 @@ class EnhancedGAOptimizer:
 # Backwards compatibility - use enhanced optimizer with traditional parameters
 class GAOptimizer(EnhancedGAOptimizer):
     """Backwards compatible GA optimizer."""
-    
+
     def __init__(self, genome, strategy, params, **kwargs):
         # Convert old GAParams to EnhancedGAParams
-        if hasattr(params, '__dict__'):
+        if hasattr(params, "__dict__"):
             enhanced_params = EnhancedGAParams()
             for key, value in params.__dict__.items():
                 if hasattr(enhanced_params, key):
                     setattr(enhanced_params, key, value)
         else:
             enhanced_params = params
-            
+
         super().__init__(genome, strategy, enhanced_params, **kwargs)

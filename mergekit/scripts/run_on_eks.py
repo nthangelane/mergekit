@@ -30,7 +30,9 @@ DEFAULT_ENV_FILE = Path(".env.eks")
 DEFAULT_NAMESPACE = "mergekit"
 DEFAULT_RAY_CLUSTER_NAME = "mergekit-ga"
 DEFAULT_JOB_NAME = "mergekit-ga-job"
-REPO_ROOT = Path(os.environ.get("MERGEKIT_REPO_ROOT", Path(__file__).resolve().parents[2]))
+REPO_ROOT = Path(
+    os.environ.get("MERGEKIT_REPO_ROOT", Path(__file__).resolve().parents[2])
+)
 DEPLOY_DIR = Path(os.environ.get("MERGEKIT_DEPLOY_DIR", REPO_ROOT / "deploy"))
 DEFAULT_IMAGE = os.environ.get("MERGEKIT_IMAGE", "mergekit-ga:latest")
 DEFAULT_CONFIG_PATH = "/app/examples/evolve_ga_m1_micro.yml"
@@ -100,7 +102,9 @@ def _run_command(
     subprocess.run(list(cmd), check=True, env={**os.environ, **(env or {})})
 
 
-def _render_template(path: Path, replacements: Optional[Mapping[str, str]] = None) -> str:
+def _render_template(
+    path: Path, replacements: Optional[Mapping[str, str]] = None
+) -> str:
     content = path.read_text()
     for key, value in (replacements or {}).items():
         content = content.replace(f"__{key}__", value)
@@ -169,9 +173,14 @@ def _install_hint(command: str) -> str:
     if system == "darwin":
         return mac_commands.get(command, "Use Homebrew to install the required CLI.")
     if system == "linux":
-        return linux_commands.get(command, "Install the package via your distribution or follow upstream docs.")
+        return linux_commands.get(
+            command,
+            "Install the package via your distribution or follow upstream docs.",
+        )
     if system == "windows":
-        return windows_commands.get(command, "Install the package with Chocolatey or the official installer.")
+        return windows_commands.get(
+            command, "Install the package with Chocolatey or the official installer."
+        )
 
     return "Refer to the official installation guide for your operating system."
 
@@ -205,7 +214,9 @@ def _describe_cluster(cluster_name: str, region: str) -> dict:
     return eks.describe_cluster(name=cluster_name)["cluster"]
 
 
-def _ensure_efs_node_role_permissions(cluster_name: str, region: str, *, dry_run: bool) -> None:
+def _ensure_efs_node_role_permissions(
+    cluster_name: str, region: str, *, dry_run: bool
+) -> None:
     if dry_run:
         click.echo(f"→ ensure managed nodegroup roles include {EFS_UTILS_POLICY_ARN}")
         return
@@ -215,13 +226,19 @@ def _ensure_efs_node_role_permissions(cluster_name: str, region: str, *, dry_run
     eks = boto3.client("eks", region_name=region)
     iam = boto3.client("iam")
 
-    nodegroup_names = eks.list_nodegroups(clusterName=cluster_name).get("nodegroups", [])
+    nodegroup_names = eks.list_nodegroups(clusterName=cluster_name).get(
+        "nodegroups", []
+    )
     for nodegroup_name in nodegroup_names:
-        nodegroup = eks.describe_nodegroup(clusterName=cluster_name, nodegroupName=nodegroup_name)["nodegroup"]
+        nodegroup = eks.describe_nodegroup(
+            clusterName=cluster_name, nodegroupName=nodegroup_name
+        )["nodegroup"]
         role_arn = nodegroup["nodeRole"]
         role_name = role_arn.rsplit("/", 1)[-1]
 
-        attached = iam.list_attached_role_policies(RoleName=role_name).get("AttachedPolicies", [])
+        attached = iam.list_attached_role_policies(RoleName=role_name).get(
+            "AttachedPolicies", []
+        )
         if any(policy.get("PolicyArn") == EFS_UTILS_POLICY_ARN for policy in attached):
             continue
 
@@ -229,11 +246,17 @@ def _ensure_efs_node_role_permissions(cluster_name: str, region: str, *, dry_run
         click.echo(f"Attached {EFS_UTILS_POLICY_ARN} to node role {role_name}.")
 
 
-def _wait_for_efs_mount_targets(efs_client, filesystem_id: str, expected: int, timeout_s: int = 600) -> None:
+def _wait_for_efs_mount_targets(
+    efs_client, filesystem_id: str, expected: int, timeout_s: int = 600
+) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        mount_targets = efs_client.describe_mount_targets(FileSystemId=filesystem_id).get("MountTargets", [])
-        available = sum(1 for mt in mount_targets if mt.get("LifeCycleState") == "available")
+        mount_targets = efs_client.describe_mount_targets(
+            FileSystemId=filesystem_id
+        ).get("MountTargets", [])
+        available = sum(
+            1 for mt in mount_targets if mt.get("LifeCycleState") == "available"
+        )
         if available >= expected:
             return
         time.sleep(10)
@@ -258,9 +281,14 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
 
     filesystem_id: Optional[str] = None
     for filesystem in efs.describe_file_systems().get("FileSystems", []):
-        tags = efs.describe_tags(FileSystemId=filesystem["FileSystemId"]).get("Tags", [])
+        tags = efs.describe_tags(FileSystemId=filesystem["FileSystemId"]).get(
+            "Tags", []
+        )
         for tag in tags:
-            if tag.get("Key") == "mergekit-cluster" and tag.get("Value") == cluster_name:
+            if (
+                tag.get("Key") == "mergekit-cluster"
+                and tag.get("Value") == cluster_name
+            ):
                 filesystem_id = filesystem["FileSystemId"]
                 break
         if filesystem_id:
@@ -315,7 +343,9 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
                         "IpProtocol": "tcp",
                         "FromPort": 2049,
                         "ToPort": 2049,
-                        "IpRanges": [{"CidrIp": vpc_cidr, "Description": "VPC NFS access"}],
+                        "IpRanges": [
+                            {"CidrIp": vpc_cidr, "Description": "VPC NFS access"}
+                        ],
                     }
                 ],
             )
@@ -328,7 +358,9 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
         az_to_subnet.setdefault(subnet["AvailabilityZone"], subnet["SubnetId"])
     desired_subnets = list(az_to_subnet.values())
 
-    existing_mount_targets = efs.describe_mount_targets(FileSystemId=filesystem_id).get("MountTargets", [])
+    existing_mount_targets = efs.describe_mount_targets(FileSystemId=filesystem_id).get(
+        "MountTargets", []
+    )
     existing_subnets = {mt["SubnetId"] for mt in existing_mount_targets}
     for subnet_id in desired_subnets:
         if subnet_id in existing_subnets:
@@ -373,9 +405,13 @@ def _ensure_efs_csi_driver(cluster_name: str, region: str, *, dry_run: bool) -> 
         click.echo("EFS CSI driver addon already installed; ensuring it is active.")
 
     try:
-        eks.get_waiter("addon_active").wait(clusterName=cluster_name, addonName="aws-efs-csi-driver")
+        eks.get_waiter("addon_active").wait(
+            clusterName=cluster_name, addonName="aws-efs-csi-driver"
+        )
     except ClientError as exc:
-        raise click.ClickException(f"Failed waiting for aws-efs-csi-driver addon: {exc}") from exc
+        raise click.ClickException(
+            f"Failed waiting for aws-efs-csi-driver addon: {exc}"
+        ) from exc
 
 
 def _build_entrypoint(
@@ -420,9 +456,24 @@ def _build_entrypoint(
 
 
 @click.group()
-@click.option("--env-file", type=click.Path(path_type=Path), default=DEFAULT_ENV_FILE, help="Optional .env file with AWS_* overrides")
-@click.option("--namespace", default=DEFAULT_NAMESPACE, show_default=True, help="Kubernetes namespace for Ray components")
-@click.option("--dry-run/--no-dry-run", default=False, show_default=True, help="Print commands without executing them")
+@click.option(
+    "--env-file",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_ENV_FILE,
+    help="Optional .env file with AWS_* overrides",
+)
+@click.option(
+    "--namespace",
+    default=DEFAULT_NAMESPACE,
+    show_default=True,
+    help="Kubernetes namespace for Ray components",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=False,
+    show_default=True,
+    help="Print commands without executing them",
+)
 @click.option(
     "--image",
     default=lambda: os.environ.get("MERGEKIT_IMAGE", DEFAULT_IMAGE),
@@ -430,7 +481,9 @@ def _build_entrypoint(
     help="Container image to use for the Ray head/workers",
 )
 @click.pass_context
-def cli(ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image: str) -> None:
+def cli(
+    ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image: str
+) -> None:
     """Manage Ray on EKS resources for MergeKit GA."""
 
     _load_env_file(env_file)
@@ -443,9 +496,18 @@ def cli(ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image
 @cli.command()
 @click.option("--cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
 @click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.option("--cpu-node-type", default="m6i.xlarge", show_default=True)
-@click.option("--cpu-nodes", default=2, show_default=True, help="Total CPU nodes, including the node that hosts the Ray head pod")
+@click.option(
+    "--cpu-nodes",
+    default=2,
+    show_default=True,
+    help="Total CPU nodes, including the node that hosts the Ray head pod",
+)
 @click.option("--cpu-max-nodes", default=3, show_default=True)
 @click.option("--gpu-node-type", default="g6.xlarge", show_default=True)
 @click.option("--gpu-nodes", default=0, show_default=True)
@@ -498,13 +560,24 @@ def bootstrap(
                 dry_run=dry_run,
             )
         else:
-            click.echo(f"EKS cluster '{cluster_name}' already exists in {region}; skipping creation.")
+            click.echo(
+                f"EKS cluster '{cluster_name}' already exists in {region}; skipping creation."
+            )
     finally:
         rendered_cluster_config.unlink(missing_ok=True)
 
     _ensure_kubeconfig(cluster_name, region, dry_run=dry_run)
 
-    _run_command(["helm", "repo", "add", "kuberay", "https://ray-project.github.io/kuberay-helm"], dry_run=dry_run)
+    _run_command(
+        [
+            "helm",
+            "repo",
+            "add",
+            "kuberay",
+            "https://ray-project.github.io/kuberay-helm",
+        ],
+        dry_run=dry_run,
+    )
     _run_command(["helm", "repo", "update"], dry_run=dry_run)
 
     values_file = DEPLOY_DIR / "ray-values.yaml"
@@ -561,19 +634,37 @@ def bootstrap(
 @cli.command()
 @click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
 @click.option("--job-name", default=DEFAULT_JOB_NAME, show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.option("--config-path", default=DEFAULT_CONFIG_PATH, show_default=True)
 @click.option("--storage-subpath", default="runs/aws-smoke", show_default=True)
 @click.option("--max-fevals", default=4, show_default=True)
-@click.option("--strategy", type=click.Choice(["pool", "buffered", "serial"]), default="pool", show_default=True)
+@click.option(
+    "--strategy",
+    type=click.Choice(["pool", "buffered", "serial"]),
+    default="pool",
+    show_default=True,
+)
 @click.option("--num-gpus", default=0, show_default=True)
 @click.option("--limit", type=int, default=None)
 @click.option("--random-seed", default=42, show_default=True)
 @click.option("--merge-cuda/--no-merge-cuda", default=False, show_default=True)
-@click.option("--save-final-model/--no-save-final-model", default=False, show_default=True)
+@click.option(
+    "--save-final-model/--no-save-final-model", default=False, show_default=True
+)
 @click.option("--reshard/--no-reshard", default=False, show_default=True)
-@click.option("--baseline/--no-baseline", "run_baseline", default=False, show_default=True)
-@click.option("--extra-arg", "extra_args", multiple=True, help="Additional CLI args to append to mergekit-evolve-ga")
+@click.option(
+    "--baseline/--no-baseline", "run_baseline", default=False, show_default=True
+)
+@click.option(
+    "--extra-arg",
+    "extra_args",
+    multiple=True,
+    help="Additional CLI args to append to mergekit-evolve-ga",
+)
 @click.pass_context
 def submit(
     ctx: click.Context,
@@ -630,14 +721,20 @@ def submit(
     )
 
     if not dry_run:
-        click.echo(f"RayJob submitted. Inspect with `kubectl get rayjobs -n {namespace}`.")
+        click.echo(
+            f"RayJob submitted. Inspect with `kubectl get rayjobs -n {namespace}`."
+        )
 
 
 @cli.command()
 @click.option("--cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
 @click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
 @click.option("--job-name", default=DEFAULT_JOB_NAME, show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.pass_context
 def teardown(
     ctx: click.Context,
@@ -677,7 +774,9 @@ def teardown(
         dry_run=dry_run,
         extra_args=["--ignore-not-found"],
     )
-    _run_command(["helm", "uninstall", "kuberay-operator", "-n", namespace], dry_run=dry_run)
+    _run_command(
+        ["helm", "uninstall", "kuberay-operator", "-n", namespace], dry_run=dry_run
+    )
 
     storage_manifest = DEPLOY_DIR / "storage.yaml"
     if storage_manifest.exists():
@@ -707,9 +806,15 @@ def teardown(
 @cli.command()
 @click.option("--cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
 @click.option("--ray-cluster-name", default=DEFAULT_RAY_CLUSTER_NAME, show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.pass_context
-def status(ctx: click.Context, cluster_name: str, ray_cluster_name: str, region: str) -> None:
+def status(
+    ctx: click.Context, cluster_name: str, ray_cluster_name: str, region: str
+) -> None:
     """Show a short Ray cluster status report."""
 
     dry_run = ctx.obj["dry_run"]
@@ -727,7 +832,9 @@ def status(ctx: click.Context, cluster_name: str, ray_cluster_name: str, region:
         ],
         dry_run=dry_run,
     )
-    _run_command(["kubectl", "get", "pods", "-n", namespace, "-o", "wide"], dry_run=dry_run)
+    _run_command(
+        ["kubectl", "get", "pods", "-n", namespace, "-o", "wide"], dry_run=dry_run
+    )
     _run_command(["kubectl", "get", "rayclusters", "-n", namespace], dry_run=dry_run)
     _run_command(["kubectl", "get", "rayjobs", "-n", namespace], dry_run=dry_run)
     _run_command(

@@ -34,7 +34,9 @@ def test_limit_cli_override_updates_resolved_config(monkeypatch, tmp_path):
         assert config.limit == 7
         raise _StopAfterConfigCheck("stop after config validation")
 
-    monkeypatch.setattr(evolve_ga, "check_for_naughty_config", fake_check_for_naughty_config)
+    monkeypatch.setattr(
+        evolve_ga, "check_for_naughty_config", fake_check_for_naughty_config
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -94,9 +96,7 @@ def test_failed_blacklist_loader_filters_by_genome_scope(tmp_path):
     }
 
 
-def test_num_gpus_zero_disables_merge_cuda_before_baseline(
-    monkeypatch, tmp_path
-):
+def test_num_gpus_zero_disables_merge_cuda_before_baseline(monkeypatch, tmp_path):
     config_path = tmp_path / "evolve.yml"
     storage_path = tmp_path / "storage"
     config_path.write_text(

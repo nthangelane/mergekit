@@ -13,10 +13,10 @@ The enhanced GA system with multi-method genomes requires comprehensive testing 
 # tests/test_ga_evolution.py
 def test_traditional_genetic_operators():
     """Test arithmetic/uniform crossover and Gaussian mutation"""
-    
+
 def test_traditional_fitness_evaluation():
     """Test model evaluation pipeline with fixed methods"""
-    
+
 def test_traditional_population_management():
     """Test selection and elitism for parameter-only genomes"""
 ```
@@ -26,16 +26,16 @@ def test_traditional_population_management():
 # tests/test_multi_method_ga.py
 def test_semantic_crossover():
     """Test method-aware parameter inheritance"""
-    
+
 def test_constraint_aware_mutations():
     """Test parameter constraint enforcement"""
-    
+
 def test_method_evolution():
     """Test method mutation and compatibility"""
-    
+
 def test_genome_validation():
     """Test multi-method genome configuration parsing"""
-    
+
 def test_enhanced_optimizer_detection():
     """Test automatic detection of genome types"""
 ```
@@ -45,13 +45,13 @@ def test_enhanced_optimizer_detection():
 # tests/test_semantic_operations.py
 def test_method_compatibility_matrix():
     """Validate 15-method compatibility rules"""
-    
+
 def test_parameter_inheritance():
     """Test semantic crossover parameter selection"""
-    
+
 def test_constraint_repair():
     """Test automatic parameter constraint fixing"""
-    
+
 def test_method_specific_bounds():
     """Test different parameter ranges per method"""
 ```
@@ -67,7 +67,7 @@ def test_traditional_ga_pipeline():
     # Test full pipeline
 ```
 
-#### Multi-Method Integration  
+#### Multi-Method Integration
 ```python
 def test_multi_method_ga_pipeline():
     """End-to-end test with method evolution"""
@@ -99,7 +99,7 @@ genome:
 tasks:
   - name: hellaswag
     limit: 100
-  - name: winogrande  
+  - name: winogrande
     limit: 100
 
 ga:
@@ -157,12 +157,12 @@ def test_crossover_semantic_validity():
 ```
 
 #### Performance Regression Tests
-```python  
+```python
 def test_convergence_speed():
     """Multi-method GA should converge faster than traditional"""
     # Compare convergence curves
     # Measure evaluations to reach target fitness
-    
+
 def test_solution_quality():
     """Multi-method GA should find better solutions"""
     # Compare final fitness scores
@@ -178,7 +178,7 @@ def test_multi_method_config_parsing():
     # Test union type detection
     # Verify semantic parameter parsing
     # Check backwards compatibility
-    
+
 def test_genome_type_detection():
     """Test automatic genome type detection"""
     # Test isinstance() logic in evolve_ga.py
@@ -196,7 +196,7 @@ test_matrix:
   - backwards_compatibility
   - semantic_operations_unit_tests
   - integration_tests_tiny_models
-  
+
 performance_benchmarks:
   - convergence_speed_comparison
   - solution_quality_comparison
@@ -207,7 +207,7 @@ performance_benchmarks:
 
 #### Fast Tests (< 2 minutes)
 - Unit tests for genetic operators
-- Configuration parsing tests  
+- Configuration parsing tests
 - Semantic operation validation
 - Method compatibility tests
 
@@ -246,7 +246,7 @@ enhanced_ga:
 
 ### Comprehensive Test Configuration
 ```yaml
-# tests/configs/comprehensive_test.yml  
+# tests/configs/comprehensive_test.yml
 multi_method_genome:
   models:
     - EleutherAI/pythia-70m-deduped

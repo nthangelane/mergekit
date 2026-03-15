@@ -11,7 +11,7 @@ while true; do
     echo "GA Run Monitor - $(date '+%H:%M:%S')"
     echo "========================================"
     echo ""
-    
+
     # Check if process is running
     if ps -p 15428 > /dev/null 2>&1; then
         echo "✅ Process: Running (PID 15428)"
@@ -21,11 +21,11 @@ while true; do
         echo "Check the log: tail -50 workspace/ga_10gen_mac_cpu_run.log"
         exit 1
     fi
-    
+
     # Count generations
     GENS=$(grep '\[GA\]' workspace/ga_10gen_mac_cpu_run.log 2>/dev/null | wc -l | tr -d ' ')
     echo "📊 Generations: $GENS/10"
-    
+
     # Progress bar
     PERCENT=$((GENS * 10))
     printf "Progress: ["
@@ -37,14 +37,14 @@ while true; do
         fi
     done
     printf "] $PERCENT%%\n"
-    
+
     echo ""
     echo "Latest activity:"
     tail -8 workspace/ga_10gen_mac_cpu_run.log | tail -5
-    
+
     echo ""
     echo "─────────────────────────────────────────"
-    
+
     if [ "$GENS" -ge 10 ]; then
         echo ""
         echo "🎉 COMPLETE! All 10 generations finished!"
@@ -53,6 +53,6 @@ while true; do
         echo "  grep '[GA]' workspace/ga_10gen_mac_cpu_run.log"
         break
     fi
-    
+
     sleep 15
 done

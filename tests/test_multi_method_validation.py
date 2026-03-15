@@ -5,7 +5,10 @@ import yaml
 
 from mergekit.common import ModelReference
 from mergekit.evo.config import EvolMergeConfiguration
-from mergekit.evo.multi_method_genome import MultiMethodGenome, MultiMethodGenomeDefinition
+from mergekit.evo.multi_method_genome import (
+    MultiMethodGenome,
+    MultiMethodGenomeDefinition,
+)
 
 
 def test_multi_method_allows_slerp_with_limited_selection():
@@ -110,7 +113,9 @@ def test_m1_micro_example_uses_layer_blocks(monkeypatch):
 
     monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
 
-    config_path = Path(__file__).resolve().parents[1] / "examples" / "evolve_ga_m1_micro.yml"
+    config_path = (
+        Path(__file__).resolve().parents[1] / "examples" / "evolve_ga_m1_micro.yml"
+    )
     config_data = yaml.safe_load(config_path.read_text())
 
     evol_config = EvolMergeConfiguration.model_validate(config_data)

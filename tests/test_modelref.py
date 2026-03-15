@@ -60,7 +60,9 @@ class TestModelReference:
             assert "*.safetensors" in allow_patterns
             return str(snapshot_path)
 
-        monkeypatch.setattr(common.huggingface_hub, "list_repo_files", fake_list_repo_files)
+        monkeypatch.setattr(
+            common.huggingface_hub, "list_repo_files", fake_list_repo_files
+        )
         monkeypatch.setattr(
             common.huggingface_hub,
             "snapshot_download",

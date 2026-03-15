@@ -13,7 +13,9 @@ LOGGER = logging.getLogger("mergekit.tasks")
 
 
 class _LambadaFewshotWarningFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - logging filter
+    def filter(
+        self, record: logging.LogRecord
+    ) -> bool:  # pragma: no cover - logging filter
         message = record.getMessage()
         if "[Task: lambada_openai]" in message and "fewshot_docs" in message:
             return False
@@ -28,7 +30,9 @@ def _iter_paths(paths: Optional[Union[str, Iterable[str]]]) -> List[str]:
     return list(paths)
 
 
-def _apply_task_overrides(task_manager: lm_eval.tasks.TaskManager, override_root: Path) -> None:
+def _apply_task_overrides(
+    task_manager: lm_eval.tasks.TaskManager, override_root: Path
+) -> None:
     if not override_root.is_dir():
         return
 
@@ -55,19 +59,17 @@ def create_task_manager(
 ) -> lm_eval.tasks.TaskManager:
     """Construct a TaskManager that respects local override YAML files."""
     include_paths = [
-        str(Path(path).resolve())
-        for path in _iter_paths(task_search_path)
-        if path
+        str(Path(path).resolve()) for path in _iter_paths(task_search_path) if path
     ]
 
-    task_manager = lm_eval.tasks.TaskManager(
-        include_path=include_paths or None
-    )
+    task_manager = lm_eval.tasks.TaskManager(include_path=include_paths or None)
 
     override_root = Path(__file__).resolve().parent.parent / "lm_eval_overrides"
     _apply_task_overrides(task_manager, override_root)
 
     task_logger = logging.getLogger("lm_eval.tasks.task")
-    if not any(isinstance(f, _LambadaFewshotWarningFilter) for f in task_logger.filters):
+    if not any(
+        isinstance(f, _LambadaFewshotWarningFilter) for f in task_logger.filters
+    ):
         task_logger.addFilter(_LambadaFewshotWarningFilter())
     return task_manager

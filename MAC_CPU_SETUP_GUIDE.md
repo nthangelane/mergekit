@@ -110,7 +110,7 @@ grep -i "cuda\|gpu" workspace/ga_10gen_mac_cpu_run.log
 - ❌ Missing `--no-merge-cuda` flag (caused CUDA error)
 - ❌ Config was generic (not Mac-optimized)
 
-### This Attempt  
+### This Attempt
 - ✅ Using serial strategy (per-generation logging)
 - ✅ Added `--no-merge-cuda` (CPU-only execution)
 - ✅ Mac-optimized config and flags
@@ -215,7 +215,7 @@ cat ga_metrics.csv | column -t -s,
 When running GA on Mac, always use:
 
 - [ ] `--no-merge-cuda` ← CPU-only execution
-- [ ] `--strategy serial` ← Per-generation logging  
+- [ ] `--strategy serial` ← Per-generation logging
 - [ ] `--num-workers 1` ← Single CPU worker
 - [ ] `--storage-path` ← Required
 - [ ] `--save-final-model` ← Optional but recommended
@@ -243,16 +243,16 @@ python -m mergekit.scripts.evolve_ga config.yml \
 
 ## 📊 Current Run Status
 
-**Command**: 
+**Command**:
 ```
 evolve_ga workspace/ga_10gen_mac_cpu.yml \
   --no-merge-cuda \
   --strategy serial
 ```
 
-**Started**: 2025-10-19 ~12:40 UTC  
-**Expected Finish**: ~13:00 UTC (~15-20 min)  
-**Log**: `workspace/ga_10gen_mac_cpu_run.log`  
+**Started**: 2025-10-19 ~12:40 UTC
+**Expected Finish**: ~13:00 UTC (~15-20 min)
+**Log**: `workspace/ga_10gen_mac_cpu_run.log`
 **Status**: ⏳ Running...
 
 ---

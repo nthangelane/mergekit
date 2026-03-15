@@ -119,4 +119,3 @@ From `final_model/`:
 3. Add a detailed description and tags
 4. Enable model card features
 5. Share with the community!
-

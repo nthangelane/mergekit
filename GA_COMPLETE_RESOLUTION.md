@@ -6,7 +6,7 @@
 
 **Also Hit**: `AssertionError: Torch not compiled with CUDA enabled` on Mac M1
 
-**Our Analysis**: 
+**Our Analysis**:
 - ✅ Issue 1: You were 100% right! GA ran all 10 generations (~120 evaluations), but only 1 was logged
 - ✅ Issue 2: Mac doesn't have CUDA support; PyTorch was asserting CUDA available
 
@@ -47,7 +47,7 @@ AssertionError: Torch not compiled with CUDA enabled
 at mergekit/evo/strategy.py:352 in evaluate_genotype_serial_cpu()
 ```
 
-**Root Cause**: 
+**Root Cause**:
 - Mac M1/M2 don't have NVIDIA CUDA support
 - PyTorch runtime asserts CUDA available when loading tensors
 - Solution: Add `--no-merge-cuda` flag for CPU-only execution
@@ -96,7 +96,7 @@ python -m mergekit.scripts.evolve_ga config.yml \
   --no-merge-cuda            # ← Key fix 3: CPU-only for Mac
 ```
 
-**Mac-Specific Note**: 
+**Mac-Specific Note**:
 The `--no-merge-cuda` flag is **critical** for Mac M1/M2 users. Without it, PyTorch will attempt to load CUDA-compiled tensors and fail with `AssertionError: Torch not compiled with CUDA enabled`.
 
 ### 4. **Created Comprehensive Documentation** ✅
@@ -125,9 +125,9 @@ python -m mergekit.scripts.evolve_ga \
   2>&1 | tee workspace/ga_10gen_mac_cpu_run.log
 ```
 
-**Status**: ⏳ In progress (expected: 15-20 min runtime)  
-**Location**: `workspace/ga_10gen_mac_cpu_run.log`  
-**Expected Output**: 10 `[GA]` lines (was 1 before)  
+**Status**: ⏳ In progress (expected: 15-20 min runtime)
+**Location**: `workspace/ga_10gen_mac_cpu_run.log`
+**Expected Output**: 10 `[GA]` lines (was 1 before)
 **Platform**: Mac M1/M2 with CPU-only execution
 
 ---
@@ -440,28 +440,28 @@ Fitness improving over generations = GA working as intended!
 
 ## Questions Answered
 
-**Q: Why only 1 generation logged?**  
+**Q: Why only 1 generation logged?**
 A: Ray `pool` strategy batches callbacks. Need `--strategy serial` for per-gen logging.
 
-**Q: Was the GA broken?**  
+**Q: Was the GA broken?**
 A: No! GA ran perfectly. It was just a logging visibility issue.
 
-**Q: What changed to fix it?**  
+**Q: What changed to fix it?**
 A: Two things: (1) Added `generations: 10` to config, (2) Used `--strategy serial`.
 
-**Q: Why the CUDA error on Mac?**  
+**Q: Why the CUDA error on Mac?**
 A: Mac M1/M2 don't have NVIDIA CUDA. PyTorch asserts CUDA available when loading tensors. Solution: Add `--no-merge-cuda` flag.
 
-**Q: Is `--no-merge-cuda` Mac-only?**  
+**Q: Is `--no-merge-cuda` Mac-only?**
 A: No, any system without CUDA can use it. But it's especially critical on Mac.
 
-**Q: How long does the new run take?**  
+**Q: How long does the new run take?**
 A: ~15-20 minutes on Mac CPU (same models, 10 generations, serial strategy).
 
-**Q: Will I see 10 generations now?**  
+**Q: Will I see 10 generations now?**
 A: Yes! Check: `grep "[GA]" ga_10gen_mac_cpu_run.log | wc -l` (should be 10).
 
-**Q: Can I use other strategies?**  
+**Q: Can I use other strategies?**
 A: Yes, but `serial` gives best logging. `pool` is faster but batches callbacks.
 
 ---
@@ -476,13 +476,13 @@ A: Yes, but `serial` gives best logging. `pool` is faster but batches callbacks.
 
 ---
 
-**Created**: 2025-10-19 12:00-13:00 UTC  
-**Status**: ✅ Complete analysis + both fixes applied  
-**Documentation**: 50+ pages (10 files)  
-**Run Status**: In progress (15-20 min remaining)  
+**Created**: 2025-10-19 12:00-13:00 UTC
+**Status**: ✅ Complete analysis + both fixes applied
+**Documentation**: 50+ pages (10 files)
+**Run Status**: In progress (15-20 min remaining)
 **Platform**: Mac M1/M2 with CPU-only execution
 
-**Next Action**: 
+**Next Action**:
 1. Monitor: `tail -f workspace/ga_10gen_mac_cpu_run.log | grep "\[GA\]"` (expect 10 lines)
 2. Verify: No CUDA errors appear
 3. Extract: `python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table`

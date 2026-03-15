@@ -30,7 +30,7 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log | wc -l
 
 Expected progression:
 - After 2-3 minutes: 1-2 lines
-- After 5 minutes: 2-3 lines  
+- After 5 minutes: 2-3 lines
 - After 10 minutes: 5-6 lines
 - After 15 minutes: 8-10 lines
 

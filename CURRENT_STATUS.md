@@ -6,10 +6,10 @@ Your GA experiment is **now fixed and running** with both issues resolved:
 1. ✅ Generation logging (10 generations instead of 1)
 2. ✅ Mac CUDA compatibility (CPU-only execution)
 
-**Current Activity**: GA run in progress  
-**Status**: ⏳ ~30-40% complete (still in initialization phase)  
-**Terminal**: Active and collecting results to `workspace/ga_10gen_mac_cpu_run.log`  
-**Time Elapsed**: ~5 minutes  
+**Current Activity**: GA run in progress
+**Status**: ⏳ ~30-40% complete (still in initialization phase)
+**Terminal**: Active and collecting results to `workspace/ga_10gen_mac_cpu_run.log`
+**Time Elapsed**: ~5 minutes
 **Estimated Time Remaining**: 10-15 minutes
 
 ---
@@ -24,7 +24,7 @@ $ grep "\[GA\]" workspace/ga_10gen_run.log | wc -l
 1  # Only 1 line!
 ```
 
-**Root Cause**: 
+**Root Cause**:
 - Missing `generations: 10` in config
 - Ray's `pool` strategy batches callbacks (only logs once at end)
 
@@ -41,7 +41,7 @@ AssertionError: Torch not compiled with CUDA enabled
   at mergekit/evo/strategy.py:352
 ```
 
-**Root Cause**: 
+**Root Cause**:
 - Mac M1/M2 doesn't have NVIDIA CUDA
 - PyTorch was asserting CUDA available when loading tensors
 
@@ -68,7 +68,7 @@ ga:
 
 task:
   name: wikitext
-  
+
 merge_method: linear
 ```
 
@@ -155,7 +155,7 @@ tail -f workspace/ga_10gen_mac_cpu_run.log | grep "\[GA\]"
   - Shows how to fix it
   - Provides command templates
   - Includes troubleshooting section
-  
+
 - ✨ `MAC_FIX_SUMMARY.md` - Quick reference (2 min read)
   - One-sentence explanation
   - Command template
@@ -327,9 +327,9 @@ TOTAL               ~15-20 min      ⏳ ~30-40% complete
 
 ---
 
-**Status**: ✅ Issues identified and fixed  
-**Current**: ⏳ Run in progress (~5 min elapsed, 10-15 min remaining)  
-**Next**: Monitor and verify results when complete  
+**Status**: ✅ Issues identified and fixed
+**Current**: ⏳ Run in progress (~5 min elapsed, 10-15 min remaining)
+**Next**: Monitor and verify results when complete
 **Expected Outcome**: 10 [GA] lines with clear convergence, no CUDA errors
 
 🎉 **Your GA experiment is now properly configured and running on Mac!**

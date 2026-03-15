@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import gc
-import os
 import logging
+import os
 import tempfile
 from typing import Any, Optional
 

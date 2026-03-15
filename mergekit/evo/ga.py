@@ -146,6 +146,7 @@ class GAOptimizer:
 
             if self.on_population_evaluated:
                 import datetime
+
                 info = {
                     "eval_seconds": float(eval_seconds),
                     "mutation_sigma": float(self.params.mutation_sigma),

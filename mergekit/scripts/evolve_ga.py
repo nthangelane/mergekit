@@ -35,7 +35,6 @@ import torch
 import tqdm
 import yaml
 
-
 # Default to disabling tokenizer parallelism to avoid fork-safety warnings.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -47,18 +46,21 @@ except ImportError:
 
 
 from mergekit.common import ModelReference, call_with_dtype
-from mergekit.evo.helpers import _eval_model
+from mergekit.evo.cache_utils import genotype_exact_hash
 from mergekit.evo.config import (
     EvolMergeConfiguration,
     ModelGenomeDefinition,
     TaskConfiguration,
     check_for_naughty_config,
 )
-from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
+from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.genome import ModelGenome
-from mergekit.evo.multi_method_genome import MultiMethodGenome, MultiMethodGenomeDefinition
-from mergekit.evo.cache_utils import genotype_exact_hash
+from mergekit.evo.helpers import _eval_model
+from mergekit.evo.multi_method_genome import (
+    MultiMethodGenome,
+    MultiMethodGenomeDefinition,
+)
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
@@ -68,7 +70,6 @@ from mergekit.evo.task_utils import create_task_manager
 from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
-
 
 LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
 FAILED_BLACKLIST_FILENAME = "failed_genotype_blacklist.csv"
@@ -84,7 +85,9 @@ def _best_weighted_score_from_frame(frame: "pandas.DataFrame") -> Optional[float
     if "weighted_score" not in frame.columns:
         return None
 
-    numeric_scores = pandas.to_numeric(frame["weighted_score"], errors="coerce").dropna()
+    numeric_scores = pandas.to_numeric(
+        frame["weighted_score"], errors="coerce"
+    ).dropna()
     if numeric_scores.empty:
         return None
     return float(numeric_scores.max())
@@ -179,7 +182,9 @@ def _resolve_merge_cuda(merge_cuda: bool, num_gpus: Optional[int]) -> bool:
     return merge_cuda
 
 
-def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]] = None) -> None:
+def prune_stale_merged_artifacts(
+    storage_path: str, *, keep: Optional[List[Path]] = None
+) -> None:
     """Purge transient merged model directories to keep disk usage in check."""
 
     merged_dir = Path(storage_path) / "merged"
@@ -426,7 +431,11 @@ def main(
 
     if not hf_model_id and hf_username:
         base_ref = config.genome.base_model or config.genome.models[0]
-        base_short = re.sub(r"[^a-zA-Z0-9]+", "-", str(base_ref).split("/")[-1]).strip("-").lower()
+        base_short = (
+            re.sub(r"[^a-zA-Z0-9]+", "-", str(base_ref).split("/")[-1])
+            .strip("-")
+            .lower()
+        )
         date_stamp = datetime.now().strftime("%d%b").lower()
         hf_model_id = f"{hf_username}/gaevolve-{date_stamp}-{base_short}"
         stage_log("Stage-Init", f"Auto-generated Hugging Face repo: {hf_model_id}")
@@ -482,7 +491,9 @@ def main(
             tracking_uri=mlflow_tracking_uri,
         )
     else:
-        stage_log("Stage-Tracking", "Experiment tracking disabled (logging to console only).")
+        stage_log(
+            "Stage-Tracking", "Experiment tracking disabled (logging to console only)."
+        )
         tracker = create_tracker("none")
         tracker.initialize(project_name="no-tracking", config={})
 
@@ -533,10 +544,11 @@ def main(
 
     # Create genome based on type - check if it's MultiMethodGenomeDefinition
     from mergekit.evo.multi_method_genome import MultiMethodGenomeDefinition
+
     genome_config = config.genome
-    
+
     if isinstance(genome_config, MultiMethodGenomeDefinition):
-        genome_type = 'multi_method'
+        genome_type = "multi_method"
         # Create multi-method genome
         genome = MultiMethodGenome(
             MultiMethodGenomeDefinition.model_validate(
@@ -549,7 +561,7 @@ def main(
             trust_remote_code=trust_remote_code,
         )
     else:
-        genome_type = 'standard'
+        genome_type = "standard"
         # Create traditional genome
         genome = ModelGenome(
             ModelGenomeDefinition.model_validate(
@@ -596,7 +608,7 @@ def main(
         tracker.log_best_individual(x, score, step, genome)
 
     def save_best_config(x: np.ndarray):
-        if genome_type == 'multi_method':
+        if genome_type == "multi_method":
             merge_config = genome.genotype_to_merge_config(x)
         else:
             merge_config = genome.genotype_merge_config(x)
@@ -662,7 +674,9 @@ def main(
     generation_best_history: List[float] = []
     last_global_best = float("-inf")
     logged_failed_hashes: set[str] = set(persisted_failed_genotypes)
-    total_generations = max(1, math.ceil(max_fevals / max(ga_params.population_size, 1)))
+    total_generations = max(
+        1, math.ceil(max_fevals / max(ga_params.population_size, 1))
+    )
 
     def _format_time(seconds: Optional[float]) -> str:
         if seconds is None or not math.isfinite(seconds) or seconds <= 0:
@@ -683,9 +697,7 @@ def main(
         current_best: float,
     ) -> None:
         completed = len(generation_durations)
-        avg_seconds = (
-            sum(generation_durations) / completed if completed > 0 else None
-        )
+        avg_seconds = sum(generation_durations) / completed if completed > 0 else None
         remaining_generations = max(total_generations - completed, 0)
         eta_seconds = (
             avg_seconds * remaining_generations if avg_seconds is not None else None
@@ -696,9 +708,7 @@ def main(
             if math.isfinite(current_best) and current_best > float("-inf")
             else "--"
         )
-        print(
-            f"[GA] === Generation {generation_idx}/{total_generations} ==="
-        )
+        print(f"[GA] === Generation {generation_idx}/{total_generations} ===")
         print(
             f"[GA] Progress: fevals={fevals_completed}/{fevals_limit} | "
             f"current best={current_best_str} | avg/gen={_format_time(avg_seconds)} | "
@@ -793,26 +803,14 @@ def main(
         prev_best = last_global_best if math.isfinite(last_global_best) else None
         gen_best_val = gen_best if gen_best is not None else float("-inf")
         new_global_best = (
-            gen_best_val
-            if prev_best is None
-            else max(prev_best, gen_best_val)
+            gen_best_val if prev_best is None else max(prev_best, gen_best_val)
         )
-        improvement = (
-            None
-            if prev_best is None
-            else new_global_best - prev_best
-        )
+        improvement = None if prev_best is None else new_global_best - prev_best
         last_global_best = new_global_best
 
-        gen_best_str = (
-            f"{gen_best:.6f}" if gen_best is not None else "None"
-        )
-        gen_mean_str = (
-            f"{gen_mean:.6f}" if gen_mean is not None else "None"
-        )
-        gen_std_str = (
-            f"{gen_std:.6f}" if gen_std is not None else "None"
-        )
+        gen_best_str = f"{gen_best:.6f}" if gen_best is not None else "None"
+        gen_mean_str = f"{gen_mean:.6f}" if gen_mean is not None else "None"
+        gen_std_str = f"{gen_std:.6f}" if gen_std is not None else "None"
         global_best_str = (
             f"{new_global_best:.6f}"
             if math.isfinite(new_global_best) and new_global_best > float("-inf")
@@ -930,7 +928,14 @@ def main(
                                 "error_message",
                             ]
                         )
-                    for _, _, genotype_hash, error_stage, error_type, error_message in new_failed_rows:
+                    for (
+                        _,
+                        _,
+                        genotype_hash,
+                        error_stage,
+                        error_type,
+                        error_message,
+                    ) in new_failed_rows:
                         writer.writerow(
                             [
                                 failed_blacklist_scope,
@@ -994,28 +999,40 @@ def main(
 
     # Choose optimizer based on genome type and parameters
     use_enhanced = (
-        genome_type == 'multi_method' or 
-        hasattr(config.ga, 'semantic_crossover_prob') or
-        getattr(config.ga, 'crossover', None) == 'semantic'
+        genome_type == "multi_method"
+        or hasattr(config.ga, "semantic_crossover_prob")
+        or getattr(config.ga, "crossover", None) == "semantic"
     )
-    
+
     if use_enhanced:
         # Convert GAParams to EnhancedGAParams for new features
         enhanced_params = EnhancedGAParams()
         for key, value in ga_params.__dict__.items():
             if hasattr(enhanced_params, key):
                 setattr(enhanced_params, key, value)
-        
+
         # Set additional enhanced parameters from config
-        if hasattr(config.ga, 'semantic_crossover_prob') and config.ga.semantic_crossover_prob is not None:
+        if (
+            hasattr(config.ga, "semantic_crossover_prob")
+            and config.ga.semantic_crossover_prob is not None
+        ):
             enhanced_params.semantic_crossover_prob = config.ga.semantic_crossover_prob
-        if hasattr(config.ga, 'method_mutation_rate') and config.ga.method_mutation_rate is not None:
+        if (
+            hasattr(config.ga, "method_mutation_rate")
+            and config.ga.method_mutation_rate is not None
+        ):
             enhanced_params.method_mutation_rate = config.ga.method_mutation_rate
-        if hasattr(config.ga, 'model_mutation_rate') and config.ga.model_mutation_rate is not None:
+        if (
+            hasattr(config.ga, "model_mutation_rate")
+            and config.ga.model_mutation_rate is not None
+        ):
             enhanced_params.model_mutation_rate = config.ga.model_mutation_rate
-        if hasattr(config.ga, 'parameter_mutation_rate') and config.ga.parameter_mutation_rate is not None:
+        if (
+            hasattr(config.ga, "parameter_mutation_rate")
+            and config.ga.parameter_mutation_rate is not None
+        ):
             enhanced_params.parameter_mutation_rate = config.ga.parameter_mutation_rate
-            
+
         optimizer = EnhancedGAOptimizer(
             genome=genome,
             strategy=strat,
@@ -1076,17 +1093,12 @@ def main(
             f"final_best={final_best:.4f}",
             f"Δbest={delta_overall:+.4f}",
         ]
-        if (
-            baseline_best_score is not None
-            and math.isfinite(baseline_best_score)
-        ):
+        if baseline_best_score is not None and math.isfinite(baseline_best_score):
             baseline_delta, baseline_pct_change = _score_improvement(
                 final_best,
                 baseline_best_score,
             )
-            summary_parts.append(
-                f"baseline_best={baseline_best_score:.4f}"
-            )
+            summary_parts.append(f"baseline_best={baseline_best_score:.4f}")
             summary_parts.append(f"Δvs_baseline={baseline_delta:+.4f}")
             if baseline_pct_change is not None:
                 pct_str = (
@@ -1110,22 +1122,26 @@ def main(
 
     # save the best merge configuration using original model references
     if best_x is not None:
-        if genome_type == 'multi_method':
+        if genome_type == "multi_method":
             genome_pretty = MultiMethodGenome(
                 MultiMethodGenomeDefinition.model_validate(config.genome.model_dump()),
-                trust_remote_code=trust_remote_code
+                trust_remote_code=trust_remote_code,
             )
             best_config = genome_pretty.genotype_to_merge_config(best_x)
         else:
-            genome_pretty = ModelGenome(config.genome, trust_remote_code=trust_remote_code)
+            genome_pretty = ModelGenome(
+                config.genome, trust_remote_code=trust_remote_code
+            )
             best_config = genome_pretty.genotype_merge_config(best_x)
-            
+
         stage_log("Stage-GA", "Best merge configuration computed.")
         print(best_config.to_yaml())
 
         if save_final_model:
             stage_log("Stage-GA", "Saving final merged model artifacts...")
-            run_merge(best_config, os.path.join(storage_path, "final_model"), merge_options)
+            run_merge(
+                best_config, os.path.join(storage_path, "final_model"), merge_options
+            )
 
             _evaluate_and_write_final_comparison(
                 config,
@@ -1158,16 +1174,20 @@ def main(
                     f"- Generations completed: {len(generation_best_history)}",
                     f"- Best score: {best_score:.6f}",
                 ]
-                if baseline_best_score is not None and math.isfinite(baseline_best_score):
+                if baseline_best_score is not None and math.isfinite(
+                    baseline_best_score
+                ):
                     baseline_delta, baseline_pct_change = _score_improvement(
                         best_score,
                         baseline_best_score,
                     )
-                    summary_lines.append(f"- Best baseline score: {baseline_best_score:.6f}")
                     summary_lines.append(
-                        f"- Δ vs baseline: {baseline_delta:+.6f}"
+                        f"- Best baseline score: {baseline_best_score:.6f}"
                     )
-                    if baseline_pct_change is not None and math.isfinite(baseline_pct_change):
+                    summary_lines.append(f"- Δ vs baseline: {baseline_delta:+.6f}")
+                    if baseline_pct_change is not None and math.isfinite(
+                        baseline_pct_change
+                    ):
                         summary_lines.append(
                             f"- Δ vs baseline (%): {baseline_pct_change:+.2f}%"
                         )
@@ -1181,11 +1201,13 @@ def main(
                     f"Unable to append GA details to README.md: {exc}",
                     level=logging.WARNING,
                 )
-            
+
             # Upload to Hugging Face if requested
             if hf_model_id:
                 allow_upload = True
-                if baseline_best_score is None or not math.isfinite(baseline_best_score):
+                if baseline_best_score is None or not math.isfinite(
+                    baseline_best_score
+                ):
                     stage_log(
                         "Stage-GA",
                         "Baseline score unavailable; skipping upload due to improvement thresholds.",
@@ -1276,7 +1298,9 @@ def run_baseline_evaluations(
         models.append(config.genome.base_model)
 
     if not models:
-        stage_log("Stage-Baseline", "No models found in the genome; skipping baselines.")
+        stage_log(
+            "Stage-Baseline", "No models found in the genome; skipping baselines."
+        )
         return None
 
     task_manager = create_task_manager(task_search_path)
@@ -1345,7 +1369,9 @@ def run_baseline_evaluations(
         baseline_rows.append(row)
 
     if not baseline_rows:
-        stage_log("Stage-Baseline", "No baseline results recorded; skipping CSV output.")
+        stage_log(
+            "Stage-Baseline", "No baseline results recorded; skipping CSV output."
+        )
         return None
 
     baseline_df = pandas.DataFrame(baseline_rows)
@@ -1412,9 +1438,8 @@ def _collect_task_metrics(
                     if "stderr" in lowered_name:
                         continue
                     if (
-                        ("ppl" in lowered_metric or "perplexity" in lowered_metric)
-                        and "perplexity" in lowered_name
-                    ):
+                        "ppl" in lowered_metric or "perplexity" in lowered_metric
+                    ) and "perplexity" in lowered_name:
                         metric_value = value
                         break
                     if "acc" in lowered_metric and "acc" in lowered_name:
@@ -1506,7 +1531,9 @@ def _evaluate_and_write_final_comparison(
     comparison_df = comparison_df[ordered_columns]
     comparison_df.to_csv(comparison_csv, index=False)
 
-    _write_comparison_plot(comparison_df, os.path.join(storage_path, "ga_final_comparison.png"))
+    _write_comparison_plot(
+        comparison_df, os.path.join(storage_path, "ga_final_comparison.png")
+    )
 
 
 def _write_comparison_plot(table: "pandas.DataFrame", output_path: str) -> None:
@@ -1602,10 +1629,7 @@ def _write_ga_outputs(storage_path: str) -> None:
                             max(
                                 0,
                                 int(
-                                    (
-                                        (v if math.isfinite(v) else min_v)
-                                        - min_v
-                                    )
+                                    ((v if math.isfinite(v) else min_v) - min_v)
                                     / (max_v - min_v)
                                     * (len(blocks) - 1)
                                 ),

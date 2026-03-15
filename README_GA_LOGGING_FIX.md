@@ -2,9 +2,9 @@
 
 ## ⚠️ CRITICAL UPDATE: Mac CUDA Error Fixed!
 
-**Error Hit**: `AssertionError: Torch not compiled with CUDA enabled`  
-**Cause**: Mac doesn't have CUDA, but code tried to use CUDA tensors  
-**Solution**: Add `--no-merge-cuda` flag (now applied!)  
+**Error Hit**: `AssertionError: Torch not compiled with CUDA enabled`
+**Cause**: Mac doesn't have CUDA, but code tried to use CUDA tensors
+**Solution**: Add `--no-merge-cuda` flag (now applied!)
 
 → See: `MAC_FIX_SUMMARY.md` for quick fix (2 min read)
 
@@ -385,8 +385,8 @@ By adding one parameter (`generations: 10`) and using the right strategy (`--str
 
 ---
 
-**Document Created**: 2025-10-19 12:30 UTC  
-**Status**: ✅ Issue completely resolved and documented  
+**Document Created**: 2025-10-19 12:30 UTC
+**Status**: ✅ Issue completely resolved and documented
 **Next Review**: After `ga_10gen_visual_run.log` completes (~20 min)
 
 **Start reading**: `GA_QUICK_REFERENCE.md` (5 minutes)

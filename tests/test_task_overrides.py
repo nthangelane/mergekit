@@ -10,6 +10,5 @@ def test_lambada_override_applied():
 
     yaml_path = Path(entry["yaml_path"]).resolve()
     assert "lm_eval_overrides/lambada/lambada_openai.yaml" in str(yaml_path), (
-        "Expected lambada_openai to use local override YAML, got "
-        f"{yaml_path}"
+        "Expected lambada_openai to use local override YAML, got " f"{yaml_path}"
     )

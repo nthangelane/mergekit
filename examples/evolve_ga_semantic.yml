@@ -8,7 +8,7 @@ genome:
     - EleutherAI/pythia-70m           # Different training data
     - EleutherAI/pythia-70m-deduped   # Duplicate for testing variety
     - EleutherAI/pythia-70m           # Another duplicate
-  
+
   # Multi-method genome settings - now supports ALL merge methods!
   allowed_methods: [
     # Basic methods
@@ -16,7 +16,7 @@ genome:
     "slerp",           # Spherical interpolation (2 models)
     "nuslerp",         # Enhanced SLERP (2 models)
     "karcher",         # Riemannian barycenter
-    
+
     # Task arithmetic family
     "task_arithmetic", # Basic task vectors
     "ties",            # Task arithmetic + sparsification
@@ -26,19 +26,19 @@ genome:
     "della_linear",    # Linear DELLA
     "breadcrumbs",     # Outlier removal
     "breadcrumbs_ties", # Breadcrumbs + TIES
-    
+
     # Advanced methods
     "model_stock",     # Geometric weight calculation (3+ models)
     "arcee_fusion",    # Dynamic thresholding (2 models)
-    
-    # Special methods  
+
+    # Special methods
     # "passthrough",   # Copy single model (useful for layer-wise mixing)
   ]
-  
+
   base_model: EleutherAI/pythia-70m-deduped  # Required for task arithmetic methods
   max_models_per_layer: 4  # Use up to 4 models per layer group
   layer_granularity: 0     # Single layer group for simplicity
-  
+
   # Enable full evolution capabilities
   enable_method_evolution: true   # 🎯 GA can switch between ALL methods
   enable_model_selection: true    # 🎯 GA can pick optimal model subsets
@@ -56,18 +56,18 @@ random_init: false
 ga:
   population_size: 8
   elite_fraction: 0.125  # Keep top 1 individual
-  
+
   # Use semantic crossover and mutation
   crossover: semantic
   semantic_crossover_prob: 0.95  # 95% chance to use method-aware crossover
-  
+
   # Semantic mutation rates - tuned for method diversity
   mutation_rate: 0.25            # Overall mutation probability
   method_mutation_rate: 0.15     # 15% chance to switch merge methods
-  model_mutation_rate: 0.2       # 20% chance to modify model selection  
+  model_mutation_rate: 0.2       # 20% chance to modify model selection
   parameter_mutation_rate: 0.3   # 30% chance to modify parameters
   mutation_sigma: 0.1            # Moderate noise level
-  
+
   tournament_size: 3
 
 # Quick evaluation for testing

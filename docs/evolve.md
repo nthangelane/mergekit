@@ -120,7 +120,7 @@ multi_method_genome:
     base_model: base_model_if_needed
     tokenizer_source: null
     layer_granularity: 8
-    
+
     # Available methods for evolution
     allowed_methods:
        - linear
@@ -132,20 +132,20 @@ multi_method_genome:
        - breadcrumbs
        - breadcrumbs_ties
        - model_stock
-       - della_linear  
+       - della_linear
        - della
        - magnus
        - copy
        - passthrough
        - consensus
-    
+
     # Semantic crossover parameters
     semantic_crossover:
         method_inheritance_prob: 0.6
         parameter_compatibility_check: true
         constraint_aware: true
-    
-    # Enhanced mutation parameters  
+
+    # Enhanced mutation parameters
     semantic_mutation:
         method_mutation_prob: 0.1
         parameter_constraint_enforcement: true
@@ -206,29 +206,29 @@ multi_method_genome:
        - gpt2-medium
     base_model: gpt2
     layer_granularity: 4
-    
+
     allowed_methods:
        - linear
        - dare_ties
        - task_arithmetic
        - slerp
-    
+
     semantic_crossover:
         method_inheritance_prob: 0.7
-        
+
     semantic_mutation:
         method_mutation_prob: 0.15
 
 tasks:
   - name: hellaswag
     weight: 1.0
-  - name: arc_easy  
+  - name: arc_easy
     weight: 0.5
 ```
 
 This configuration allows the GA to discover optimal combinations like:
 - Linear merging with specific weight distributions
-- DARE-TIES with optimal sparsification parameters  
+- DARE-TIES with optimal sparsification parameters
 - Task arithmetic with negative weights
 - SLERP with precise interpolation factors
 

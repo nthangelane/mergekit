@@ -3,18 +3,18 @@ genome:
   models:
     - gpt2
     - distilgpt2  # Both GPT-2 based but should be compatible
-  
+
   base_model: gpt2
   layer_granularity: 0  # No layer slicing for maximum compatibility
-  
+
   # Test just linear method for absolute simplicity
   allowed_methods:
     - linear
-  
+
   # Minimal semantic operation parameters
   semantic_crossover:
     method_inheritance_prob: 1.0  # Always inherit method
-    
+
   semantic_mutation:
     method_mutation_prob: 0.0  # No method mutations for simplicity
 

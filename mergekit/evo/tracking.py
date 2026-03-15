@@ -342,9 +342,7 @@ class NoOpTracker(ExperimentTracker):
     def log_metrics(self, metrics: Dict[str, Any], step: Optional[int] = None) -> None:
         pass
 
-    def log_population_stats(
-        self, results: List[Dict], step: int, **_kwargs
-    ) -> None:
+    def log_population_stats(self, results: List[Dict], step: int, **_kwargs) -> None:
         pass
 
     def log_best_individual(

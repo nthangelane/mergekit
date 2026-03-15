@@ -1,6 +1,6 @@
 # mergekit-evolve-ga
 
-`mergekit-evolve-ga` is a script that uses a Genetic Algorithm (GA) to optimize merge parameters against model metrics measured by EleutherAI's [Language Model Evaluation Harness](https://github.com/EleutherAI/lm-evaluation-harness). 
+`mergekit-evolve-ga` is a script that uses a Genetic Algorithm (GA) to optimize merge parameters against model metrics measured by EleutherAI's [Language Model Evaluation Harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
 ## Key Features
 
@@ -26,7 +26,7 @@ genome:
   layer_granularity: 8
 ```
 
-### Multi-Method Genome  
+### Multi-Method Genome
 Method and parameter co-evolution:
 
 ```yaml
@@ -37,17 +37,17 @@ multi_method_genome:
     - path/to/modelC
   base_model: base_model_if_needed
   layer_granularity: 8
-  
+
   allowed_methods:
     - linear
     - slerp
     - dare_ties
     - task_arithmetic
-    
+
   semantic_crossover:
     method_inheritance_prob: 0.6
     parameter_compatibility_check: true
-    
+
   semantic_mutation:
     method_mutation_prob: 0.1
     parameter_constraint_enforcement: true
@@ -100,7 +100,7 @@ ga:
   tournament_size: 4
 ```
 
-#### Multi-Method Configuration  
+#### Multi-Method Configuration
 ```yaml
 multi_method_genome:
   models: [modelA, modelB, modelC]
@@ -127,7 +127,7 @@ The multi-method genome system supports 15 merge methods:
 
 **Linear Family:**
 - `linear` - Standard linear interpolation
-- `dare_linear` - DARE with linear interpolation  
+- `dare_linear` - DARE with linear interpolation
 - `della_linear` - DELLA with linear weights
 
 **SLERP Variants:**
@@ -135,7 +135,7 @@ The multi-method genome system supports 15 merge methods:
 
 **Task Arithmetic Family:**
 - `task_arithmetic` - Basic task vector arithmetic
-- `ties` - TIES (Trim, Elect, and Merge)  
+- `ties` - TIES (Trim, Elect, and Merge)
 - `dare_ties` - DARE with TIES methodology
 
 **Advanced Methods:**
@@ -158,7 +158,7 @@ The multi-method genome system supports 15 merge methods:
 - **Method Selection**: Intelligent selection of parent methods for offspring
 
 #### Constraint-Aware Mutations
-- **Method Mutations**: Can change merge method while preserving valid parameters  
+- **Method Mutations**: Can change merge method while preserving valid parameters
 - **Parameter Constraints**: Respects mathematical bounds for each method
 - **Method-Specific Ranges**: Different parameter spaces for different methods
 
@@ -166,8 +166,8 @@ The multi-method genome system supports 15 merge methods:
 ```
 Generation 1: linear(w=[0.3, 0.7]) + dare_ties(density=0.8, epsilon=0.01)
      ↓ (semantic crossover)
-Generation 2: dare_ties(density=0.6, epsilon=0.015) 
-     ↓ (method mutation)  
+Generation 2: dare_ties(density=0.6, epsilon=0.015)
+     ↓ (method mutation)
 Generation 3: slerp(t=0.6)
      ↓ (parameter mutation)
 Generation 4: slerp(t=0.65)
@@ -182,8 +182,8 @@ The system automatically detects genome type and selects appropriate optimizatio
 # Traditional genome → Standard GA
 if isinstance(genome_def, GenomeDefinition):
     optimizer = GAOptimizer(...)
-    
-# Multi-method genome → Enhanced GA  
+
+# Multi-method genome → Enhanced GA
 elif isinstance(genome_def, MultiMethodGenomeDefinition):
     optimizer = EnhancedGAOptimizer(...)
 ```
@@ -208,27 +208,27 @@ elif isinstance(genome_def, MultiMethodGenomeDefinition):
 multi_method_genome:
   models: [modelA, modelB, modelC]
   allowed_methods: [linear, dare_ties, slerp]
-  
+
   # Method-specific parameter ranges
   method_parameters:
     linear:
       weight_bounds: [0.0, 1.0]
       normalize_default: true
-    dare_ties:  
+    dare_ties:
       density_bounds: [0.1, 0.9]
       epsilon_bounds: [0.001, 0.1]
     slerp:
       t_bounds: [0.0, 1.0]
-      
+
   # Semantic operation tuning
   semantic_crossover:
     method_inheritance_prob: 0.7
     parameter_compatibility_check: true
     constraint_aware: true
-    
+
   semantic_mutation:
     method_mutation_prob: 0.15
-    parameter_constraint_enforcement: true  
+    parameter_constraint_enforcement: true
     method_specific_ranges: true
 ```
 
@@ -270,7 +270,7 @@ mergekit-evolve-ga \
   --max-fevals 200 \
   --semantic-crossover \
   --method-mutation-rate 0.15 \
-  config_multimethod.yml  
+  config_multimethod.yml
 ```
 
 ### CPU-Only Testing

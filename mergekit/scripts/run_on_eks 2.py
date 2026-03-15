@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence
-import platform
-import shutil
 
 import click
 
@@ -25,7 +25,9 @@ except ImportError:  # pragma: no cover - optional dependency
 
 DEFAULT_ENV_FILE = Path(".env.eks")
 DEFAULT_NAMESPACE = "mergekit"
-REPO_ROOT = Path(os.environ.get("MERGEKIT_REPO_ROOT", Path(__file__).resolve().parents[2]))
+REPO_ROOT = Path(
+    os.environ.get("MERGEKIT_REPO_ROOT", Path(__file__).resolve().parents[2])
+)
 DEPLOY_DIR = Path(os.environ.get("MERGEKIT_DEPLOY_DIR", REPO_ROOT / "deploy"))
 DEFAULT_IMAGE = os.environ.get("MERGEKIT_IMAGE", "mergekit-ga:latest")
 
@@ -147,9 +149,14 @@ def _install_hint(command: str) -> str:
     if system == "darwin":
         return mac_commands.get(command, "Use Homebrew to install the required CLI.")
     if system == "linux":
-        return linux_commands.get(command, "Install the package via your distribution or follow upstream docs.")
+        return linux_commands.get(
+            command,
+            "Install the package via your distribution or follow upstream docs.",
+        )
     if system == "windows":
-        return windows_commands.get(command, "Install the package with Chocolatey or the official installer.")
+        return windows_commands.get(
+            command, "Install the package with Chocolatey or the official installer."
+        )
 
     return "Refer to the official installation guide for your operating system."
 
@@ -177,9 +184,24 @@ def _verify_prerequisites(*, skip: bool = False) -> None:
 
 
 @click.group()
-@click.option("--env-file", type=click.Path(path_type=Path), default=DEFAULT_ENV_FILE, help="Optional .env file with AWS_* overrides")
-@click.option("--namespace", default=DEFAULT_NAMESPACE, show_default=True, help="Kubernetes namespace for Ray components")
-@click.option("--dry-run/--no-dry-run", default=False, show_default=True, help="Print commands without executing them")
+@click.option(
+    "--env-file",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_ENV_FILE,
+    help="Optional .env file with AWS_* overrides",
+)
+@click.option(
+    "--namespace",
+    default=DEFAULT_NAMESPACE,
+    show_default=True,
+    help="Kubernetes namespace for Ray components",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=False,
+    show_default=True,
+    help="Print commands without executing them",
+)
 @click.option(
     "--image",
     default=lambda: os.environ.get("MERGEKIT_IMAGE", DEFAULT_IMAGE),
@@ -187,7 +209,9 @@ def _verify_prerequisites(*, skip: bool = False) -> None:
     help="Container image to use for the Ray head/workers",
 )
 @click.pass_context
-def cli(ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image: str) -> None:
+def cli(
+    ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image: str
+) -> None:
     """Manage Ray on EKS resources for MergeKit GA."""
 
     _load_env_file(env_file)
@@ -199,7 +223,11 @@ def cli(ctx: click.Context, env_file: Path, namespace: str, dry_run: bool, image
 
 @cli.command()
 @click.option("--cluster-name", default="mergekit-ga", show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.option("--node-type", default="m6i.xlarge", show_default=True)
 @click.option("--nodes", default=2, show_default=True)
 @click.pass_context
@@ -239,11 +267,22 @@ def bootstrap(
             dry_run=dry_run,
         )
     else:
-        click.echo(f"EKS cluster '{cluster_name}' already exists in {region}; skipping creation.")
+        click.echo(
+            f"EKS cluster '{cluster_name}' already exists in {region}; skipping creation."
+        )
 
     _ensure_kubeconfig(cluster_name, region, dry_run=dry_run)
 
-    _run_command(["helm", "repo", "add", "kuberay", "https://ray-project.github.io/kuberay-helm"], dry_run=dry_run)
+    _run_command(
+        [
+            "helm",
+            "repo",
+            "add",
+            "kuberay",
+            "https://ray-project.github.io/kuberay-helm",
+        ],
+        dry_run=dry_run,
+    )
     _run_command(["helm", "repo", "update"], dry_run=dry_run)
 
     values_file = DEPLOY_DIR / "ray-values.yaml"
@@ -264,14 +303,22 @@ def bootstrap(
 
     storage_manifest = DEPLOY_DIR / "storage.yaml"
     if storage_manifest.exists():
-        _kubectl_manifest("apply", storage_manifest, namespace, image=image, dry_run=dry_run)
+        _kubectl_manifest(
+            "apply", storage_manifest, namespace, image=image, dry_run=dry_run
+        )
 
     cluster_manifest = DEPLOY_DIR / "ray-cluster.yaml"
-    _kubectl_manifest("apply", cluster_manifest, namespace, image=image, dry_run=dry_run)
+    _kubectl_manifest(
+        "apply", cluster_manifest, namespace, image=image, dry_run=dry_run
+    )
 
 
 @cli.command()
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.pass_context
 def submit(ctx: click.Context, region: str) -> None:
     """Submit the GA Ray job manifest."""
@@ -287,12 +334,18 @@ def submit(ctx: click.Context, region: str) -> None:
     _kubectl_manifest("apply", job_manifest, namespace, image=image, dry_run=dry_run)
 
     if not dry_run:
-        click.echo("RayJob submitted. Inspect with `kubectl get rayjobs -n %s`." % namespace)
+        click.echo(
+            "RayJob submitted. Inspect with `kubectl get rayjobs -n %s`." % namespace
+        )
 
 
 @cli.command()
 @click.option("--cluster-name", default="mergekit-ga", show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.pass_context
 def teardown(ctx: click.Context, cluster_name: str, region: str) -> None:
     """Remove Ray jobs, Ray chart, and the backing EKS cluster."""
@@ -319,7 +372,9 @@ def teardown(ctx: click.Context, cluster_name: str, region: str) -> None:
         dry_run=dry_run,
         extra_args=["--ignore-not-found"],
     )
-    _run_command(["helm", "uninstall", "kuberay-operator", "-n", namespace], dry_run=dry_run)
+    _run_command(
+        ["helm", "uninstall", "kuberay-operator", "-n", namespace], dry_run=dry_run
+    )
 
     storage_manifest = DEPLOY_DIR / "storage.yaml"
     if storage_manifest.exists():
@@ -348,7 +403,11 @@ def teardown(ctx: click.Context, cluster_name: str, region: str) -> None:
 
 @cli.command()
 @click.option("--cluster-name", default="mergekit-ga", show_default=True)
-@click.option("--region", default=lambda: os.getenv("AWS_REGION", "us-east-1"), show_default="env[AWS_REGION] or 'us-east-1'")
+@click.option(
+    "--region",
+    default=lambda: os.getenv("AWS_REGION", "us-east-1"),
+    show_default="env[AWS_REGION] or 'us-east-1'",
+)
 @click.pass_context
 def status(ctx: click.Context, cluster_name: str, region: str) -> None:
     """Show a short Ray cluster status report."""
@@ -359,7 +418,16 @@ def status(ctx: click.Context, cluster_name: str, region: str) -> None:
     _verify_prerequisites(skip=dry_run)
 
     _run_command(["kubectl", "get", "pods", "-n", namespace], dry_run=dry_run)
-    _run_command(["ray", "job", "list", "--address", "ray://mergekit-ga-head-svc.mergekit.svc.cluster.local:10001"], dry_run=dry_run)
+    _run_command(
+        [
+            "ray",
+            "job",
+            "list",
+            "--address",
+            "ray://mergekit-ga-head-svc.mergekit.svc.cluster.local:10001",
+        ],
+        dry_run=dry_run,
+    )
 
     if not dry_run:
         import boto3
