@@ -115,6 +115,9 @@ def test_num_gpus_zero_disables_merge_cuda_before_baseline(monkeypatch, tmp_path
     monkeypatch.setattr(
         evolve_ga, "check_for_naughty_config", lambda config, allow: None
     )
+    monkeypatch.setattr(
+        evolve_ga, "validate_input_model_architecture", lambda models, options: None
+    )
 
     def fake_run_baseline_evaluations(
         config,

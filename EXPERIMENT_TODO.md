@@ -8,6 +8,22 @@
 
 ## Current Status
 
+### EKS Scale-Out Track
+- [ ] Confirm GPU uplift on the aligned 3B benchmark suite against a valid CPU reference.
+- [ ] Complete `qwen25-3b-aligned-seed11` on EKS with baseline enabled.
+- [ ] Complete `qwen25-3b-aligned-seed22` on EKS with baseline enabled.
+- [ ] Compare seed-to-seed throughput and score stability from `ga_history.csv`, `baseline_results.csv`, and `ga_summary.txt`.
+- [ ] Freeze the 3B benchmark suite and experiment shape for thesis reporting.
+- [ ] Request AWS GPU quota increase for 7B (`g6e` or larger) only after the 3B runs are stable.
+- [ ] Run the first 7B pilot after quota approval and larger GPU workers are in place.
+
+### Active EKS Configuration
+- Cluster: `mergekit-ga-scale` (`us-east-1`)
+- Active 3B CPU nodes: `m6i.2xlarge` x2 (`scale=3b`)
+- Active GPU node: `g6.xlarge` x1 (`NVIDIA L4`)
+- Aligned benchmark suite: `ifeval`, `xnli_vi`, `boolq`, `multirc`
+- Current runtime guardrails: baseline enabled, `apply_chat_template: false`, `limit` overridden from CLI for pilot runs
+
 ### Completed Runs
 | Run | Models | Pop | Gens | Best Score | Method | Tasks |
 |-----|--------|-----|------|-----------|--------|-------|

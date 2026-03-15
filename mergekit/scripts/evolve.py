@@ -30,6 +30,7 @@ from mergekit.evo.config import (
     check_for_naughty_config,
 )
 from mergekit.evo.genome import ModelGenome
+from mergekit.evo.helpers import validate_input_model_architecture
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
@@ -199,6 +200,14 @@ def main(
         copy_tokenizer=True,
         safe_serialization=True,
     )
+
+    source_models: List[ModelReference] = list(config.genome.models)
+    if getattr(config.genome, "base_model", None) is not None:
+        source_models.append(config.genome.base_model)
+    try:
+        validate_input_model_architecture(source_models, merge_options)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     # convert models to single-shard safetensors
     if reshard:

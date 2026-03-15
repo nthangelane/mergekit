@@ -33,5 +33,5 @@ ga:
   tournament_size: 2
 
 num_fewshot: 0
-apply_chat_template: true
+apply_chat_template: false
 fewshot_as_multiturn: false

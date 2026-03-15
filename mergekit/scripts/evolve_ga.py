@@ -56,7 +56,7 @@ from mergekit.evo.config import (
 from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.genome import ModelGenome
-from mergekit.evo.helpers import _eval_model
+from mergekit.evo.helpers import _eval_model, validate_input_model_architecture
 from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
@@ -442,6 +442,31 @@ def main(
 
     task_search_path = list(task_search_path)
 
+    merge_options = MergeOptions(
+        transformers_cache=os.path.join(storage_path, "transformers_cache"),
+        lora_merge_cache=os.path.join(storage_path, "lora_merge_cache"),
+        cuda=merge_cuda,
+        low_cpu_memory=merge_cuda and not in_memory,
+        out_shard_size=1_000_000_000_000,
+        trust_remote_code=trust_remote_code,
+        allow_crimes=allow_crimes,
+        random_seed=random_seed,
+        quiet=True,
+        read_to_gpu=merge_cuda and not in_memory,
+        copy_tokenizer=True,
+        safe_serialization=True,
+    )
+
+    stage_log("Stage-Init", "Checking source-model base architecture compatibility...")
+    source_models: List[ModelReference] = list(config.genome.models)
+    if getattr(config.genome, "base_model", None) is not None:
+        source_models.append(config.genome.base_model)
+    try:
+        validate_input_model_architecture(source_models, merge_options)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    stage_log("Stage-Init", "Source-model base architecture check complete.")
+
     baseline_csv_path = None
     baseline_best_score: Optional[float] = None
     if run_baseline:
@@ -496,21 +521,6 @@ def main(
         )
         tracker = create_tracker("none")
         tracker.initialize(project_name="no-tracking", config={})
-
-    merge_options = MergeOptions(
-        transformers_cache=os.path.join(storage_path, "transformers_cache"),
-        lora_merge_cache=os.path.join(storage_path, "lora_merge_cache"),
-        cuda=merge_cuda,
-        low_cpu_memory=merge_cuda and not in_memory,
-        out_shard_size=1_000_000_000_000,
-        trust_remote_code=trust_remote_code,
-        allow_crimes=allow_crimes,
-        random_seed=random_seed,
-        quiet=True,
-        read_to_gpu=merge_cuda and not in_memory,
-        copy_tokenizer=True,
-        safe_serialization=True,
-    )
 
     # convert models to single-shard safetensors
     if reshard:
@@ -1305,17 +1315,120 @@ def run_baseline_evaluations(
 
     task_manager = create_task_manager(task_search_path)
 
-    use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
+    if not ray.is_initialized():
+        ray.init(
+            address=os.environ.get("RAY_ADDRESS", "auto"),
+            ignore_reinit_error=True,
+            logging_level=logging.ERROR,
+        )
+
+    use_cuda = (merge_cuda or (num_gpus or 0) > 0) and (num_gpus or 0) > 0
     device = "cuda" if use_cuda else "cpu"
     stage_log(
         "Stage-Baseline",
-        f"Using {'CUDA' if use_cuda else 'CPU'} for baseline evaluations.",
+        f"Using Ray {'GPU' if use_cuda else 'CPU'} workers for baseline evaluations.",
     )
 
     metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
     baseline_rows: List[Dict[str, Union[str, float, None]]] = []
     successes = 0
     failures = 0
+
+    @ray.remote(num_cpus=1, num_gpus=1.0)
+    def _baseline_eval_gpu(
+        model_name: str,
+        tasks: List[TaskConfiguration],
+        num_fewshot: int,
+        limit: Optional[int],
+        batch_size: Optional[int],
+        task_search_path: List[str],
+        trust_remote_code: bool,
+    ) -> Dict[str, Any]:
+        task_manager = create_task_manager(task_search_path)
+        model_args: Dict[str, Any] = {
+            "pretrained": model_name,
+            "dtype": "float32",
+            "use_cache": True,
+            "trust_remote_code": trust_remote_code,
+        }
+        try:
+            result = _eval_model(
+                "huggingface",
+                tasks,
+                model_args,
+                num_fewshot=num_fewshot,
+                limit=limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                bootstrap_iters=0,
+                device="cuda",
+            )
+            return {
+                "score": result.get("score"),
+                "results": result.get("results"),
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "score": None,
+                "results": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    @ray.remote(num_cpus=1)
+    def _baseline_eval_cpu(
+        model_name: str,
+        tasks: List[TaskConfiguration],
+        num_fewshot: int,
+        limit: Optional[int],
+        batch_size: Optional[int],
+        task_search_path: List[str],
+        trust_remote_code: bool,
+    ) -> Dict[str, Any]:
+        task_manager = create_task_manager(task_search_path)
+        model_args: Dict[str, Any] = {
+            "pretrained": model_name,
+            "dtype": "float32",
+            "use_cache": True,
+            "trust_remote_code": trust_remote_code,
+        }
+        try:
+            result = _eval_model(
+                "huggingface",
+                tasks,
+                model_args,
+                num_fewshot=num_fewshot,
+                limit=limit,
+                batch_size=batch_size,
+                task_manager=task_manager,
+                bootstrap_iters=0,
+                device="cpu",
+            )
+            return {
+                "score": result.get("score"),
+                "results": result.get("results"),
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "score": None,
+                "results": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    baseline_remote = _baseline_eval_gpu if use_cuda else _baseline_eval_cpu
+    baseline_refs = {
+        str(model_ref): baseline_remote.remote(
+            str(model_ref),
+            config.tasks,
+            config.num_fewshot,
+            config.limit,
+            batch_size,
+            task_search_path,
+            trust_remote_code,
+        )
+        for model_ref in models
+    }
 
     for model_ref in models:
         model_name = str(model_ref)
@@ -1328,27 +1441,11 @@ def run_baseline_evaluations(
             row.setdefault(column, None)
 
         stage_log("Stage-Baseline", f"Evaluating {model_name}...")
-        model_args: Dict[str, Any] = {
-            "pretrained": model_name,
-            "dtype": "float32",
-            "use_cache": True,
-            "trust_remote_code": trust_remote_code,
-        }
-        eval_kwargs: Dict[str, Any] = {"device": device}
-
         try:
-            result = _eval_model(
-                "huggingface",
-                config.tasks,
-                model_args,
-                num_fewshot=config.num_fewshot,
-                limit=config.limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                bootstrap_iters=0,
-                **eval_kwargs,
-            )
-        except Exception as exc:  # pragma: no cover - evaluation depends on environment
+            result = ray.get(baseline_refs[model_name])
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - remote environment depends on cluster state
             failures += 1
             row["error"] = str(exc)
             stage_log(
@@ -1357,6 +1454,21 @@ def run_baseline_evaluations(
                 level=logging.ERROR,
             )
             LOGGER.debug("Baseline evaluation error", exc_info=exc)
+            baseline_rows.append(row)
+            continue
+
+        if not result or result.get("error"):
+            failures += 1
+            row["error"] = (
+                result.get("error")
+                if result
+                else "Baseline evaluation returned no result"
+            )
+            stage_log(
+                "Stage-Baseline",
+                f"Evaluation failed for {model_name}: {row['error']}",
+                level=logging.ERROR,
+            )
             baseline_rows.append(row)
             continue
 

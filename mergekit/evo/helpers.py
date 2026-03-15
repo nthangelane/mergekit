@@ -18,6 +18,7 @@ import ray.util.scheduling_strategies
 import torch
 import transformers
 
+from mergekit.common import ModelReference
 from mergekit.config import MergeConfiguration
 from mergekit.evo.config import TaskConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
@@ -178,6 +179,21 @@ _SIGNATURE_FIELDS = (
     "vocab_size",
 )
 
+_BASE_ARCHITECTURE_FIELDS = (
+    "architectures",
+    "model_type",
+    "hidden_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "intermediate_size",
+    "max_position_embeddings",
+    "sliding_window",
+    "rope_scaling",
+    "rope_theta",
+)
+
 
 def _normalize_signature_value(value: Any) -> Any:
     if isinstance(value, dict):
@@ -233,9 +249,10 @@ def _format_signature_value(value: Any) -> str:
 
 def _find_signature_incompatibilities(
     signatures: Dict[str, Dict[str, Any]],
+    fields: tuple[str, ...] = _SIGNATURE_FIELDS,
 ) -> List[str]:
     mismatches: List[str] = []
-    for field in _SIGNATURE_FIELDS:
+    for field in fields:
         values: Dict[Any, List[str]] = {}
         missing: List[str] = []
         for model_name, sig in signatures.items():
@@ -262,6 +279,71 @@ def _find_signature_incompatibilities(
     return mismatches
 
 
+def _load_model_signatures(
+    model_refs: List[ModelReference],
+    merge_options: MergeOptions,
+    *,
+    require_all: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    signatures: Dict[str, Dict[str, Any]] = {}
+    load_errors: List[str] = []
+
+    for model_ref in model_refs:
+        model_name = str(model_ref)
+        if model_name in signatures:
+            continue
+
+        try:
+            cfg = model_ref.config(trust_remote_code=merge_options.trust_remote_code)
+        except Exception as exc:  # pragma: no cover - network or HF errors
+            if require_all:
+                load_errors.append(f"{model_name}: {exc}")
+            else:
+                LOG.warning("Failed to load config for %s", model_ref, exc_info=exc)
+            continue
+
+        signatures[model_name] = _extract_model_signature(cfg)
+
+    if load_errors:
+        raise RuntimeError(
+            "Failed to load model configs for compatibility check:\n  - "
+            + "\n  - ".join(load_errors)
+        )
+
+    return signatures
+
+
+def validate_input_model_architecture(
+    model_refs: List[ModelReference],
+    merge_options: MergeOptions,
+) -> None:
+    if len(model_refs) <= 1:
+        return
+
+    signatures = _load_model_signatures(
+        model_refs,
+        merge_options,
+        require_all=True,
+    )
+    if len(signatures) <= 1:
+        return
+
+    mismatches = _find_signature_incompatibilities(
+        signatures,
+        fields=_BASE_ARCHITECTURE_FIELDS,
+    )
+    if mismatches:
+        message = (
+            "Input models do not share the same base architecture. "
+            "Use models from the same architecture family, or pass "
+            "--allow-crimes to override:\n  - " + "\n  - ".join(mismatches)
+        )
+        if merge_options.allow_crimes:
+            LOG.warning("%s", message)
+        else:
+            raise RuntimeError(message)
+
+
 def _validate_merge_compatibility(
     merge_config: MergeConfiguration, merge_options: MergeOptions
 ) -> None:
@@ -269,15 +351,7 @@ def _validate_merge_compatibility(
     if len(referenced_models) <= 1:
         return
 
-    signatures: Dict[str, Dict[str, Any]] = {}
-    for model_ref in referenced_models:
-        try:
-            cfg = model_ref.config(trust_remote_code=merge_options.trust_remote_code)
-        except Exception as exc:  # pragma: no cover - network or HF errors
-            LOG.warning("Failed to load config for %s", model_ref, exc_info=exc)
-            continue
-        signatures[str(model_ref)] = _extract_model_signature(cfg)
-
+    signatures = _load_model_signatures(referenced_models, merge_options)
     if len(signatures) <= 1:
         return
 

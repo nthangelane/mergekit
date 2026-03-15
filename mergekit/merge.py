@@ -33,10 +33,33 @@ LOG = logging.getLogger(__name__)
 
 
 def _link_or_copy_file(src_path: str, dst_path: str) -> None:
+    # Hugging Face snapshots often expose files as symlinks into a blobs cache.
+    # Materialize the real file in the merge output rather than preserving a
+    # relative symlink that will be broken outside the snapshot directory.
+    real_src_path = os.path.realpath(src_path)
     try:
-        os.link(src_path, dst_path)
+        os.link(real_src_path, dst_path)
     except OSError:
-        shutil.copy2(src_path, dst_path)
+        shutil.copy2(real_src_path, dst_path)
+
+
+def _materialize_symlinked_output_files(out_path: str, file_names: List[str]) -> None:
+    for file_name in file_names:
+        path = os.path.join(out_path, file_name)
+        if not os.path.islink(path):
+            continue
+
+        real_src_path = os.path.realpath(path)
+        if not os.path.exists(real_src_path):
+            LOG.warning(
+                "Symlinked output file %s points to missing target %s",
+                path,
+                real_src_path,
+            )
+            continue
+
+        os.unlink(path)
+        _link_or_copy_file(real_src_path, path)
 
 
 def run_merge(
@@ -130,6 +153,17 @@ def run_merge(
         LOG.info("Saving tokenizer")
         _set_chat_template(tokenizer, merge_config)
         tokenizer.save_pretrained(out_path, safe_serialization=True)
+        _materialize_symlinked_output_files(
+            out_path,
+            [
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer.model",
+                "added_tokens.json",
+                "merges.txt",
+            ],
+        )
     else:
         if options.copy_tokenizer:
             try:
@@ -139,6 +173,17 @@ def run_merge(
                     "Failed to copy tokenizer. The merge was still successful, just copy it from somewhere else.",
                     exc_info=e,
                 )
+            _materialize_symlinked_output_files(
+                out_path,
+                [
+                    "tokenizer_config.json",
+                    "special_tokens_map.json",
+                    "tokenizer.json",
+                    "tokenizer.model",
+                    "added_tokens.json",
+                    "merges.txt",
+                ],
+            )
         elif merge_config.chat_template:
             LOG.warning(
                 "Chat template specified but no tokenizer found. Chat template will not be saved."
