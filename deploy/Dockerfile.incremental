@@ -13,7 +13,7 @@ COPY examples ./examples
 COPY tests ./tests
 
 RUN pip install --upgrade pip \
-    && pip install "ray[default]==2.35.0" langdetect immutabledict \
+    && pip install "ray[default]==2.35.0" langdetect immutabledict memray \
     && pip install --no-deps .
 
 COPY . .

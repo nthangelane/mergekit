@@ -133,7 +133,7 @@ spec:
                 claimName: mergekit-shared-pvc
     - groupName: gpu-workers
       replicas: __GPU_WORKER_REPLICAS__
-      minReplicas: 0
+      minReplicas: __GPU_WORKER_MIN_REPLICAS__
       maxReplicas: __GPU_WORKER_MAX_REPLICAS__
       rayStartParams:
         address: auto

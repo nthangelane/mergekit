@@ -7,6 +7,7 @@ experiments:
   - id: exp01
     name: Tiny Controlled Merge Baseline
     family: gpt_neo
+    reason: Fast, cheap baseline to validate GA logic, chromosome design, mutation strategy, and fitness behavior before spending cloud GPU time on the larger families.
     config_path: experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml
     storage_path: workspace/thesis/local_mac/exp01_tiny_controlled_merge
     storage_subpath: thesis/local_mac/exp01_tiny_controlled_merge

@@ -10,7 +10,7 @@ genome:
     - lomahony/pythia-70m-helpful-sft
     - EleutherAI/pythia-70m-deduped
 
-  tokenizer_source: lomahony/pythia-70m-helpful-sft
+  tokenizer_source: base
 
   allowed_methods:
     - linear

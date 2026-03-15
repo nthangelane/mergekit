@@ -2,6 +2,14 @@
 
 This group contains the cloud GPU experiments. The target cluster profile for the thesis is `20-30` Ray workers on `24 GiB+` VRAM GPUs, while keeping a per-experiment cap of `10` GPUs.
 
+## Included Experiments
+
+- `exp01_tiny_controlled_merge`: fast cloud smoke baseline before larger GPU runs
+- `exp02_pythia28b_base_chat`
+- `exp03_qwen25_3b_multilingual_merge`
+- `exp04_mistral7b_general_code`
+- `exp05_llama3_8b_same_family`
+
 ## Target Cluster Profile
 
 - Preferred minimum profile: `g6e.12xlarge` nodes (`4` GPUs per node, `48 GiB` each) or better

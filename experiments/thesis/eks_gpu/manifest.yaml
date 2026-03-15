@@ -41,9 +41,28 @@ target_cluster_profile:
     - Keep per-run --num-gpus at or below 10 even when the cluster scales to 20-30 workers.
 
 experiments:
+  - id: exp01
+    name: Tiny Controlled Merge Baseline
+    family: gpt_neo
+    reason: Cheap cloud smoke test for Ray job orchestration, artifact wiring, benchmark sanity, and GA behavior before burning quota on the 2.8B to 8B experiments.
+    config_path: experiments/thesis/eks_gpu/exp01_tiny_controlled_merge/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp01_tiny_controlled_merge
+    storage_subpath: thesis/eks_gpu/exp01_tiny_controlled_merge
+    job_name: thesis-exp01-tinystories
+    recommended_population: 24
+    recommended_generations: 20
+    recommended_max_fevals: 480
+    recommended_strategy: pool
+    recommended_num_gpus: 1
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false
+
   - id: exp02
     name: Controlled Base + Chat Merge
     family: gpt_neox
+    reason: Same-family base versus instruct experiment to study knowledge retention against alignment and instruction behavior under a controlled architecture match.
     config_path: experiments/thesis/eks_gpu/exp02_pythia28b_base_chat/config.yml
     storage_path: workspace/thesis/eks_gpu/exp02_pythia28b_base_chat
     storage_subpath: thesis/eks_gpu/exp02_pythia28b_base_chat
@@ -61,6 +80,7 @@ experiments:
   - id: exp03
     name: Multilingual Base + Instruct Merge
     family: qwen2
+    reason: Tests whether base plus instruct merging improves instruction following while preserving multilingual coverage and general reasoning.
     config_path: experiments/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge/config.yml
     storage_path: workspace/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge
     storage_subpath: thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge
@@ -78,6 +98,7 @@ experiments:
   - id: exp04
     name: General + Code Specialist Merge
     family: mistral
+    reason: Practical 7B experiment to see whether GA merging can retain general reasoning while improving structured and code-adjacent behavior.
     config_path: experiments/thesis/eks_gpu/exp04_mistral7b_general_code/config.yml
     storage_path: workspace/thesis/eks_gpu/exp04_mistral7b_general_code
     storage_subpath: thesis/eks_gpu/exp04_mistral7b_general_code
@@ -95,6 +116,7 @@ experiments:
   - id: exp05
     name: Large-Scale Same-Family Merge
     family: llama3
+    reason: Thesis-scale same-family merge to test whether GA can recover base-model breadth while preserving instruct alignment at the largest planned size.
     config_path: experiments/thesis/eks_gpu/exp05_llama3_8b_same_family/config.yml
     storage_path: workspace/thesis/eks_gpu/exp05_llama3_8b_same_family
     storage_subpath: thesis/eks_gpu/exp05_llama3_8b_same_family

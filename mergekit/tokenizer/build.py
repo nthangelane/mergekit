@@ -200,10 +200,8 @@ def build_tokenizer(
             continue
 
         try:
-            model_tok = transformers.AutoTokenizer.from_pretrained(
-                model.model.path,
-                revision=model.model.revision,
-                trust_remote_code=trust_remote_code,
+            model_tok = get_stripped_tokenizer(
+                model.model, trust_remote_code=trust_remote_code
             )
         except Exception as e:
             LOG.error(e)
@@ -216,10 +214,8 @@ def build_tokenizer(
     LOG.info("Building output tokenizer")
     # build final vocabulary
     if isinstance(tokenizer_source, ModelReference):
-        tokenizer_out = transformers.AutoTokenizer.from_pretrained(
-            tokenizer_source.model.path,
-            revision=tokenizer_source.model.revision,
-            trust_remote_code=trust_remote_code,
+        tokenizer_out = get_stripped_tokenizer(
+            tokenizer_source.model, trust_remote_code=trust_remote_code
         )
     elif tokenizer_source == "base":
         # it done

@@ -1238,6 +1238,7 @@ def bootstrap(
         "CPU_WORKER_REPLICAS": str(max(cpu_nodes - 1, 0)),
         "CPU_WORKER_MAX_REPLICAS": str(max(cpu_max_nodes - 1, 0)),
         "GPU_WORKER_REPLICAS": str(gpu_nodes * gpu_worker_pods_per_node),
+        "GPU_WORKER_MIN_REPLICAS": str(1 if gpu_nodes > 0 else 0),
         "GPU_WORKER_MAX_REPLICAS": str(gpu_max_nodes * gpu_worker_pods_per_node),
         "GPU_WORKER_GPUS": str(gpu_worker_gpus),
         "EFS_FILE_SYSTEM_ID": efs_file_system_id,

@@ -12,6 +12,7 @@ from mergekit.common import ModelReference
 from mergekit.config import InputModelDefinition, MergeConfiguration
 from mergekit.io import LazyTensorLoader
 from mergekit.tokenizer import TokenizerConfig
+from mergekit.tokenizer.build import build_tokenizer
 from mergekit.tokenizer.config import TokenEmbeddingConfig, ZeroEmbedding
 from mergekit.tokenizer.embed import PermutedEmbeddings
 from tests.common import make_picollama, run_and_check_merge
@@ -358,3 +359,22 @@ def test_zero_embedding_returns_zero_vector():
     )
 
     assert torch.equal(embed, torch.zeros(3, dtype=torch.float32))
+
+
+def test_build_tokenizer_strips_model_source_unused_tokens(
+    model_base: str, model_padded: str
+):
+    base_ref = ModelReference.model_validate(model_base)
+    padded_ref = ModelReference.model_validate(model_padded)
+
+    info = build_tokenizer(
+        base_model=base_ref,
+        referenced_models=[base_ref, padded_ref],
+        tokenizer_source=padded_ref,
+        trust_remote_code=False,
+        add_tokens=[],
+    )
+    vocab = info.tokenizer.get_vocab()
+
+    for idx in range(4):
+        assert f"<UNUSED_{idx}>" not in vocab

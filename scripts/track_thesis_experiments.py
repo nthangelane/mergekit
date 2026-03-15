@@ -278,6 +278,7 @@ def _row(
         "best": _fmt_float(local.best_score),
         "updated": local.updated_at or "-",
         "storage": exp["storage_path"],
+        "reason": exp.get("reason", "-"),
     }
 
 
@@ -335,6 +336,11 @@ def _group_summary(
     return {
         "fit_counts": dict(fit_counts),
         "notes": notes,
+        "reasons": [
+            f"{exp['id']}: {exp['reason']}"
+            for exp in manifest.get("experiments", [])
+            if exp.get("reason")
+        ],
         "cluster_total_gpus": _cluster_total_gpus(snapshot),
         "ready_workers": ready_workers if ready_workers is not None else "-",
         "worker_target_min": worker_target_min,
@@ -441,6 +447,10 @@ def _print_status(payload: dict) -> None:
             print("Notes:")
             for note in summary["notes"]:
                 print(f"  - {note}")
+        if summary["reasons"]:
+            print("Reasons:")
+            for reason in summary["reasons"]:
+                print(f"  - {reason}")
 
         print()
         _print_table(group["rows"])
