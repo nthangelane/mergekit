@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.6
+FROM 214109453209.dkr.ecr.us-east-1.amazonaws.com/mergekit-ga:20260315-scale
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY mergekit ./mergekit
+COPY docs ./docs
+COPY examples ./examples
+COPY tests ./tests
+
+RUN pip install --upgrade pip \
+    && pip install "ray[default]==2.35.0" langdetect immutabledict \
+    && pip install --no-deps .
+
+COPY . .
+
+ENTRYPOINT ["mergekit-evolve-ga"]

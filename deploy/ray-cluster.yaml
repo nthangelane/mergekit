@@ -18,10 +18,6 @@ spec:
           - name: ray-head
             image: "__MERGEKIT_IMAGE__"
             imagePullPolicy: IfNotPresent
-            command:
-              - /bin/bash
-              - -lc
-              - $KUBERAY_GEN_RAY_START_CMD
             env:
               - name: AWS_REGION
                 value: "__AWS_REGION__"
@@ -85,10 +81,6 @@ spec:
             - name: ray-worker
               image: "__MERGEKIT_IMAGE__"
               imagePullPolicy: IfNotPresent
-              command:
-                - /bin/bash
-                - -lc
-                - $KUBERAY_GEN_RAY_START_CMD
               env:
                 - name: AWS_REGION
                   value: "__AWS_REGION__"
@@ -156,10 +148,6 @@ spec:
             - name: ray-worker
               image: "__MERGEKIT_IMAGE__"
               imagePullPolicy: IfNotPresent
-              command:
-                - /bin/bash
-                - -lc
-                - $KUBERAY_GEN_RAY_START_CMD
               env:
                 - name: AWS_REGION
                   value: "__AWS_REGION__"

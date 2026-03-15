@@ -90,11 +90,14 @@ def monkeypatch_tqdm(lm_eval: bool = True, mergekit: bool = True):
 
 def monkeypatch_lmeval_vllm():
     # HACK: fix crash on some tasks due to unset AUTO_MODEL_CLASS for vLLM
-    import lm_eval.models.vllm_causallms
+    import lm_eval
 
-    lm_eval.models.vllm_causallms.VLLM.AUTO_MODEL_CLASS = (
-        transformers.AutoModelForCausalLM
-    )
+    vllm_models = getattr(getattr(lm_eval, "models", None), "vllm_causallms", None)
+    vllm_cls = getattr(vllm_models, "VLLM", None)
+    if vllm_cls is None:
+        return
+
+    vllm_cls.AUTO_MODEL_CLASS = transformers.AutoModelForCausalLM
 
 
 class NoInit:

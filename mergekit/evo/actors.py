@@ -5,7 +5,7 @@ import gc
 import os
 import logging
 import tempfile
-from typing import Optional, Union
+from typing import Any, Optional
 
 import lm_eval
 import lm_eval.api.model
@@ -54,6 +54,11 @@ from mergekit.options import MergeOptions
 from mergekit.plan import MergePlanner
 
 LOG = logging.getLogger(__name__)
+
+
+def _get_lm_eval_vllm_class():
+    vllm_models = getattr(getattr(lm_eval, "models", None), "vllm_causallms", None)
+    return getattr(vllm_models, "VLLM", None)
 
 
 def _accelerated_eval_model_kwargs(
@@ -257,9 +262,7 @@ class InMemoryMergeEvaluator(MergeActorBase):
     transformers, and vLLM and may break at any time.
     """
 
-    model: Union[
-        lm_eval.models.huggingface.HFLM, lm_eval.models.vllm_causallms.VLLM, None
-    ] = None
+    model: Optional[Any] = None
     arch_info: Optional[ConfiguredModelArchitecture] = None
 
     def __init__(
@@ -325,6 +328,11 @@ class InMemoryMergeEvaluator(MergeActorBase):
             )
 
         if self.vllm:
+            vllm_model_cls = _get_lm_eval_vllm_class()
+            if vllm_model_cls is None:
+                raise RuntimeError(
+                    "lm_eval vLLM backend is unavailable in this environment"
+                )
             # oh i hate this
             with tempfile.TemporaryDirectory(
                 dir=self.model_storage_path, prefix="vllm"
@@ -359,7 +367,7 @@ class InMemoryMergeEvaluator(MergeActorBase):
                 mem_util = (
                     0.7 if accelerator_type in ["cuda", "xpu"] else 0.9
                 )  # reduce memory usage if we're also using accelerator for the merge
-                self.model = lm_eval.models.vllm_causallms.VLLM(
+                self.model = vllm_model_cls(
                     pretrained=tempdir,
                     batch_size=self.batch_size or "auto",
                     max_model_len=max_model_len,

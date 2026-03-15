@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+import lm_eval
+
 from mergekit.evo import actors
+from mergekit.evo import monkeypatch as evo_monkeypatch
 
 
 def test_accelerated_eval_model_kwargs_for_hf_gpu():
@@ -14,6 +17,18 @@ def test_accelerated_eval_model_kwargs_for_hf_gpu():
 
 def test_accelerated_eval_model_kwargs_for_vllm_omits_hf_overrides():
     assert actors._accelerated_eval_model_kwargs(vllm=True) is None
+
+
+def test_get_lm_eval_vllm_class_returns_none_when_backend_is_missing(monkeypatch):
+    monkeypatch.delattr(actors.lm_eval.models, "vllm_causallms", raising=False)
+
+    assert actors._get_lm_eval_vllm_class() is None
+
+
+def test_monkeypatch_lmeval_vllm_noops_when_backend_is_missing(monkeypatch):
+    monkeypatch.delattr(lm_eval.models, "vllm_causallms", raising=False)
+
+    evo_monkeypatch.monkeypatch_lmeval_vllm()
 
 
 def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):

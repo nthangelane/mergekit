@@ -132,13 +132,12 @@ def test_deploy_manifests_are_valid_yaml():
     ]
     assert "mergekit-shared-pvc" in shared_claims
     worker_specs = cluster["spec"]["workerGroupSpecs"]
-    assert head_container["command"][-1] == "$KUBERAY_GEN_RAY_START_CMD"
     worker_commands = [
-        spec["template"]["spec"]["containers"][0]["command"][-1]
+        spec["template"]["spec"]["containers"][0].get("command")
         for spec in worker_specs
     ]
-    assert all(command == "$KUBERAY_GEN_RAY_START_CMD" for command in worker_commands)
-    assert all("$RAY_HEAD_IP" not in command for command in worker_commands)
+    assert "command" not in head_container
+    assert all(command is None for command in worker_commands)
     assert "curl --fail --silent" in head_container["readinessProbe"]["exec"]["command"][-1]
     assert "curl --fail --silent" in head_container["livenessProbe"]["exec"]["command"][-1]
     worker_containers = [
