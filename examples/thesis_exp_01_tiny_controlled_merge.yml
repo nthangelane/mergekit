@@ -1,0 +1,74 @@
+# Experiment 1: Tiny Controlled Merge Baseline
+# Suggested run:
+#   python -m mergekit.scripts.evolve_ga \
+#     examples/thesis_exp_01_tiny_controlled_merge.yml \
+#     --storage-path workspace/thesis_exp_01_tiny_controlled \
+#     --max-fevals 480
+#
+# Automated fitness metrics encoded here:
+#   - wikitext perplexity proxy
+#   - lambada_openai accuracy
+#   - sciq accuracy
+#   - boolq accuracy
+#
+# Collect separately after the run:
+#   - BLEU/ROUGE on held-out TinyStories generations
+#   - manual instruction-following checks
+#   - merge runtime
+
+genome:
+  type: multi_method
+
+  models:
+    - roneneldan/TinyStories-33M
+    - roneneldan/TinyStories-Instruct-33M
+
+  base_model: roneneldan/TinyStories-33M
+  tokenizer_source: base
+
+  allowed_methods:
+    - linear
+    - slerp
+    - ties
+    - dare_linear
+    - dare_ties
+
+  layer_granularity: 1
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: wikitext
+    weight: 0.35
+    metric: ppl,none
+  - name: lambada_openai
+    weight: 0.25
+    metric: acc,none
+  - name: sciq
+    weight: 0.20
+    metric: acc,none
+  - name: boolq
+    weight: 0.20
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 24
+  elite_fraction: 0.25
+  mutation_rate: 0.22
+  mutation_sigma: 0.06
+  crossover: semantic
+  semantic_crossover_prob: 0.80
+  method_mutation_rate: 0.20
+  model_mutation_rate: 0.18
+  parameter_mutation_rate: 0.28
+  tournament_size: 4
+
+limit: 256
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

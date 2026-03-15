@@ -1,0 +1,73 @@
+# Experiment 2: Controlled Base + Chat Merge
+# Verified same-family substitute on 2026-03-15:
+#   - requested repo `togethercomputer/Pythia-Chat-Base-2.8B` did not resolve
+#   - preset uses `lambdalabs/pythia-2.8b-deduped-synthetic-instruct`
+#
+# Suggested run:
+#   python -m mergekit.scripts.evolve_ga \
+#     examples/thesis_exp_02_pythia28b_base_chat.yml \
+#     --storage-path workspace/thesis_exp_02_pythia28b \
+#     --max-fevals 320 \
+#     --i-understand-the-depths-of-the-evils-i-am-unleashing
+#
+# Collect separately after the run:
+#   - inference memory
+#   - AlpacaEval or MT-Bench style chat scoring
+
+genome:
+  type: multi_method
+
+  models:
+    - EleutherAI/pythia-2.8b
+    - lambdalabs/pythia-2.8b-deduped-synthetic-instruct
+
+  base_model: EleutherAI/pythia-2.8b
+  tokenizer_source: base
+
+  allowed_methods:
+    - linear
+    - slerp
+    - ties
+    - dare_linear
+    - dare_ties
+    - task_arithmetic
+
+  layer_granularity: 4
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: mmlu
+    weight: 0.30
+    metric: acc,none
+  - name: gsm8k
+    weight: 0.25
+    metric: exact_match,strict-match
+  - name: ifeval
+    weight: 0.30
+    metric: inst_level_strict_acc
+  - name: wikitext
+    weight: 0.15
+    metric: ppl,none
+
+random_init: false
+
+ga:
+  population_size: 20
+  elite_fraction: 0.25
+  mutation_rate: 0.20
+  mutation_sigma: 0.05
+  crossover: semantic
+  semantic_crossover_prob: 0.85
+  method_mutation_rate: 0.18
+  model_mutation_rate: 0.15
+  parameter_mutation_rate: 0.24
+  tournament_size: 4
+
+limit: 64
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

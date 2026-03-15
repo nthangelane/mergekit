@@ -1,0 +1,70 @@
+# Experiment 4: General + Code Specialist Merge
+# This preset keeps the source pair strictly same-family and leaves HumanEval or
+# MBPP, tokens/sec, and VRAM usage as post-run evaluations for the best model.
+#
+# Suggested run:
+#   python -m mergekit.scripts.evolve_ga \
+#     examples/thesis_exp_04_mistral7b_general_code.yml \
+#     --storage-path workspace/thesis_exp_04_mistral7b \
+#     --max-fevals 120 \
+#     --i-understand-the-depths-of-the-evils-i-am-unleashing
+
+genome:
+  type: multi_method
+
+  models:
+    - mistralai/Mistral-7B-v0.1
+    - mistralai/Mistral-7B-Instruct-v0.2
+
+  base_model: mistralai/Mistral-7B-v0.1
+  tokenizer_source: base
+
+  allowed_methods:
+    - linear
+    - slerp
+    - ties
+    - dare_linear
+    - dare_ties
+
+  layer_granularity: 4
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: mmlu
+    weight: 0.30
+    metric: acc,none
+  - name: gsm8k
+    weight: 0.20
+    metric: exact_match,strict-match
+  - name: ifeval
+    weight: 0.20
+    metric: inst_level_strict_acc
+  - name: arc_easy
+    weight: 0.15
+    metric: acc,none
+  - name: wikitext
+    weight: 0.15
+    metric: ppl,none
+
+random_init: false
+
+ga:
+  population_size: 12
+  elite_fraction: 0.25
+  mutation_rate: 0.18
+  mutation_sigma: 0.035
+  crossover: semantic
+  semantic_crossover_prob: 0.80
+  method_mutation_rate: 0.14
+  model_mutation_rate: 0.12
+  parameter_mutation_rate: 0.20
+  tournament_size: 3
+
+limit: 32
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

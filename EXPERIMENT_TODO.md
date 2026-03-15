@@ -40,6 +40,27 @@
 
 ---
 
+## Planned Experiment Matrix
+
+| Exp # | Experiment Name | Recommended Size | Model A | HF Link A | Model B | HF Link B | Architecture | Merge Motivation | Recommended Population | Recommended Generations | Allowed Merge Operations | Evaluation Metrics | Preset |
+|-------|-----------------|------------------|---------|-----------|---------|-----------|--------------|------------------|------------------------|--------------------------|--------------------------|--------------------|--------|
+| 1 | Tiny Controlled Merge Baseline | 33M-160M | TinyStories-33M | [roneneldan/TinyStories-33M](https://huggingface.co/roneneldan/TinyStories-33M) | TinyStories-Instruct-33M | [roneneldan/TinyStories-Instruct-33M](https://huggingface.co/roneneldan/TinyStories-Instruct-33M) | GPT-Neo | Fast, cheap baseline to validate GA logic, chromosome design, mutation strategy, and fitness behavior before moving to larger models. | 20-30 | 15-25 | Linear, SLERP, TIES, DARE variants, layer-wise crossover, coefficient mutation | Perplexity, held-out generation quality, lightweight QA accuracy, convergence, merge runtime | [`examples/thesis_exp_01_tiny_controlled_merge.yml`](examples/thesis_exp_01_tiny_controlled_merge.yml) |
+| 2 | Controlled Base + Chat Merge | 2.8B | Pythia-2.8B | [EleutherAI/pythia-2.8b](https://huggingface.co/EleutherAI/pythia-2.8b) | Pythia-2.8B Synthetic Instruct | [lambdalabs/pythia-2.8b-deduped-synthetic-instruct](https://huggingface.co/lambdalabs/pythia-2.8b-deduped-synthetic-instruct) | GPT-NeoX | Same-family base vs instruct experiment to study knowledge retention versus alignment and instruction behavior. | 16-24 | 12-20 | Linear, SLERP, TIES, DARE variants, task arithmetic, layer-range crossover, weighted block merge | Perplexity, MMLU, GSM8K, IFEval proxy for instruction quality, inference memory | [`examples/thesis_exp_02_pythia28b_base_chat.yml`](examples/thesis_exp_02_pythia28b_base_chat.yml) |
+| 3 | Multilingual Base + Instruct Merge | 3B | Qwen2.5-3B | [Qwen/Qwen2.5-3B](https://huggingface.co/Qwen/Qwen2.5-3B) | Qwen2.5-3B-Instruct | [Qwen/Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct) | Qwen2 | Tests whether merging base and instruct models improves instruction following while keeping multilingual and general reasoning capability. | 12-20 | 10-18 | Linear, SLERP, TIES, DARE variants, layer-wise crossover, coefficient mutation | MMLU, XNLI, GSM8K, IFEval proxy for instruction quality, perplexity | [`examples/thesis_exp_03_qwen25_3b_multilingual_merge.yml`](examples/thesis_exp_03_qwen25_3b_multilingual_merge.yml) |
+| 4 | General + Code Specialist Merge | 7B | Mistral-7B-v0.1 | [mistralai/Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) | Mistral-7B-Instruct-v0.2 | [mistralai/Mistral-7B-Instruct-v0.2](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2) | Mistral | Stronger practical experiment to test whether GA merging preserves general reasoning while improving structured or code-adjacent behavior. | 10-16 | 8-15 | Linear, SLERP, TIES, DARE variants, block merge by transformer layers, residual-weight interpolation | MMLU, GSM8K, IFEval, ARC-Easy, perplexity, external code eval, tokens/sec, VRAM usage | [`examples/thesis_exp_04_mistral7b_general_code.yml`](examples/thesis_exp_04_mistral7b_general_code.yml) |
+| 5 | Large-Scale Same-Family Merge | 8B | Llama-3-8B | [meta-llama/Meta-Llama-3-8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B) | Llama-3-8B-Instruct | [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct) | Llama 3 | Strong thesis-scale same-family merge to test whether GA can recover base-model breadth while preserving instruct alignment. | 8-12 | 6-12 | Linear, SLERP, TIES, DARE variants, layer-band crossover, merge-weight mutation | MMLU, GSM8K, TruthfulQA, IFEval proxy for chat quality, perplexity, latency, memory footprint | [`examples/thesis_exp_05_llama3_8b_same_family.yml`](examples/thesis_exp_05_llama3_8b_same_family.yml) |
+
+### Notes For The Matrix
+
+- Hugging Face repo IDs were verified on `2026-03-15` against model configs before creating the presets.
+- `togethercomputer/Pythia-Chat-Base-2.8B` did not resolve on `2026-03-15`, so the 2.8B preset uses [`lambdalabs/pythia-2.8b-deduped-synthetic-instruct`](https://huggingface.co/lambdalabs/pythia-2.8b-deduped-synthetic-instruct) as the closest same-family instruct model.
+- `Qwen/Qwen2-3B` and `Qwen/Qwen2-3B-Instruct` did not resolve on `2026-03-15`, so the 3B preset uses the verified [`Qwen/Qwen2.5-3B`](https://huggingface.co/Qwen/Qwen2.5-3B) pair.
+- Recommended generations are expressed operationally via `--max-fevals`, not a YAML field. Suggested mappings are: Exp 1 `24 x 20 = 480`, Exp 2 `20 x 16 = 320`, Exp 3 `16 x 14 = 224`, Exp 4 `12 x 10 = 120`, Exp 5 `10 x 8 = 80`.
+- The GA YAMLs encode the lm-eval metrics that are directly supported in this repo. BLEU/ROUGE, AlpacaEval or MT-Bench, HumanEval or MBPP, runtime, latency, tokens per second, VRAM, and memory footprint should be collected as post-run analyses for the best checkpoints.
+- Experiments 2-5 include benchmark tasks such as `mmlu`, `gsm8k`, and `truthfulqa_mc`; run them with `--i-understand-the-depths-of-the-evils-i-am-unleashing`.
+
+---
+
 ## Phase 1: Core Experiments (REQUIRED FOR THESIS SUBMISSION)
 
 ### Experiment 1.1 — Full Benchmark Evaluation of Parent Models

@@ -1,0 +1,75 @@
+# Experiment 5: Large-Scale Same-Family Merge
+# Note: Meta Llama checkpoints are gated. Ensure your Hugging Face token can
+# access both source models before running this preset.
+#
+# Suggested run:
+#   python -m mergekit.scripts.evolve_ga \
+#     examples/thesis_exp_05_llama3_8b_same_family.yml \
+#     --storage-path workspace/thesis_exp_05_llama3_8b \
+#     --max-fevals 80 \
+#     --i-understand-the-depths-of-the-evils-i-am-unleashing
+#
+# Collect separately after the run:
+#   - latency
+#   - memory footprint
+#   - MT-Bench or AlpacaEval style chat assessment
+
+genome:
+  type: multi_method
+
+  models:
+    - meta-llama/Meta-Llama-3-8B
+    - meta-llama/Meta-Llama-3-8B-Instruct
+
+  base_model: meta-llama/Meta-Llama-3-8B
+  tokenizer_source: base
+
+  allowed_methods:
+    - linear
+    - slerp
+    - ties
+    - dare_linear
+    - dare_ties
+
+  layer_granularity: 8
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: mmlu
+    weight: 0.30
+    metric: acc,none
+  - name: gsm8k
+    weight: 0.25
+    metric: exact_match,strict-match
+  - name: truthfulqa_mc
+    weight: 0.15
+    metric: mc2,none
+  - name: ifeval
+    weight: 0.15
+    metric: inst_level_strict_acc
+  - name: wikitext
+    weight: 0.15
+    metric: ppl,none
+
+random_init: false
+
+ga:
+  population_size: 10
+  elite_fraction: 0.30
+  mutation_rate: 0.16
+  mutation_sigma: 0.03
+  crossover: semantic
+  semantic_crossover_prob: 0.80
+  method_mutation_rate: 0.12
+  model_mutation_rate: 0.10
+  parameter_mutation_rate: 0.18
+  tournament_size: 3
+
+limit: 32
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false
