@@ -44,6 +44,46 @@ REQUIRED_BINARIES = {
     "aws": "AWS CLI",
 }
 EFS_UTILS_POLICY_ARN = "arn:aws:iam::aws:policy/AmazonElasticFileSystemsUtils"
+DEFAULT_COST_TAGS = {
+    "Project": "master-research",
+    "Application": "mergekit-ga",
+    "Environment": "research",
+    "Owner": "nkululekothangelane",
+    "ManagedBy": "mergekit-eks",
+}
+
+
+def _cost_tags(
+    cluster_name: str,
+    *,
+    workload: Optional[str] = None,
+    nodegroup_name: Optional[str] = None,
+    resource_kind: Optional[str] = None,
+) -> Dict[str, str]:
+    tags = {
+        **DEFAULT_COST_TAGS,
+        "mergekit-cluster": cluster_name,
+    }
+    if workload:
+        tags["Workload"] = workload
+    if nodegroup_name:
+        tags["NodeGroup"] = nodegroup_name
+    if resource_kind:
+        tags["ResourceKind"] = resource_kind
+    return tags
+
+
+def _aws_tags(tags: Mapping[str, str]) -> list[dict]:
+    return [{"Key": key, "Value": value} for key, value in sorted(tags.items())]
+
+
+def _nodegroup_workload(nodegroup_name: str) -> str:
+    lowered = nodegroup_name.lower()
+    if "gpu" in lowered:
+        return "gpu"
+    if "cpu" in lowered:
+        return "cpu"
+    return "general"
 
 
 def _ensure_kubeconfig(cluster_name: str, region: str, *, dry_run: bool) -> None:
@@ -299,13 +339,20 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
             CreationToken=f"{cluster_name}-mergekit-efs",
             PerformanceMode="generalPurpose",
             Encrypted=True,
-            Tags=[
-                {"Key": "Name", "Value": f"{cluster_name}-mergekit-efs"},
-                {"Key": "mergekit-cluster", "Value": cluster_name},
-            ],
+            Tags=_aws_tags(
+                {
+                    **_cost_tags(cluster_name, resource_kind="efs"),
+                    "Name": f"{cluster_name}-mergekit-efs",
+                }
+            ),
         )
         filesystem_id = created["FileSystemId"]
         click.echo(f"Created EFS filesystem {filesystem_id}.")
+    else:
+        efs.create_tags(
+            FileSystemId=filesystem_id,
+            Tags=_aws_tags(_cost_tags(cluster_name, resource_kind="efs")),
+        )
 
     vpc = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
     vpc_cidr = vpc["CidrBlock"]
@@ -327,10 +374,12 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
             TagSpecifications=[
                 {
                     "ResourceType": "security-group",
-                    "Tags": [
-                        {"Key": "Name", "Value": sg_name},
-                        {"Key": "mergekit-cluster", "Value": cluster_name},
-                    ],
+                    "Tags": _aws_tags(
+                        {
+                            **_cost_tags(cluster_name, resource_kind="security-group"),
+                            "Name": sg_name,
+                        }
+                    ),
                 }
             ],
         )
@@ -373,6 +422,138 @@ def _ensure_efs(cluster_name: str, region: str, *, dry_run: bool) -> str:
 
     _wait_for_efs_mount_targets(efs, filesystem_id, expected=len(desired_subnets))
     return filesystem_id
+
+
+def _ensure_cost_allocation_tags(
+    cluster_name: str, region: str, *, dry_run: bool
+) -> None:
+    if dry_run:
+        click.echo(
+            "→ ensure cost-allocation tags on EKS cluster, nodegroups, ASGs, EC2 instances, EBS volumes, and EFS"
+        )
+        return
+
+    import boto3
+
+    cluster = _describe_cluster(cluster_name, region)
+
+    eks = boto3.client("eks", region_name=region)
+    autoscaling = boto3.client("autoscaling", region_name=region)
+    ec2 = boto3.client("ec2", region_name=region)
+    efs = boto3.client("efs", region_name=region)
+
+    eks.tag_resource(
+        resourceArn=cluster["arn"],
+        tags=_cost_tags(cluster_name, resource_kind="eks-cluster"),
+    )
+
+    nodegroup_names = eks.list_nodegroups(clusterName=cluster_name).get(
+        "nodegroups", []
+    )
+    for nodegroup_name in nodegroup_names:
+        nodegroup = eks.describe_nodegroup(
+            clusterName=cluster_name, nodegroupName=nodegroup_name
+        )["nodegroup"]
+        workload = _nodegroup_workload(nodegroup_name)
+        nodegroup_tags = _cost_tags(
+            cluster_name,
+            workload=workload,
+            nodegroup_name=nodegroup_name,
+            resource_kind="eks-nodegroup",
+        )
+        eks.tag_resource(resourceArn=nodegroup["nodegroupArn"], tags=nodegroup_tags)
+
+        asg_names = [
+            group["name"]
+            for group in nodegroup.get("resources", {}).get("autoScalingGroups", [])
+            if group.get("name")
+        ]
+        if asg_names:
+            autoscaling.create_or_update_tags(
+                Tags=[
+                    {
+                        "ResourceId": asg_name,
+                        "ResourceType": "auto-scaling-group",
+                        "Key": key,
+                        "Value": value,
+                        "PropagateAtLaunch": True,
+                    }
+                    for asg_name in asg_names
+                    for key, value in nodegroup_tags.items()
+                ]
+            )
+
+        reservations = ec2.describe_instances(
+            Filters=[
+                {"Name": "tag:eks:cluster-name", "Values": [cluster_name]},
+                {"Name": "tag:eks:nodegroup-name", "Values": [nodegroup_name]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["pending", "running", "stopping", "stopped"],
+                },
+            ]
+        ).get("Reservations", [])
+        instances = [instance for res in reservations for instance in res["Instances"]]
+        instance_ids = [instance["InstanceId"] for instance in instances]
+        volume_ids = [
+            mapping["Ebs"]["VolumeId"]
+            for instance in instances
+            for mapping in instance.get("BlockDeviceMappings", [])
+            if "Ebs" in mapping and mapping["Ebs"].get("VolumeId")
+        ]
+
+        if instance_ids:
+            ec2.create_tags(
+                Resources=instance_ids,
+                Tags=_aws_tags(
+                    {
+                        **nodegroup_tags,
+                        "ResourceKind": "ec2-instance",
+                    }
+                ),
+            )
+        if volume_ids:
+            ec2.create_tags(
+                Resources=volume_ids,
+                Tags=_aws_tags(
+                    {
+                        **nodegroup_tags,
+                        "ResourceKind": "ebs-volume",
+                    }
+                ),
+            )
+
+    for filesystem in efs.describe_file_systems().get("FileSystems", []):
+        filesystem_id = filesystem["FileSystemId"]
+        tags = {
+            tag["Key"]: tag["Value"]
+            for tag in efs.describe_tags(FileSystemId=filesystem_id).get("Tags", [])
+        }
+        if tags.get("mergekit-cluster") != cluster_name:
+            continue
+        efs.create_tags(
+            FileSystemId=filesystem_id,
+            Tags=_aws_tags(_cost_tags(cluster_name, resource_kind="efs")),
+        )
+
+    security_groups = ec2.describe_security_groups(
+        Filters=[
+            {"Name": "group-name", "Values": [f"{cluster_name}-efs-sg"]},
+            {
+                "Name": "vpc-id",
+                "Values": [cluster["resourcesVpcConfig"]["vpcId"]],
+            },
+        ]
+    ).get("SecurityGroups", [])
+    if security_groups:
+        ec2.create_tags(
+            Resources=[security_group["GroupId"] for security_group in security_groups],
+            Tags=_aws_tags(_cost_tags(cluster_name, resource_kind="security-group")),
+        )
+
+    click.echo(
+        "Ensured cost-allocation tags on cluster, nodegroups, autoscaling groups, EC2 instances, EBS volumes, and EFS."
+    )
 
 
 def _ensure_efs_csi_driver(cluster_name: str, region: str, *, dry_run: bool) -> None:
@@ -599,6 +780,7 @@ def bootstrap(
     _ensure_efs_csi_driver(cluster_name, region, dry_run=dry_run)
     _ensure_efs_node_role_permissions(cluster_name, region, dry_run=dry_run)
     efs_file_system_id = _ensure_efs(cluster_name, region, dry_run=dry_run)
+    _ensure_cost_allocation_tags(cluster_name, region, dry_run=dry_run)
 
     replacements = {
         "MERGEKIT_IMAGE": image,

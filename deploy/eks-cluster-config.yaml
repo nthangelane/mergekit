@@ -4,6 +4,13 @@ kind: ClusterConfig
 metadata:
   name: __CLUSTER_NAME__
   region: __AWS_REGION__
+  tags:
+    Project: master-research
+    Application: mergekit-ga
+    Environment: research
+    Owner: nkululekothangelane
+    ManagedBy: mergekit-eks
+    mergekit-cluster: __CLUSTER_NAME__
 
 iam:
   withOIDC: true
@@ -18,6 +25,15 @@ managedNodeGroups:
     privateNetworking: false
     labels:
       workload: cpu
+    tags:
+      Project: master-research
+      Application: mergekit-ga
+      Environment: research
+      Owner: nkululekothangelane
+      ManagedBy: mergekit-eks
+      mergekit-cluster: __CLUSTER_NAME__
+      Workload: cpu
+      NodeGroup: __CLUSTER_NAME__-cpu
   - name: __CLUSTER_NAME__-gpu
     instanceType: __GPU_NODE_TYPE__
     desiredCapacity: __GPU_NODES__
@@ -29,6 +45,15 @@ managedNodeGroups:
     labels:
       workload: gpu
       accelerator: nvidia
+    tags:
+      Project: master-research
+      Application: mergekit-ga
+      Environment: research
+      Owner: nkululekothangelane
+      ManagedBy: mergekit-eks
+      mergekit-cluster: __CLUSTER_NAME__
+      Workload: gpu
+      NodeGroup: __CLUSTER_NAME__-gpu
     taints:
       - key: nvidia.com/gpu
         value: "true"

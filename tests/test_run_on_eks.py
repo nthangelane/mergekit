@@ -42,6 +42,10 @@ def test_bootstrap_includes_storage_apply():
         f"ensure managed nodegroup roles include {run_on_eks.EFS_UTILS_POLICY_ARN}"
         in result.output
     )
+    assert (
+        "ensure cost-allocation tags on EKS cluster, nodegroups, ASGs, EC2 instances, EBS volumes, and EFS"
+        in result.output
+    )
 
 
 def test_bootstrap_skips_direct_namespace_creation():
@@ -145,6 +149,7 @@ def test_deploy_manifests_are_valid_yaml():
 
     cluster = yaml.safe_load((deploy_dir / "ray-cluster.yaml").read_text())
     assert cluster.get("kind") == "RayCluster"
+    assert cluster["spec"]["headGroupSpec"]["rayStartParams"]["num-cpus"] == "0"
     head_container = cluster["spec"]["headGroupSpec"]["template"]["spec"]["containers"][
         0
     ]
@@ -272,3 +277,114 @@ def test_ensure_efs_node_role_permissions_attaches_only_when_missing(
 
     assert attached == [("demo-cpu-role", run_on_eks.EFS_UTILS_POLICY_ARN)]
     assert "Attached" in capsys.readouterr().out
+
+
+def test_ensure_cost_allocation_tags_covers_cluster_and_storage(monkeypatch, capsys):
+    eks_tag_calls = []
+    asg_tag_calls = []
+    ec2_tag_calls = []
+    efs_tag_calls = []
+
+    class FakeEksClient:
+        def list_nodegroups(self, clusterName):
+            assert clusterName == "demo"
+            return {"nodegroups": ["demo-cpu", "demo-gpu"]}
+
+        def describe_nodegroup(self, clusterName, nodegroupName):
+            resources = {
+                "demo-cpu": {
+                    "nodegroupArn": "arn:aws:eks:cpu",
+                    "resources": {
+                        "autoScalingGroups": [{"name": "asg-cpu"}],
+                    },
+                },
+                "demo-gpu": {
+                    "nodegroupArn": "arn:aws:eks:gpu",
+                    "resources": {
+                        "autoScalingGroups": [{"name": "asg-gpu"}],
+                    },
+                },
+            }
+            return {"nodegroup": resources[nodegroupName]}
+
+        def tag_resource(self, resourceArn, tags):
+            eks_tag_calls.append((resourceArn, tags))
+
+    class FakeAutoScalingClient:
+        def create_or_update_tags(self, Tags):
+            asg_tag_calls.extend(Tags)
+
+    class FakeEc2Client:
+        def describe_instances(self, Filters):
+            nodegroup = next(
+                f["Values"][0] for f in Filters if f["Name"] == "tag:eks:nodegroup-name"
+            )
+            instance_id = f"i-{nodegroup}"
+            volume_id = f"vol-{nodegroup}"
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": instance_id,
+                                "BlockDeviceMappings": [
+                                    {"Ebs": {"VolumeId": volume_id}}
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        def create_tags(self, Resources, Tags):
+            ec2_tag_calls.append((Resources, Tags))
+
+        def describe_security_groups(self, Filters):
+            return {"SecurityGroups": [{"GroupId": "sg-efs"}]}
+
+    class FakeEfsClient:
+        def describe_file_systems(self):
+            return {"FileSystems": [{"FileSystemId": "fs-123"}]}
+
+        def describe_tags(self, FileSystemId):
+            assert FileSystemId == "fs-123"
+            return {"Tags": [{"Key": "mergekit-cluster", "Value": "demo"}]}
+
+        def create_tags(self, FileSystemId, Tags):
+            efs_tag_calls.append((FileSystemId, Tags))
+
+    fake_boto3 = types.SimpleNamespace(
+        client=lambda service_name, region_name=None: {
+            "eks": FakeEksClient(),
+            "autoscaling": FakeAutoScalingClient(),
+            "ec2": FakeEc2Client(),
+            "efs": FakeEfsClient(),
+        }[service_name]
+    )
+    monkeypatch.setitem(__import__("sys").modules, "boto3", fake_boto3)
+    monkeypatch.setattr(
+        run_on_eks,
+        "_describe_cluster",
+        lambda cluster_name, region: {
+            "arn": "arn:aws:eks:cluster/demo",
+            "resourcesVpcConfig": {"vpcId": "vpc-123"},
+        },
+    )
+
+    run_on_eks._ensure_cost_allocation_tags("demo", "us-east-1", dry_run=False)
+
+    assert eks_tag_calls[0][0] == "arn:aws:eks:cluster/demo"
+    assert any(call[0] == "arn:aws:eks:cpu" for call in eks_tag_calls)
+    assert any(call[0] == "arn:aws:eks:gpu" for call in eks_tag_calls)
+    assert any(tag["ResourceId"] == "asg-cpu" for tag in asg_tag_calls)
+    assert any(tag["ResourceId"] == "asg-gpu" for tag in asg_tag_calls)
+    assert any(resources == ["i-demo-cpu"] for resources, _ in ec2_tag_calls)
+    assert any(resources == ["vol-demo-cpu"] for resources, _ in ec2_tag_calls)
+    assert any(resources == ["sg-efs"] for resources, _ in ec2_tag_calls)
+    assert efs_tag_calls == [
+        (
+            "fs-123",
+            run_on_eks._aws_tags(run_on_eks._cost_tags("demo", resource_kind="efs")),
+        )
+    ]
+    assert "Ensured cost-allocation tags" in capsys.readouterr().out

@@ -9,6 +9,7 @@ spec:
     serviceType: ClusterIP
     rayStartParams:
       dashboard-host: "0.0.0.0"
+      num-cpus: "0"
     template:
       spec:
         serviceAccountName: default
@@ -113,10 +114,10 @@ spec:
               resources:
                 requests:
                   cpu: "2"
-                  memory: "8Gi"
+                  memory: "10Gi"
                 limits:
                   cpu: "4"
-                  memory: "12Gi"
+                  memory: "14Gi"
               volumeMounts:
                 - name: shared-tmp
                   mountPath: /tmp/ray
