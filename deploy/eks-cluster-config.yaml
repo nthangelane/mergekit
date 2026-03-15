@@ -1,0 +1,35 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: __CLUSTER_NAME__
+  region: __AWS_REGION__
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: __CLUSTER_NAME__-cpu
+    instanceType: __CPU_NODE_TYPE__
+    desiredCapacity: __CPU_NODES__
+    minSize: 1
+    maxSize: __CPU_MAX_NODES__
+    volumeSize: 200
+    privateNetworking: false
+    labels:
+      workload: cpu
+  - name: __CLUSTER_NAME__-gpu
+    instanceType: __GPU_NODE_TYPE__
+    desiredCapacity: __GPU_NODES__
+    minSize: 0
+    maxSize: __GPU_MAX_NODES__
+    volumeSize: 300
+    privateNetworking: false
+    amiFamily: AmazonLinux2
+    labels:
+      workload: gpu
+      accelerator: nvidia
+    taints:
+      - key: nvidia.com/gpu
+        value: "true"
+        effect: NoSchedule

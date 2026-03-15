@@ -56,6 +56,52 @@ from mergekit.plan import MergePlanner
 LOG = logging.getLogger(__name__)
 
 
+def _accelerated_eval_model_kwargs(
+    *,
+    vllm: bool,
+    quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
+) -> Optional[dict]:
+    model_kwargs = {}
+    if not vllm:
+        model_kwargs.update(
+            {
+                "device": "cuda",
+                "dtype": "bfloat16",
+                "device_map": None,
+                "low_cpu_mem_usage": True,
+            }
+        )
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
+    return model_kwargs or None
+
+
+def _evaluate_merged_path_accelerated(
+    merged_path: str,
+    config: EvolMergeConfiguration,
+    *,
+    vllm: bool,
+    batch_size: Optional[int],
+    task_manager: Optional[lm_eval.tasks.TaskManager],
+    quantization_config: Optional[transformers.BitsAndBytesConfig],
+) -> dict:
+    return evaluate_model(
+        merged_path,
+        config.tasks,
+        num_fewshot=config.num_fewshot,
+        limit=config.limit,
+        vllm=vllm,
+        batch_size=batch_size,
+        task_manager=task_manager,
+        apply_chat_template=config.apply_chat_template,
+        fewshot_as_multiturn=config.fewshot_as_multiturn,
+        model_kwargs=_accelerated_eval_model_kwargs(
+            vllm=vllm,
+            quantization_config=quantization_config,
+        ),
+    )
+
+
 class MergeActorBase:
     def __init__(
         self,
@@ -133,25 +179,14 @@ class OnDiskMergeEvaluator(MergeActorBase):
                 ),
             }
 
-        model_kwargs = {
-            "device": "cpu",
-            "dtype": "float32",
-            "device_map": None,
-            "low_cpu_mem_usage": False,
-        }
-        if self.quantization_config is not None:
-            model_kwargs["quantization_config"] = self.quantization_config
         LOG.info(f"Model merged to {merged_path}")
-        return evaluate_model_cpu(
+        return _evaluate_merged_path_accelerated(
             merged_path,
-            self.config.tasks,
-            num_fewshot=self.config.num_fewshot,
-            limit=self.config.limit,
+            self.config,
+            vllm=self.vllm,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
-            apply_chat_template=self.config.apply_chat_template,
-            fewshot_as_multiturn=self.config.fewshot_as_multiturn,
-            model_kwargs=model_kwargs,
+            quantization_config=self.quantization_config,
         )
 
 

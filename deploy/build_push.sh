@@ -24,23 +24,29 @@ fi
 # Build the container image from the repository root.
 PLATFORM="${PLATFORM:-linux/amd64}"
 
+BUILD_CMD=(docker buildx build)
 if [[ -n "${PLATFORM}" ]]; then
   echo "Building image for platform ${PLATFORM}. Override by exporting PLATFORM=<os/arch>."
-  docker build \
-    --platform "${PLATFORM}" \
-    --file "${SCRIPT_DIR}/Dockerfile" \
-    --tag "${FULL_IMAGE_NAME}" \
-    "${PROJECT_ROOT}"
-else
-  docker build \
-    --file "${SCRIPT_DIR}/Dockerfile" \
-    --tag "${FULL_IMAGE_NAME}" \
-    "${PROJECT_ROOT}"
+  BUILD_CMD+=(--platform "${PLATFORM}")
 fi
 
-echo "Built image ${FULL_IMAGE_NAME}."
+BUILD_CMD+=(
+  --file "${SCRIPT_DIR}/Dockerfile"
+  --tag "${FULL_IMAGE_NAME}"
+)
 
 if [[ -n "${REGISTRY_PREFIX}" ]]; then
-  echo "Pushing image ${FULL_IMAGE_NAME} to registry. Ensure you are already authenticated."
-  docker push "${FULL_IMAGE_NAME}"
+  BUILD_CMD+=(--push)
+else
+  BUILD_CMD+=(--load)
+fi
+
+BUILD_CMD+=("${PROJECT_ROOT}")
+
+"${BUILD_CMD[@]}"
+
+if [[ -n "${REGISTRY_PREFIX}" ]]; then
+  echo "Built and pushed image ${FULL_IMAGE_NAME}."
+else
+  echo "Built image ${FULL_IMAGE_NAME}."
 fi

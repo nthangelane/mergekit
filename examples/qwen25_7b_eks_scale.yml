@@ -1,0 +1,39 @@
+genome:
+  merge_method: linear
+  models:
+    - Qwen/Qwen2.5-7B-Instruct
+    - rubenroy/Zurich-7B-GCv2-5m
+    - luepow/thau-7b
+    - AgentFlow/agentflow-planner-7b
+  layer_granularity: 0
+  normalize: true
+  allow_negative_weights: false
+
+tasks:
+  - name: ifeval
+    weight: 0.45
+    metric: inst_level_strict_acc
+  - name: multirc
+    weight: 0.20
+    metric: acc,none
+  - name: boolq
+    weight: 0.20
+    metric: acc,none
+  - name: sciq
+    weight: 0.15
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 6
+  elite_fraction: 0.25
+  mutation_rate: 0.10
+  mutation_sigma: 0.015
+  crossover: arithmetic
+  tournament_size: 2
+
+limit: 48
+num_fewshot: 0
+apply_chat_template: true
+fewshot_as_multiturn: false

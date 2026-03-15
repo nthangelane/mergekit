@@ -1,10 +1,11 @@
-- [ ] Run a baseline-enabled GA smoke test to verify normalized baseline comparison, summary deltas, and upload-threshold gating on real artifacts.
-- [ ] Run a CPU serial GA smoke test after the strategy/timing fixes to confirm sequential execution and realistic merge/eval timing in logs.
-- [ ] Run a GA case that produces at least one failed genotype to verify `failure_reasons` in `ga_history.csv`, `failed_genotypes.csv`, and exact-hash no-retry behavior in a real run.
-- [ ] Run a GA smoke test with `--limit` on the CLI to verify the override reaches evaluation and reduces wall-clock cost without editing YAML.
-- [ ] Run a GA smoke test after the warning-noise filter change to confirm the expected `datasets` and local-model-SHA warnings are gone while genuine warnings still surface.
-- [ ] Run a smoke merge using repeated identical source models to validate the new normalized-linear invariance test against a real experiment path, not only unit coverage.
-- [ ] Run a GA smoke test after the fetch/tokenizer asset optimizations and compare logs/timing to confirm repeated `snapshot_download`/tokenizer-copy overhead is materially reduced.
+- [x] Run a baseline-enabled GA smoke test to verify normalized baseline comparison and summary deltas on real artifacts.
+- [x] Run a CPU serial GA smoke test after the strategy/timing fixes to confirm sequential execution and realistic merge/eval timing in logs.
+- [x] Run a GA case that produces at least one failed genotype to verify `failure_reasons` in `ga_history.csv`, `failed_genotypes.csv`, and exact-hash no-retry behavior in a real run.
+- [x] Run a second GA pass against the same storage path after a failed-genotype run to verify `failed_genotype_blacklist.csv` is loaded and exact failed hashes are skipped across runs for the same genome scope.
+- [x] Run a GA smoke test with `--limit` on the CLI to verify the override reaches evaluation and reduces wall-clock cost without editing YAML.
+- [x] Run a GA smoke test after the warning-noise filter change to confirm the expected `datasets` and local-model-SHA warnings are gone while genuine warnings still surface.
+- [x] Run a smoke merge using repeated identical source models to validate the new normalized-linear invariance test against a real experiment path, not only unit coverage.
+- [x] Run a GA smoke test after the fetch/tokenizer asset optimizations and compare logs/timing to confirm repeated `snapshot_download`/tokenizer-copy overhead is materially reduced.
 - [ ] Exercise at least one GPU-backed GA path (`pool` or `buffered`, with and without `--vllm` as available) after the recent GA fixes.
 - [ ] Exercise the Hugging Face upload path with improvement thresholds against a disposable repo or mock so the upload gate is runtime-validated.
 - [ ] After items 7-9 in `todo.md` are done, run a larger experiment to validate cache behavior, storage growth, and overall cluster/runtime stability.

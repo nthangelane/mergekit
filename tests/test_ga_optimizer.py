@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from mergekit.evo.cache_utils import genotype_exact_hash
 from mergekit.evo.ga import GAOptimizer, GAParams
 
 
@@ -116,3 +117,36 @@ def test_ga_optimizer_caches_failed_genotypes_without_retry():
     assert opt._last_eval_stats["cache_hits"] == 2.0
     assert opt._last_eval_stats["failed_evals"] == 1.0
     assert opt._last_eval_stats["failure_reasons"] == "merge:invalid_genotype:1"
+
+
+def test_ga_optimizer_skips_persisted_failed_blacklist_entries():
+    genome = FakeGenome(dim=4)
+    strategy = CountingFailureStrategy()
+    params = GAParams(population_size=4)
+    failed = np.array([-1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    valid = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    opt = GAOptimizer(
+        genome=genome,
+        strategy=strategy,  # type: ignore[arg-type]
+        params=params,
+        seed=0,
+        persisted_failed_genotypes={
+            genotype_exact_hash(failed): {
+                "error_stage": "merge",
+                "error_type": "invalid_genotype",
+                "error_message": "negative leading weight",
+            }
+        },
+    )
+    opt._fitness_cache = {}
+
+    fitness, results = opt._evaluate_population(np.stack([failed, valid], axis=0))
+
+    assert strategy.calls == 1
+    assert np.isneginf(fitness[0])
+    assert fitness[1] == 1.0
+    assert results[0]["blacklisted"] is True
+    assert results[0]["error_message"] == "negative leading weight"
+    assert opt._last_eval_stats["evaluations"] == 1.0
+    assert opt._last_eval_stats["cache_hits"] == 1.0
+    assert opt._last_eval_stats["failed_evals"] == 1.0

@@ -1,130 +1,211 @@
 apiVersion: ray.io/v1
 kind: RayCluster
 metadata:
-  name: mergekit-ga
+  name: __RAY_CLUSTER_NAME__
 spec:
   rayVersion: "2.35.0"
   enableInTreeAutoscaling: true
   headGroupSpec:
+    serviceType: ClusterIP
     rayStartParams:
       dashboard-host: "0.0.0.0"
     template:
       spec:
         serviceAccountName: default
+        nodeSelector:
+          workload: cpu
         containers:
           - name: ray-head
             image: "__MERGEKIT_IMAGE__"
             imagePullPolicy: IfNotPresent
-            command: ["/bin/bash", "-lc", "ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265"]
+            command:
+              - /bin/bash
+              - -lc
+              - $KUBERAY_GEN_RAY_START_CMD
             env:
               - name: AWS_REGION
-                value: "us-east-1"
+                value: "__AWS_REGION__"
               - name: HF_HOME
                 value: /data/hf
               - name: MERGEKIT_DATA_DIR
                 value: /data/artifacts
+              - name: TOKENIZERS_PARALLELISM
+                value: "false"
+            readinessProbe:
+              exec:
+                command:
+                  - /bin/bash
+                  - -lc
+                  - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success && curl --fail --silent http://localhost:8265/api/gcs_healthz | grep success
+              initialDelaySeconds: 10
+              timeoutSeconds: 5
+              periodSeconds: 5
+              failureThreshold: 10
+            livenessProbe:
+              exec:
+                command:
+                  - /bin/bash
+                  - -lc
+                  - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success && curl --fail --silent http://localhost:8265/api/gcs_healthz | grep success
+              initialDelaySeconds: 30
+              timeoutSeconds: 5
+              periodSeconds: 5
+              failureThreshold: 120
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "2Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
             volumeMounts:
               - name: shared-tmp
                 mountPath: /tmp/ray
-              - name: hf-cache
-                mountPath: /data/hf
-              - name: artifacts
-                mountPath: /data/artifacts
+              - name: shared-data
+                mountPath: /data
         volumes:
           - name: shared-tmp
             emptyDir: {}
-          - name: hf-cache
-            emptyDir: {}
-          - name: artifacts
-            emptyDir: {}
+          - name: shared-data
+            persistentVolumeClaim:
+              claimName: mergekit-shared-pvc
   workerGroupSpecs:
     - groupName: cpu-workers
-      replicas: 2
-      minReplicas: 1
-      maxReplicas: 5
+      replicas: __CPU_WORKER_REPLICAS__
+      minReplicas: 0
+      maxReplicas: __CPU_WORKER_MAX_REPLICAS__
       rayStartParams:
         address: auto
         num-cpus: "4"
       template:
         spec:
+          nodeSelector:
+            workload: cpu
           containers:
             - name: ray-worker
               image: "__MERGEKIT_IMAGE__"
               imagePullPolicy: IfNotPresent
-              command: ["/bin/bash", "-lc", "ray start --address=$RAY_HEAD_IP:6379"]
+              command:
+                - /bin/bash
+                - -lc
+                - $KUBERAY_GEN_RAY_START_CMD
               env:
                 - name: AWS_REGION
-                  value: "us-east-1"
+                  value: "__AWS_REGION__"
                 - name: HF_HOME
                   value: /data/hf
                 - name: MERGEKIT_DATA_DIR
                   value: /data/artifacts
+                - name: TOKENIZERS_PARALLELISM
+                  value: "false"
+              readinessProbe:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -lc
+                    - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success
+                initialDelaySeconds: 10
+                timeoutSeconds: 5
+                periodSeconds: 5
+                failureThreshold: 10
+              livenessProbe:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -lc
+                    - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success
+                initialDelaySeconds: 30
+                timeoutSeconds: 5
+                periodSeconds: 5
+                failureThreshold: 120
               resources:
                 requests:
                   cpu: "2"
                   memory: "8Gi"
                 limits:
                   cpu: "4"
-                  memory: "8Gi"
+                  memory: "12Gi"
               volumeMounts:
                 - name: shared-tmp
                   mountPath: /tmp/ray
-                - name: hf-cache
-                  mountPath: /data/hf
-                - name: artifacts
-                  mountPath: /data/artifacts
+                - name: shared-data
+                  mountPath: /data
           volumes:
             - name: shared-tmp
               emptyDir: {}
-            - name: hf-cache
-              emptyDir: {}
-            - name: artifacts
-              emptyDir: {}
+            - name: shared-data
+              persistentVolumeClaim:
+                claimName: mergekit-shared-pvc
     - groupName: gpu-workers
-      replicas: 0
+      replicas: __GPU_WORKER_REPLICAS__
       minReplicas: 0
-      maxReplicas: 2
+      maxReplicas: __GPU_WORKER_MAX_REPLICAS__
       rayStartParams:
         address: auto
         num-gpus: "1"
       template:
         spec:
+          nodeSelector:
+            workload: gpu
           tolerations:
-            - key: "nvidia.com/gpu"
-              operator: Exists
+            - key: nvidia.com/gpu
+              operator: Equal
+              value: "true"
               effect: NoSchedule
           containers:
             - name: ray-worker
               image: "__MERGEKIT_IMAGE__"
               imagePullPolicy: IfNotPresent
-              command: ["/bin/bash", "-lc", "ray start --address=$RAY_HEAD_IP:6379"]
+              command:
+                - /bin/bash
+                - -lc
+                - $KUBERAY_GEN_RAY_START_CMD
               env:
                 - name: AWS_REGION
-                  value: "us-east-1"
+                  value: "__AWS_REGION__"
                 - name: HF_HOME
                   value: /data/hf
                 - name: MERGEKIT_DATA_DIR
                   value: /data/artifacts
+                - name: TOKENIZERS_PARALLELISM
+                  value: "false"
+              readinessProbe:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -lc
+                    - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success
+                initialDelaySeconds: 10
+                timeoutSeconds: 5
+                periodSeconds: 5
+                failureThreshold: 10
+              livenessProbe:
+                exec:
+                  command:
+                    - /bin/bash
+                    - -lc
+                    - curl --fail --silent http://localhost:52365/api/local_raylet_healthz | grep success
+                initialDelaySeconds: 30
+                timeoutSeconds: 5
+                periodSeconds: 5
+                failureThreshold: 120
               resources:
                 requests:
-                  cpu: "4"
-                  memory: "16Gi"
+                  cpu: "3"
+                  memory: "12Gi"
                   nvidia.com/gpu: "1"
                 limits:
-                  cpu: "8"
-                  memory: "32Gi"
+                  cpu: "4"
+                  memory: "14Gi"
                   nvidia.com/gpu: "1"
               volumeMounts:
                 - name: shared-tmp
                   mountPath: /tmp/ray
-                - name: hf-cache
-                  mountPath: /data/hf
-                - name: artifacts
-                  mountPath: /data/artifacts
+                - name: shared-data
+                  mountPath: /data
           volumes:
             - name: shared-tmp
               emptyDir: {}
-            - name: hf-cache
-              emptyDir: {}
-            - name: artifacts
-              emptyDir: {}
+            - name: shared-data
+              persistentVolumeClaim:
+                claimName: mergekit-shared-pvc

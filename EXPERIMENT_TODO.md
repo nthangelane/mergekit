@@ -1,0 +1,370 @@
+# Experiment TODO — MergeKit GA Thesis Experiments
+**Thesis:** Evolving Large Language Models using Model Merging through Genetic Algorithms
+**Author:** Nkululeko Thangelane | **Supervisor:** Prof AP Engelbrecht
+**Hardware:** Apple M1 MacBook Pro, 16GB Unified Memory
+**Last Updated:** 2026-03-15
+
+---
+
+## Current Status
+
+### Completed Runs
+| Run | Models | Pop | Gens | Best Score | Method | Tasks |
+|-----|--------|-----|------|-----------|--------|-------|
+| `pythia70m_ga_m1_experiment_run_50gen` | Pythia-70M (2 models) | 8 | 50 | 0.44375 | TIES | lambada, sciq |
+| `slm-merge-1000gen6` | GPT-2 variants | 36 | 1000 | 0.421875 | ties/dare_ties/nuslerp | lambada, sciq |
+
+### Baseline Scores (from `baseline_results.csv`)
+| Model | Weighted Score | LAMBADA | SciQ |
+|-------|---------------|---------|------|
+| lomahony/pythia-70m-helpful-sft | 0.44375 | 0.28125 | 0.6875 |
+| EleutherAI/pythia-70m-deduped | 0.41875 | 0.28125 | 0.625 |
+| mlabonne/chesspythia-70m | 0.21875 | 0.03125 | 0.5 |
+| vineetsharma/databricks-dolly-15k-pythia-70m-deduped-v1 | 0.1375 | 0.0 | 0.34375 |
+
+---
+
+## Phase 1: Core Experiments (REQUIRED FOR THESIS SUBMISSION)
+
+### Experiment 1.1 — Full Benchmark Evaluation of Parent Models
+**Priority:** CRITICAL (populates Table 4.1 in thesis)
+**Status:** NOT STARTED
+
+Run `lm-eval-harness` on ALL parent models individually with the FULL task suite:
+
+```bash
+# For each parent model:
+lm_eval --model hf \
+  --model_args pretrained=EleutherAI/pythia-70m-deduped,trust_remote_code=True \
+  --tasks wikitext,lambada_openai,sst2,sciq,piqa,winogrande,arc_easy,truthfulqa_mc2 \
+  --batch_size 1 \
+  --output_path results/parent_pythia70m_deduped.json
+```
+
+**Models to evaluate:**
+- [ ] `EleutherAI/pythia-70m-deduped` (base)
+- [ ] `lomahony/pythia-70m-helpful-sft` (instruction-tuned)
+- [ ] `mlabonne/chesspythia-70m` (domain-specialised)
+- [ ] `vineetsharma/databricks-dolly-15k-pythia-70m-deduped-v1` (dolly fine-tune)
+
+**Benchmarks (8 total):**
+- [ ] WikiText (perplexity ↓)
+- [ ] LAMBADA (accuracy ↑)
+- [ ] SST-2 (accuracy ↑)
+- [ ] SciQ (accuracy ↑)
+- [ ] PIQA (accuracy ↑)
+- [ ] Winogrande (accuracy ↑)
+- [ ] ARC-Easy (accuracy ↑)
+- [ ] TruthfulQA-MC2 (accuracy ↑)
+
+**Output:** JSON files → parse into LaTeX table → update `05_results.tex` Table 4.1
+
+---
+
+### Experiment 1.2 — Baseline Merges (Non-GA)
+**Priority:** CRITICAL (provides baseline comparison)
+**Status:** NOT STARTED
+
+Merge parent models using EACH heuristic method WITHOUT GA optimisation:
+
+```bash
+# Example: Simple Average
+mergekit-yaml merge \
+  --config configs/naive_avg.yaml \
+  --out-path workspace/baseline_naive_avg/
+
+# Then evaluate:
+lm_eval --model hf \
+  --model_args pretrained=workspace/baseline_naive_avg/ \
+  --tasks wikitext,lambada_openai,sst2,sciq,piqa,winogrande,arc_easy,truthfulqa_mc2 \
+  --batch_size 1 \
+  --output_path results/baseline_naive_avg.json
+```
+
+**Merge methods to test:**
+- [ ] `linear` (simple averaging with equal weights)
+- [ ] `slerp` (spherical linear interpolation, t=0.5)
+- [ ] `ties` (default density=0.5, no weight masks)
+- [ ] `task_arithmetic` (default scaling)
+- [ ] `dare_linear` (p=0.5 drop rate)
+- [ ] `dare_ties` (combined DARE + TIES)
+
+**Output:** 6 baseline merge scores across all 8 benchmarks
+
+---
+
+### Experiment 1.3 — GA-Optimised Merge (Full Benchmark Suite)
+**Priority:** CRITICAL
+**Status:** PARTIALLY DONE (50gen run exists but only on 2 tasks)
+
+Re-run the GA with the FULL 8-benchmark fitness function:
+
+```yaml
+# ga_full_benchmark.yml
+genome_type: multi_method
+models:
+  - EleutherAI/pythia-70m-deduped
+  - lomahony/pythia-70m-helpful-sft
+  - mlabonne/chesspythia-70m
+allowed_methods:
+  - linear
+  - ties
+  - task_arithmetic
+  - dare_ties
+  - slerp
+  - nuslerp
+tasks:
+  - lambada_openai
+  - sciq
+  - sst2
+  - piqa
+  - winogrande
+  - arc_easy
+  - truthfulqa_mc2
+task_weights:
+  lambada_openai: 0.15
+  sciq: 0.15
+  sst2: 0.10
+  piqa: 0.15
+  winogrande: 0.15
+  arc_easy: 0.15
+  truthfulqa_mc2: 0.15
+ga:
+  population_size: 8
+  generations: 50
+  tournament_size: 2
+  crossover_prob: 0.5
+  mutation_sigma: 0.06
+  sigma_decay: 0.5
+  patience: 5
+  elite_fraction: 0.125
+```
+
+**IMPORTANT M1 CONSTRAINTS:**
+- `batch_size: 1` to avoid OOM
+- Use `limit` per task if evaluation is too slow (e.g., `limit: 100`)
+- Enable hash-based caching to skip duplicate genotypes
+- Expect ~1 minute per evaluation, ~8 minutes per generation, ~6.5 hours for 50 gens
+
+**Output:** `ga_history.csv`, `best_config.yaml`, full benchmark scores for best merged model
+
+---
+
+### Experiment 1.4 — Evaluate Best GA-Merged Model on Full Suite
+**Priority:** CRITICAL
+**Status:** NOT STARTED
+
+After Experiment 1.3 completes, evaluate the best merged model on ALL 8 benchmarks:
+
+```bash
+lm_eval --model hf \
+  --model_args pretrained=workspace/ga_full_benchmark/final_model/ \
+  --tasks wikitext,lambada_openai,sst2,sciq,piqa,winogrande,arc_easy,truthfulqa_mc2 \
+  --batch_size 1 \
+  --output_path results/ga_merged_best.json
+```
+
+Also evaluate the best config from the existing 50-gen run:
+```bash
+lm_eval --model hf \
+  --model_args pretrained=workspace/pythia70m_ga_m1_experiment_run_50gen/final_model/ \
+  --tasks wikitext,lambada_openai,sst2,sciq,piqa,winogrande,arc_easy,truthfulqa_mc2 \
+  --batch_size 1 \
+  --output_path results/ga_merged_50gen.json
+```
+
+---
+
+## Phase 2: Ablation Studies (STRONGLY RECOMMENDED)
+
+### Experiment 2.1 — Population Size Ablation
+**Priority:** HIGH (addresses GAP-16 — "population too small")
+
+Run the GA with different population sizes, keeping other params fixed:
+- [ ] Pop = 4, Gens = 50
+- [ ] Pop = 8, Gens = 50 (current default)
+- [ ] Pop = 16, Gens = 50
+- [ ] Pop = 32, Gens = 25 (same total evals as pop=16×50)
+
+**Expected output:** Table showing convergence speed and final fitness vs. population size.
+
+---
+
+### Experiment 2.2 — Generation Count Ablation
+**Priority:** HIGH (addresses GAP-16)
+
+Run the GA with fixed pop=8 but varying generations:
+- [ ] 10 generations
+- [ ] 25 generations
+- [ ] 50 generations
+- [ ] 100 generations
+
+**Expected output:** Convergence curves showing when GA plateaus.
+
+---
+
+### Experiment 2.3 — Merge Method Comparison
+**Priority:** HIGH
+
+Run single-method GA (restricting `allowed_methods` to one) for each method:
+- [ ] GA + linear only
+- [ ] GA + ties only
+- [ ] GA + task_arithmetic only
+- [ ] GA + slerp only
+- [ ] GA + dare_ties only
+- [ ] GA + nuslerp only
+- [ ] GA + multi-method (all allowed — current default)
+
+**Expected output:** Table showing which method benefits most from GA optimisation.
+
+---
+
+### Experiment 2.4 — Fitness Weight Sensitivity Analysis
+**Priority:** MEDIUM (addresses GAP-18)
+
+Vary task weights in the fitness function:
+- [ ] Equal weights (1/K for all tasks)
+- [ ] Reasoning-heavy (2× weight on PIQA, Winogrande, ARC)
+- [ ] Language-heavy (2× weight on LAMBADA, WikiText)
+- [ ] Truthfulness-heavy (2× weight on TruthfulQA-MC2)
+
+**Expected output:** Table showing how fitness weighting affects task-level performance.
+
+---
+
+### Experiment 2.5 — Crossover Operator Comparison
+**Priority:** MEDIUM
+
+Run GA with each crossover operator:
+- [ ] Arithmetic crossover (default)
+- [ ] Uniform crossover
+- [ ] SBX crossover
+
+**Expected output:** Convergence curves comparing operators.
+
+---
+
+## Phase 3: Extended Experiments (FUTURE WORK)
+
+### Experiment 3.1 — African Language Evaluation
+**Priority:** HIGH (addresses GAP-19 — most critical societal motivation gap)
+**Status:** REQUIRES AFRICAN-LANGUAGE MODELS
+
+**Step 1: Identify compatible African-language Pythia/GPT-2 fine-tunes:**
+- Search HuggingFace for Pythia-70M models fine-tuned on African-language data
+- If none exist, fine-tune Pythia-70M on a small African-language corpus (e.g., MasakhaNER training set)
+
+**Step 2: Merge African-language model with English-specialised model using GA**
+
+**Step 3: Evaluate on:**
+- [ ] MasakhaNER (NER accuracy across 10 African languages)
+- [ ] AfriSenti (sentiment analysis, 14 African languages)
+- [ ] SIB-200 subset (topic classification)
+
+---
+
+### Experiment 3.2 — Scaling to Larger Models
+**Priority:** MEDIUM (may require cloud GPU)
+
+- [ ] Pythia-160M variants (if M1 memory allows)
+- [ ] Pythia-410M variants (may need quantisation)
+
+---
+
+### Experiment 3.3 — Multi-Objective Optimisation (NSGA-II)
+**Priority:** MEDIUM (addresses GAP-3)
+
+Replace weighted-sum fitness with NSGA-II to produce Pareto front of:
+- Accuracy (averaged across tasks)
+- Efficiency (latency / throughput)
+- (Optionally) Fairness metric
+
+**Implementation:** Extend `GAOptimizer` with NSGA-II selection and crowding distance.
+
+---
+
+### Experiment 3.4 — Knowledge Distillation (Phase 3 of Thesis Design)
+**Priority:** LOW (described in methodology but no results yet)
+
+Take the best GA-merged model and distil into a smaller student:
+- Teacher: best GA-merged Pythia-70M
+- Student: custom smaller Pythia variant (e.g., 4 layers instead of 6)
+- Distillation method: KL-divergence on logits
+
+---
+
+## Data Collection Checklist
+
+After each experiment, collect and save:
+
+- [ ] `ga_history.csv` (generation-level metrics)
+- [ ] `best_config.yaml` (winning merge recipe)
+- [ ] `baseline_results.csv` (individual model scores)
+- [ ] Full `lm-eval` JSON output files for each model
+- [ ] Timing data (seconds per generation, total wall clock)
+- [ ] System info (M1 memory usage, CPU temp if available)
+- [ ] Screenshots of convergence plots from MLflow
+
+---
+
+## Results → Thesis Mapping
+
+| Experiment | Thesis Table/Figure |
+|-----------|-------------------|
+| 1.1 (Parent baselines) | Table 4.1 `tab:lmeval_results` — parent model rows |
+| 1.2 (Heuristic baselines) | Table 4.1 rows for M0, and new rows for SLERP/TIES/TaskArith |
+| 1.3 + 1.4 (GA merge) | Table 4.1 rows for M1, M2; Table 4.2 `tab:sim-results` |
+| 1.3 convergence | Figure 4.1 `fig:ga_convergence` — real convergence curve |
+| 2.1 (Pop ablation) | New Table 4.X — Population size vs. fitness |
+| 2.2 (Gen ablation) | New Figure 4.X — Convergence vs. generation budget |
+| 2.3 (Method comparison) | New Table 4.X — Per-method GA performance |
+| 2.4 (Fitness weights) | New Table 4.X — Sensitivity analysis |
+| Efficiency data | Table 4.3 `tab:sim-efficiency` — latency, throughput |
+
+---
+
+## Quick Start Commands
+
+```bash
+# Navigate to mergekit
+cd /Users/nkululekothangelane/Documents/master_research/mergekit
+
+# Activate environment
+source venv/bin/activate  # or conda activate mergekit
+
+# Run parent model evaluation (Experiment 1.1)
+python -m lm_eval --model hf \
+  --model_args pretrained=EleutherAI/pythia-70m-deduped \
+  --tasks wikitext,lambada_openai,sst2,sciq,piqa,winogrande,arc_easy,truthfulqa_mc2 \
+  --batch_size 1 \
+  --output_path results/parent_pythia70m_deduped.json
+
+# Run GA experiment (Experiment 1.3)
+python -m mergekit.evo.run \
+  --config workspace/ga_full_benchmark.yml \
+  --output workspace/ga_full_benchmark/ \
+  --storage workspace/ga_full_benchmark/storage/
+
+# Check progress
+tail -f workspace/ga_full_benchmark/ga_history.csv
+```
+
+---
+
+## Priority Order (Time-Constrained Path)
+
+If time is limited, complete experiments in this order:
+
+1. **Experiment 1.1** (2-3 hours) — Parent baselines on full suite
+2. **Experiment 1.2** (3-4 hours) — Heuristic merge baselines
+3. **Experiment 1.4** (30 min) — Evaluate existing best merge on full suite
+4. **Experiment 1.3** (6-8 hours) — Full GA run with 8 benchmarks
+5. **Experiment 2.3** (12-24 hours) — Method comparison (most publishable ablation)
+6. **Experiment 2.1** (12-24 hours) — Population size ablation
+
+This gets you a defensible thesis with real results in ~2-3 days of compute.
+
+---
+
+*Generated for Nkululeko Thangelane's Master's Thesis, Stellenbosch University*
+*Hardware: Apple M1 MacBook Pro, 16GB Unified Memory*

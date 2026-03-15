@@ -1,23 +1,28 @@
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: PersistentVolume
 metadata:
-  name: hf-cache-pvc
+  name: mergekit-shared-pv
 spec:
+  capacity:
+    storage: 500Gi
+  volumeMode: Filesystem
   accessModes:
     - ReadWriteMany
-  resources:
-    requests:
-      storage: 50Gi
-  storageClassName: efs-sc
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-static
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: "__EFS_FILE_SYSTEM_ID__"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: artifacts-pvc
+  name: mergekit-shared-pvc
 spec:
   accessModes:
     - ReadWriteMany
   resources:
     requests:
-      storage: 100Gi
-  storageClassName: efs-sc
+      storage: 500Gi
+  storageClassName: efs-static
+  volumeName: mergekit-shared-pv

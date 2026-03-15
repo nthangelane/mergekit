@@ -1,0 +1,71 @@
+from types import SimpleNamespace
+
+from mergekit.evo import actors
+
+
+def test_accelerated_eval_model_kwargs_for_hf_gpu():
+    model_kwargs = actors._accelerated_eval_model_kwargs(vllm=False)
+
+    assert model_kwargs["device"] == "cuda"
+    assert model_kwargs["dtype"] == "bfloat16"
+    assert model_kwargs["device_map"] is None
+    assert model_kwargs["low_cpu_mem_usage"] is True
+
+
+def test_accelerated_eval_model_kwargs_for_vllm_omits_hf_overrides():
+    assert actors._accelerated_eval_model_kwargs(vllm=True) is None
+
+
+def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
+    captured = {}
+
+    def fake_evaluate_model(
+        merged_path,
+        tasks,
+        num_fewshot,
+        limit,
+        vllm,
+        batch_size,
+        task_manager,
+        apply_chat_template,
+        fewshot_as_multiturn,
+        model_kwargs,
+    ):
+        captured["merged_path"] = merged_path
+        captured["tasks"] = tasks
+        captured["num_fewshot"] = num_fewshot
+        captured["limit"] = limit
+        captured["vllm"] = vllm
+        captured["batch_size"] = batch_size
+        captured["task_manager"] = task_manager
+        captured["apply_chat_template"] = apply_chat_template
+        captured["fewshot_as_multiturn"] = fewshot_as_multiturn
+        captured["model_kwargs"] = model_kwargs
+        return {"score": 0.5, "results": {}}
+
+    monkeypatch.setattr("mergekit.evo.actors.evaluate_model", fake_evaluate_model)
+
+    config = SimpleNamespace(
+        tasks=["task-a"],
+        num_fewshot=0,
+        limit=64,
+        apply_chat_template=True,
+        fewshot_as_multiturn=False,
+    )
+
+    result = actors._evaluate_merged_path_accelerated(
+        "/tmp/merged-model",
+        config,
+        vllm=False,
+        batch_size=8,
+        task_manager="task-manager",
+        quantization_config=None,
+    )
+
+    assert result["score"] == 0.5
+    assert captured["merged_path"] == "/tmp/merged-model"
+    assert captured["tasks"] == ["task-a"]
+    assert captured["vllm"] is False
+    assert captured["model_kwargs"]["device"] == "cuda"
+    assert captured["apply_chat_template"] is True
+    assert captured["fewshot_as_multiturn"] is False

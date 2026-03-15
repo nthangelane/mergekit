@@ -15,6 +15,7 @@
 
 import csv
 import hashlib
+import json
 import logging
 import math
 import os
@@ -57,6 +58,7 @@ from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import MultiMethodGenome, MultiMethodGenomeDefinition
+from mergekit.evo.cache_utils import genotype_exact_hash
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
@@ -69,6 +71,7 @@ from mergekit.options import MergeOptions
 
 
 LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
+FAILED_BLACKLIST_FILENAME = "failed_genotype_blacklist.csv"
 
 
 def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
@@ -117,6 +120,63 @@ def _meets_improvement_thresholds(
     if pct is None:
         return False
     return pct >= min_pct
+
+
+def _failed_blacklist_scope(config: EvolMergeConfiguration) -> str:
+    payload = json.dumps(
+        config.genome.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_failed_genotype_blacklist(
+    storage_path: str,
+    genome_scope: str,
+) -> Dict[str, dict]:
+    blacklist_path = os.path.join(storage_path, FAILED_BLACKLIST_FILENAME)
+    if not os.path.exists(blacklist_path):
+        return {}
+
+    blacklist: Dict[str, dict] = {}
+    with open(blacklist_path, "r", encoding="utf-8", newline="") as blacklist_file:
+        reader = csv.DictReader(blacklist_file)
+        for row in reader:
+            row_scope = str(row.get("genome_scope") or "").strip()
+            if row_scope and row_scope != genome_scope:
+                continue
+
+            genotype_hash = str(row.get("genotype_hash") or "").strip()
+            if not genotype_hash:
+                continue
+
+            blacklist[genotype_hash] = {
+                "score": None,
+                "results": None,
+                "error_stage": str(row.get("error_stage") or "merge"),
+                "error_type": str(row.get("error_type") or "unknown"),
+                "error_message": str(
+                    row.get("error_message")
+                    or "Skipped due to persisted failed-genotype blacklist"
+                ),
+            }
+
+    return blacklist
+
+
+def _resolve_merge_cuda(merge_cuda: bool, num_gpus: Optional[int]) -> bool:
+    if num_gpus == 0 and merge_cuda:
+        stage_log(
+            "Stage-Init",
+            (
+                "--num-gpus 0 requested; disabling CUDA merges automatically. "
+                "Use --merge-cuda only when GPU workers are allocated."
+            ),
+            level=logging.WARNING,
+        )
+        return False
+    return merge_cuda
 
 
 def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]] = None) -> None:
@@ -348,6 +408,21 @@ def main(
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
     stage_log("Stage-Init", f"Storage path: {storage_path}")
+    merge_cuda = _resolve_merge_cuda(merge_cuda, num_gpus)
+    failed_blacklist_scope = _failed_blacklist_scope(config)
+    persisted_failed_genotypes = _load_failed_genotype_blacklist(
+        storage_path, failed_blacklist_scope
+    )
+    if persisted_failed_genotypes:
+        stage_log(
+            "Stage-Init",
+            (
+                "Loaded "
+                f"{len(persisted_failed_genotypes)} failed genotype hashes from "
+                f"{os.path.join(storage_path, FAILED_BLACKLIST_FILENAME)}; "
+                "exact matches will be skipped."
+            ),
+        )
 
     if not hf_model_id and hf_username:
         base_ref = config.genome.base_model or config.genome.models[0]
@@ -586,7 +661,7 @@ def main(
     generation_durations: List[float] = []
     generation_best_history: List[float] = []
     last_global_best = float("-inf")
-    logged_failed_hashes: set[str] = set()
+    logged_failed_hashes: set[str] = set(persisted_failed_genotypes)
     total_generations = max(1, math.ceil(max_fevals / max(ga_params.population_size, 1)))
 
     def _format_time(seconds: Optional[float]) -> str:
@@ -748,12 +823,6 @@ def main(
         else:
             delta_str = f"{improvement:+.6f}"
 
-        def _hash_genotype_for_log(genotype_candidate: np.ndarray) -> str:
-            arr = np.asarray(genotype_candidate, dtype=np.float32).ravel()
-            round_step = max(float(ga_params.cache_round), 1e-9)
-            quantized = np.round(arr / round_step).astype(np.int64)
-            return hashlib.sha1(quantized.tobytes()).hexdigest()[:16]
-
         print(
             f"[GA] gen={generation} best={gen_best_str} mean={gen_mean_str} std={gen_std_str} "
             f"global_best={global_best_str} Δbest={delta_str} "
@@ -802,42 +871,79 @@ def main(
         except Exception as e:
             logging.warning("Failed to write ga_history.csv", exc_info=e)
 
-        try:
-            failed_path = os.path.join(storage_path, "failed_genotypes.csv")
-            file_exists = os.path.exists(failed_path)
-            with open(failed_path, "a", encoding="utf-8", newline="") as failed_file:
-                writer = csv.writer(failed_file)
-                if not file_exists:
-                    writer.writerow(
-                        [
-                            "generation",
-                            "fevals",
-                            "genotype_hash",
-                            "error_stage",
-                            "error_type",
-                            "error_message",
-                        ]
-                    )
+        new_failed_rows = []
+        for genotype_candidate, result in zip(genotype_iterable, res_list):
+            if result.get("score") is not None:
+                continue
+            genotype_hash = genotype_exact_hash(np.asarray(genotype_candidate))
+            if genotype_hash in logged_failed_hashes:
+                continue
+            logged_failed_hashes.add(genotype_hash)
+            new_failed_rows.append(
+                [
+                    generation,
+                    step,
+                    genotype_hash,
+                    result.get("error_stage", "unknown"),
+                    result.get("error_type", "unknown"),
+                    result.get("error_message", ""),
+                ]
+            )
 
-                for genotype_candidate, result in zip(genotype_iterable, res_list):
-                    if result.get("score") is not None:
-                        continue
-                    genotype_hash = _hash_genotype_for_log(np.asarray(genotype_candidate))
-                    if genotype_hash in logged_failed_hashes:
-                        continue
-                    logged_failed_hashes.add(genotype_hash)
-                    writer.writerow(
-                        [
-                            generation,
-                            step,
-                            genotype_hash,
-                            result.get("error_stage", "unknown"),
-                            result.get("error_type", "unknown"),
-                            result.get("error_message", ""),
-                        ]
-                    )
-        except Exception as e:
-            logging.warning("Failed to write failed_genotypes.csv", exc_info=e)
+        if new_failed_rows:
+            try:
+                failed_path = os.path.join(storage_path, "failed_genotypes.csv")
+                file_exists = os.path.exists(failed_path)
+                with open(
+                    failed_path, "a", encoding="utf-8", newline=""
+                ) as failed_file:
+                    writer = csv.writer(failed_file)
+                    if not file_exists:
+                        writer.writerow(
+                            [
+                                "generation",
+                                "fevals",
+                                "genotype_hash",
+                                "error_stage",
+                                "error_type",
+                                "error_message",
+                            ]
+                        )
+                    writer.writerows(new_failed_rows)
+            except Exception as e:
+                logging.warning("Failed to write failed_genotypes.csv", exc_info=e)
+
+            try:
+                blacklist_path = os.path.join(storage_path, FAILED_BLACKLIST_FILENAME)
+                file_exists = os.path.exists(blacklist_path)
+                with open(
+                    blacklist_path, "a", encoding="utf-8", newline=""
+                ) as blacklist_file:
+                    writer = csv.writer(blacklist_file)
+                    if not file_exists:
+                        writer.writerow(
+                            [
+                                "genome_scope",
+                                "genotype_hash",
+                                "error_stage",
+                                "error_type",
+                                "error_message",
+                            ]
+                        )
+                    for _, _, genotype_hash, error_stage, error_type, error_message in new_failed_rows:
+                        writer.writerow(
+                            [
+                                failed_blacklist_scope,
+                                genotype_hash,
+                                error_stage,
+                                error_type,
+                                error_message,
+                            ]
+                        )
+            except Exception as e:
+                logging.warning(
+                    "Failed to write failed_genotype_blacklist.csv", exc_info=e
+                )
 
         # Log per-generation aggregates and extras
         tracker.log_metrics(
@@ -916,6 +1022,7 @@ def main(
             params=enhanced_params,
             random_init=config.random_init,
             seed=random_seed,
+            persisted_failed_genotypes=persisted_failed_genotypes,
             on_population_evaluated=on_pop,
             on_new_best=on_best,
             on_generation_start=on_generation_start,
@@ -928,6 +1035,7 @@ def main(
             params=ga_params,
             random_init=config.random_init,
             seed=random_seed,
+            persisted_failed_genotypes=persisted_failed_genotypes,
             on_population_evaluated=on_pop,
             on_new_best=on_best,
             on_generation_start=on_generation_start,
