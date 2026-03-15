@@ -1,0 +1,37 @@
+genome:
+  merge_method: linear
+  models:
+    - Qwen/Qwen2.5-3B-Instruct
+    - trituenhantaoio/llm-vn-1-3b
+    - AbleCredit/AbleCredit-R0-Qwen-2.5-3B-Instruct
+  layer_granularity: 0
+  normalize: true
+  allow_negative_weights: false
+
+tasks:
+  - name: xnli_vi
+    weight: 0.35
+    metric: acc,none
+  - name: boolq
+    weight: 0.25
+    metric: acc,none
+  - name: multirc
+    weight: 0.20
+    metric: acc,none
+  - name: sciq
+    weight: 0.20
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 4
+  elite_fraction: 0.25
+  mutation_rate: 0.10
+  mutation_sigma: 0.02
+  crossover: arithmetic
+  tournament_size: 2
+
+num_fewshot: 0
+apply_chat_template: true
+fewshot_as_multiturn: false

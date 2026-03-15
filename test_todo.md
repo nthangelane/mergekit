@@ -7,5 +7,6 @@
 - [x] Run a smoke merge using repeated identical source models to validate the new normalized-linear invariance test against a real experiment path, not only unit coverage.
 - [x] Run a GA smoke test after the fetch/tokenizer asset optimizations and compare logs/timing to confirm repeated `snapshot_download`/tokenizer-copy overhead is materially reduced.
 - [ ] Exercise at least one GPU-backed GA path (`pool` or `buffered`, with and without `--vllm` as available) after the recent GA fixes.
+- [ ] Run the stable Qwen2.5 3B smoke on both GPU worker (`pool`, `--num-gpus 1`) and CPU worker (`pool`, `--num-gpus 0`) and compare wall-clock plus `ga_history.csv` `eval_seconds` for a real uplift measurement.
 - [ ] Exercise the Hugging Face upload path with improvement thresholds against a disposable repo or mock so the upload gate is runtime-validated.
 - [ ] After items 7-9 in `todo.md` are done, run a larger experiment to validate cache behavior, storage growth, and overall cluster/runtime stability.

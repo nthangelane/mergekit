@@ -18,9 +18,10 @@
 - [x] Add EKS bootstrap support for separate CPU and GPU node groups.
 - [x] Add shared storage for Ray pods so Hugging Face cache and GA artifacts survive across nodes.
 - [x] Attach the EFS utilities policy to managed nodegroup roles during bootstrap so shared storage mounts successfully.
-- [ ] Build and push a linux/amd64 MergeKit image to ECR.
+- [x] Build and push a linux/amd64 MergeKit image to ECR.
 - [x] Bootstrap the EKS cluster in a GPU-capable region and validate KubeRay installation.
 - [x] Validate that the EKS GPU node group advertises `nvidia.com/gpu`, and install the NVIDIA device plugin if the managed nodegroup does not provide it.
 - [ ] Submit and monitor an AWS smoke run from the repo-managed Ray job path.
+- [ ] Fix `ifeval` on the local HuggingFace evaluation path for Qwen2.5 GPU runs, or replace it with a stable instruction-following proxy for AWS smoke validation.
 - [ ] Plan the quota increase or alternate node strategy required for 7B-scale runs in this AWS account.
 - [ ] Reduce the CUDA container image size and pull latency so Ray pods can start quickly on EKS nodes.
