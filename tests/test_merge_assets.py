@@ -1,6 +1,11 @@
 import os
+from types import SimpleNamespace
 
-from mergekit.merge import _link_or_copy_file, _materialize_symlinked_output_files
+from mergekit.merge import (
+    _ensure_tokenizer_assets,
+    _link_or_copy_file,
+    _materialize_symlinked_output_files,
+)
 
 
 def test_link_or_copy_file_prefers_hardlinks_on_same_filesystem(tmp_path):
@@ -56,3 +61,76 @@ def test_materialize_symlinked_output_files_replaces_symlink_with_real_file(tmp_
         encoding="utf-8"
     )
     assert os.stat(real_src).st_ino == os.stat(symlink_dst).st_ino
+
+
+def test_link_or_copy_file_replaces_existing_broken_destination_symlink(tmp_path):
+    src = tmp_path / "tokenizer.json"
+    src.write_text('{"tokenizer": "real"}', encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    broken_dst = out_dir / "tokenizer.json"
+    broken_dst.symlink_to(tmp_path / "missing-blobs" / "tokenizer.json")
+
+    _link_or_copy_file(str(src), str(broken_dst))
+
+    assert broken_dst.exists()
+    assert not broken_dst.is_symlink()
+    assert broken_dst.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+    assert os.stat(src).st_ino == os.stat(broken_dst).st_ino
+
+
+def test_ensure_tokenizer_assets_repairs_broken_links(monkeypatch, tmp_path):
+    donor_dir = tmp_path / "donor"
+    donor_dir.mkdir()
+    for name in [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "added_tokens.json",
+    ]:
+        (donor_dir / name).write_text(f"{name}-real", encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    for name in [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "added_tokens.json",
+    ]:
+        (out_dir / name).symlink_to(tmp_path / "missing" / name)
+
+    def fake_copy_tokenizer(_merge_config, out_path, options):
+        for name in [
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "added_tokens.json",
+        ]:
+            _link_or_copy_file(str(donor_dir / name), str((out_dir / name)))
+
+    monkeypatch.setattr("mergekit.merge._copy_tokenizer", fake_copy_tokenizer)
+
+    _ensure_tokenizer_assets(
+        merge_config=object(),
+        out_path=str(out_dir),
+        options=SimpleNamespace(copy_tokenizer=True),
+        file_names=[
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "added_tokens.json",
+        ],
+    )
+
+    for name in [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "added_tokens.json",
+    ]:
+        path = out_dir / name
+        assert path.exists()
+        assert not path.is_symlink()
+        assert path.read_text(encoding="utf-8") == f"{name}-real"

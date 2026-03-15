@@ -1,18 +1,13 @@
 # Experiment 5: Large-Scale Same-Family Merge
-# Note: Meta Llama checkpoints are gated. Ensure your Hugging Face token can
-# access both source models before running this preset.
+# Meta Llama checkpoints are gated. Ensure your Hugging Face token can access
+# both source models before running this preset.
 #
-# Suggested run:
+# Suggested run after larger GPU capacity is available:
 #   python -m mergekit.scripts.evolve_ga \
-#     examples/thesis_exp_05_llama3_8b_same_family.yml \
-#     --storage-path workspace/thesis_exp_05_llama3_8b \
+#     experiments/thesis/exp05_llama3_8b_same_family/config.yml \
+#     --storage-path workspace/thesis/exp05_llama3_8b_same_family \
 #     --max-fevals 80 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
-#
-# Collect separately after the run:
-#   - latency
-#   - memory footprint
-#   - MT-Bench or AlpacaEval style chat assessment
 
 genome:
   type: multi_method

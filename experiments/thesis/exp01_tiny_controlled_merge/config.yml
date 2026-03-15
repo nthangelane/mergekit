@@ -1,20 +1,9 @@
 # Experiment 1: Tiny Controlled Merge Baseline
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
-#     examples/thesis_exp_01_tiny_controlled_merge.yml \
-#     --storage-path workspace/thesis_exp_01_tiny_controlled \
+#     experiments/thesis/exp01_tiny_controlled_merge/config.yml \
+#     --storage-path workspace/thesis/exp01_tiny_controlled_merge \
 #     --max-fevals 480
-#
-# Automated fitness metrics encoded here:
-#   - wikitext perplexity proxy
-#   - lambada_openai accuracy
-#   - sciq accuracy
-#   - boolq accuracy
-#
-# Collect separately after the run:
-#   - BLEU/ROUGE on held-out TinyStories generations
-#   - manual instruction-following checks
-#   - merge runtime
 
 genome:
   type: multi_method

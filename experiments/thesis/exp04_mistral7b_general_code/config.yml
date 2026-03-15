@@ -1,11 +1,11 @@
 # Experiment 4: General + Code Specialist Merge
-# This preset keeps the source pair strictly same-family and leaves HumanEval or
-# MBPP, tokens/sec, and VRAM usage as post-run evaluations for the best model.
+# HumanEval or MBPP, tokens/sec, and VRAM should be collected separately for the
+# best checkpoint. This preset keeps the source pair strictly same-family.
 #
-# Suggested run:
+# Suggested run after larger GPU capacity is available:
 #   python -m mergekit.scripts.evolve_ga \
-#     examples/thesis_exp_04_mistral7b_general_code.yml \
-#     --storage-path workspace/thesis_exp_04_mistral7b \
+#     experiments/thesis/exp04_mistral7b_general_code/config.yml \
+#     --storage-path workspace/thesis/exp04_mistral7b_general_code \
 #     --max-fevals 120 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
 

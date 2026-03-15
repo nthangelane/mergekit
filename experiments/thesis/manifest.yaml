@@ -1,0 +1,81 @@
+suite: thesis
+namespace: mergekit
+ray_cluster_name: mergekit-ga
+dashboard_service: mergekit-ga-head-svc
+workspace_root: workspace/thesis
+
+experiments:
+  - id: exp01
+    name: Tiny Controlled Merge Baseline
+    family: gpt_neo
+    config_path: experiments/thesis/exp01_tiny_controlled_merge/config.yml
+    storage_path: workspace/thesis/exp01_tiny_controlled_merge
+    storage_subpath: thesis/exp01_tiny_controlled_merge
+    job_name: thesis-exp01-tiny-controlled
+    recommended_population: 24
+    recommended_generations: 20
+    recommended_max_fevals: 480
+    recommended_strategy: pool
+    recommended_num_gpus: 0
+    current_readiness: ready_now
+    readiness_reason: Fits current CPU or local workflow.
+
+  - id: exp02
+    name: Controlled Base + Chat Merge
+    family: gpt_neox
+    config_path: experiments/thesis/exp02_pythia28b_base_chat/config.yml
+    storage_path: workspace/thesis/exp02_pythia28b_base_chat
+    storage_subpath: thesis/exp02_pythia28b_base_chat
+    job_name: thesis-exp02-pythia28b
+    recommended_population: 20
+    recommended_generations: 16
+    recommended_max_fevals: 320
+    recommended_strategy: pool
+    recommended_num_gpus: 1
+    current_readiness: conditional
+    readiness_reason: Possible on the current cluster, but should not overlap another GPU-backed run.
+
+  - id: exp03
+    name: Multilingual Base + Instruct Merge
+    family: qwen2
+    config_path: experiments/thesis/exp03_qwen25_3b_multilingual_merge/config.yml
+    storage_path: workspace/thesis/exp03_qwen25_3b_multilingual_merge
+    storage_subpath: thesis/exp03_qwen25_3b_multilingual_merge
+    job_name: thesis-exp03-qwen25-3b
+    recommended_population: 16
+    recommended_generations: 14
+    recommended_max_fevals: 224
+    recommended_strategy: pool
+    recommended_num_gpus: 1
+    current_readiness: ready_now
+    readiness_reason: Matches the cluster's current 3B-oriented worker sizing.
+
+  - id: exp04
+    name: General + Code Specialist Merge
+    family: mistral
+    config_path: experiments/thesis/exp04_mistral7b_general_code/config.yml
+    storage_path: workspace/thesis/exp04_mistral7b_general_code
+    storage_subpath: thesis/exp04_mistral7b_general_code
+    job_name: thesis-exp04-mistral7b
+    recommended_population: 12
+    recommended_generations: 10
+    recommended_max_fevals: 120
+    recommended_strategy: pool
+    recommended_num_gpus: 1
+    current_readiness: blocked
+    readiness_reason: Current `g6.xlarge` GPU worker is too small for a comfortable 7B merge and eval workflow.
+
+  - id: exp05
+    name: Large-Scale Same-Family Merge
+    family: llama3
+    config_path: experiments/thesis/exp05_llama3_8b_same_family/config.yml
+    storage_path: workspace/thesis/exp05_llama3_8b_same_family
+    storage_subpath: thesis/exp05_llama3_8b_same_family
+    job_name: thesis-exp05-llama3-8b
+    recommended_population: 10
+    recommended_generations: 8
+    recommended_max_fevals: 80
+    recommended_strategy: pool
+    recommended_num_gpus: 1
+    current_readiness: blocked
+    readiness_reason: Needs larger GPU capacity and gated Hugging Face access for Llama 3.

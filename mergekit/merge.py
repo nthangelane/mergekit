@@ -37,6 +37,8 @@ def _link_or_copy_file(src_path: str, dst_path: str) -> None:
     # Materialize the real file in the merge output rather than preserving a
     # relative symlink that will be broken outside the snapshot directory.
     real_src_path = os.path.realpath(src_path)
+    if os.path.lexists(dst_path):
+        os.unlink(dst_path)
     try:
         os.link(real_src_path, dst_path)
     except OSError:
@@ -72,6 +74,23 @@ def _has_missing_or_broken_output_files(out_path: str, file_names: List[str]) ->
         if not os.path.exists(path):
             return True
     return False
+
+
+def _ensure_tokenizer_assets(
+    merge_config: MergeConfiguration,
+    out_path: str,
+    options: MergeOptions,
+    file_names: List[str],
+) -> None:
+    _materialize_symlinked_output_files(out_path, file_names)
+    if options.copy_tokenizer and _has_missing_or_broken_output_files(
+        out_path, file_names
+    ):
+        LOG.warning(
+            "Tokenizer assets are missing or broken; repairing from donor tokenizer files."
+        )
+        _copy_tokenizer(merge_config, out_path, options=options)
+        _materialize_symlinked_output_files(out_path, file_names)
 
 
 def run_merge(
@@ -174,18 +193,12 @@ def run_merge(
         LOG.info("Saving tokenizer")
         _set_chat_template(tokenizer, merge_config)
         tokenizer.save_pretrained(out_path, safe_serialization=True)
-        _materialize_symlinked_output_files(
+        _ensure_tokenizer_assets(
+            merge_config,
             out_path,
+            options,
             tokenizer_asset_files,
         )
-        if options.copy_tokenizer and _has_missing_or_broken_output_files(
-            out_path, tokenizer_asset_files
-        ):
-            LOG.warning(
-                "Tokenizer save produced missing or broken assets; repairing from donor tokenizer files."
-            )
-            _copy_tokenizer(merge_config, out_path, options=options)
-            _materialize_symlinked_output_files(out_path, tokenizer_asset_files)
     else:
         if options.copy_tokenizer:
             try:
@@ -195,8 +208,10 @@ def run_merge(
                     "Failed to copy tokenizer. The merge was still successful, just copy it from somewhere else.",
                     exc_info=e,
                 )
-            _materialize_symlinked_output_files(
+            _ensure_tokenizer_assets(
+                merge_config,
                 out_path,
+                options,
                 tokenizer_asset_files,
             )
         elif merge_config.chat_template:
@@ -209,6 +224,12 @@ def run_merge(
         out_path,
         files=arch_info.tagalong_files or [],
         options=options,
+    )
+    _ensure_tokenizer_assets(
+        merge_config,
+        out_path,
+        options,
+        tokenizer_asset_files,
     )
 
     if getattr(arch_info, "post_fill_parameters", False):

@@ -5,14 +5,10 @@
 #
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
-#     examples/thesis_exp_02_pythia28b_base_chat.yml \
-#     --storage-path workspace/thesis_exp_02_pythia28b \
+#     experiments/thesis/exp02_pythia28b_base_chat/config.yml \
+#     --storage-path workspace/thesis/exp02_pythia28b_base_chat \
 #     --max-fevals 320 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
-#
-# Collect separately after the run:
-#   - inference memory
-#   - AlpacaEval or MT-Bench style chat scoring
 
 genome:
   type: multi_method
