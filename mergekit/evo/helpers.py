@@ -480,6 +480,7 @@ def evaluate_model(
     num_fewshot: Optional[int],
     limit: Optional[int],
     vllm: bool,
+    tensor_parallel_size: int = 1,
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     model_kwargs: Optional[Dict[str, Any]] = None,
@@ -508,10 +509,10 @@ def evaluate_model(
         device_arg = eval_kwargs.pop("device", None)
 
         if vllm:
-            model_args["gpu_memory_utilization"] = 0.8
-            model_args["tensor_parallel_size"] = 1
-            model_args["batch_size"] = "auto"
-            model_args["max_model_len"] = 4096
+            model_args.setdefault("gpu_memory_utilization", 0.8)
+            model_args["tensor_parallel_size"] = max(1, int(tensor_parallel_size))
+            model_args.setdefault("batch_size", "auto")
+            model_args.setdefault("max_model_len", 4096)
         else:
             model_args["use_cache"] = True
             if device_arg is None:

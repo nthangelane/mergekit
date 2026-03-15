@@ -150,3 +150,39 @@ def test_num_gpus_zero_disables_merge_cuda_before_baseline(monkeypatch, tmp_path
     )
 
     assert isinstance(result.exception, _StopAfterBaselineHook), result.output
+
+
+def test_tensor_parallel_requires_vllm(tmp_path):
+    config_path = tmp_path / "evolve.yml"
+    storage_path = tmp_path / "storage"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "genome": {
+                    "models": ["author/model-a", "author/model-b"],
+                    "merge_method": "linear",
+                },
+                "tasks": ["wikitext"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        evolve_ga.main,
+        [
+            str(config_path),
+            "--storage-path",
+            str(storage_path),
+            "--num-gpus",
+            "4",
+            "--tensor-parallel-size",
+            "2",
+            "--no-reshard",
+            "--no-baseline",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--tensor-parallel-size > 1 requires --vllm" in result.output

@@ -86,6 +86,7 @@ def _evaluate_merged_path_accelerated(
     config: EvolMergeConfiguration,
     *,
     vllm: bool,
+    tensor_parallel_size: int,
     batch_size: Optional[int],
     task_manager: Optional[lm_eval.tasks.TaskManager],
     quantization_config: Optional[transformers.BitsAndBytesConfig],
@@ -96,6 +97,7 @@ def _evaluate_merged_path_accelerated(
         num_fewshot=config.num_fewshot,
         limit=config.limit,
         vllm=vllm,
+        tensor_parallel_size=tensor_parallel_size,
         batch_size=batch_size,
         task_manager=task_manager,
         apply_chat_template=config.apply_chat_template,
@@ -115,6 +117,7 @@ class MergeActorBase:
         merge_options: MergeOptions,
         model_storage_path: Optional[str] = None,
         vllm: bool = False,
+        tensor_parallel_size: int = 1,
         batch_size: Optional[int] = None,
         task_manager: Optional[lm_eval.tasks.TaskManager] = None,
         quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
@@ -126,6 +129,7 @@ class MergeActorBase:
         self.cache.setup(merge_options)
         self.model_storage_path = model_storage_path
         self.vllm = vllm
+        self.tensor_parallel_size = tensor_parallel_size
         self.batch_size = batch_size
         self.task_manager = task_manager
         self.quantization_config = quantization_config
@@ -189,6 +193,7 @@ class OnDiskMergeEvaluator(MergeActorBase):
             merged_path,
             self.config,
             vllm=self.vllm,
+            tensor_parallel_size=self.tensor_parallel_size,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
             quantization_config=self.quantization_config,
@@ -328,6 +333,10 @@ class InMemoryMergeEvaluator(MergeActorBase):
             )
 
         if self.vllm:
+            if self.tensor_parallel_size != 1:
+                raise RuntimeError(
+                    "In-memory vLLM evaluation only supports tensor_parallel_size=1"
+                )
             vllm_model_cls = _get_lm_eval_vllm_class()
             if vllm_model_cls is None:
                 raise RuntimeError(
@@ -372,6 +381,7 @@ class InMemoryMergeEvaluator(MergeActorBase):
                     batch_size=self.batch_size or "auto",
                     max_model_len=max_model_len,
                     gpu_memory_utilization=mem_util,
+                    tensor_parallel_size=self.tensor_parallel_size,
                     dtype="bfloat16",
                     device=self.merge_options.device,
                     trust_remote_code=self.merge_options.trust_remote_code,

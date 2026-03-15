@@ -46,6 +46,7 @@ def test_bootstrap_includes_storage_apply():
         "ensure cost-allocation tags on EKS cluster, nodegroups, ASGs, EC2 instances, EBS volumes, and EFS"
         in result.output
     )
+    assert "Planned Ray worker scale:" in result.output
 
 
 def test_bootstrap_skips_direct_namespace_creation():
@@ -236,6 +237,114 @@ def test_submit_renders_valid_mergekit_command():
 
     assert result.exit_code == 0, result.output
     assert f"kubectl apply -n test-ns -f {DEPLOY_DIR / 'ray-job.yaml'}" in result.output
+
+
+def test_build_entrypoint_includes_vllm_tensor_parallel_flags():
+    entrypoint = run_on_eks._build_entrypoint(
+        config_path="/app/experiments/thesis/eks_gpu/exp05_llama3_8b_same_family/config.yml",
+        storage_subpath="thesis/eks_gpu/exp05_llama3_8b_same_family",
+        max_fevals=80,
+        strategy="pool",
+        num_gpus=10,
+        vllm=True,
+        tensor_parallel_size=2,
+        random_seed=11,
+        limit=32,
+        merge_cuda=True,
+        save_final_model=True,
+        reshard=True,
+        run_baseline=True,
+        extra_args=("--i-understand-the-depths-of-the-evils-i-am-unleashing",),
+    )
+
+    assert "--vllm" in entrypoint
+    assert "--tensor-parallel-size 2" in entrypoint
+    assert "--num-gpus 10" in entrypoint
+
+
+def test_submit_rejects_tensor_parallel_without_vllm():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "submit",
+            "--tensor-parallel-size",
+            "2",
+            "--num-gpus",
+            "4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--tensor-parallel-size > 1 requires --vllm" in result.output
+
+
+def test_worker_scale_bounds_reports_20_to_30_worker_shapes():
+    scale = run_on_eks._ray_worker_scale_bounds(
+        cpu_nodes=2,
+        cpu_max_nodes=2,
+        gpu_nodes=5,
+        gpu_max_nodes=7,
+        gpu_worker_pods_per_node=4,
+    )
+
+    assert scale["gpu_workers"] == 20
+    assert scale["gpu_workers_max"] == 28
+    assert scale["total_workers"] == 21
+    assert scale["total_workers_max"] == 29
+
+
+def test_scale_profile_throughput_28_is_available_from_bootstrap():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "bootstrap",
+            "--cluster-name",
+            "demo",
+            "--region",
+            "us-west-2",
+            "--scale-profile",
+            "throughput-28",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Using scale profile 'throughput-28'" in result.output
+    assert "Cloud scale target: 20-30 workers is supported" in result.output
+    assert "gpu=28..28" in result.output
+
+
+def test_explicit_cli_override_beats_scale_profile():
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--dry-run",
+            "--namespace",
+            "test-ns",
+            "bootstrap",
+            "--cluster-name",
+            "demo",
+            "--region",
+            "us-west-2",
+            "--scale-profile",
+            "throughput-20",
+            "--gpu-max-nodes",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Using scale profile 'throughput-20'" in result.output
+    assert "Explicit CLI overrides kept: gpu_max_nodes" in result.output
+    assert "gpu=20..28" in result.output
 
 
 def test_ensure_efs_node_role_permissions_attaches_only_when_missing(

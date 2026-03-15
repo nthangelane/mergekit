@@ -36,6 +36,48 @@ from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
 
 
+def _gpus_per_evaluation(
+    *,
+    total_gpus: Optional[int],
+    vllm: bool,
+    tensor_parallel_size: int,
+    in_memory: bool = False,
+) -> int:
+    if total_gpus is None or total_gpus <= 0:
+        return 0
+    if tensor_parallel_size < 1:
+        raise ValueError("tensor_parallel_size must be at least 1")
+    if in_memory and tensor_parallel_size > 1:
+        raise ValueError(
+            "In-memory evaluation does not support tensor_parallel_size > 1"
+        )
+    if tensor_parallel_size > 1 and not vllm:
+        raise ValueError("tensor_parallel_size > 1 requires the vLLM backend")
+    if tensor_parallel_size > total_gpus:
+        raise ValueError(
+            f"tensor_parallel_size={tensor_parallel_size} exceeds num_gpus={total_gpus}"
+        )
+    return tensor_parallel_size if vllm else 1
+
+
+def _gpu_worker_capacity(
+    *,
+    total_gpus: Optional[int],
+    vllm: bool,
+    tensor_parallel_size: int,
+    in_memory: bool = False,
+) -> int:
+    gpus_per_eval = _gpus_per_evaluation(
+        total_gpus=total_gpus,
+        vllm=vllm,
+        tensor_parallel_size=tensor_parallel_size,
+        in_memory=in_memory,
+    )
+    if gpus_per_eval <= 0:
+        return 0
+    return max(1, int(total_gpus or 0) // gpus_per_eval)
+
+
 class EvaluationStrategyBase(ABC):
     def __init__(
         self,
@@ -44,6 +86,7 @@ class EvaluationStrategyBase(ABC):
         merge_options: MergeOptions,
         num_gpus: Optional[int] = None,
         num_workers: Optional[int] = None,
+        tensor_parallel_size: int = 1,
         batch_size: Optional[int] = None,
         task_search_path: Union[str, List[str], None] = None,
         model_storage_path: Optional[str] = None,
@@ -59,6 +102,7 @@ class EvaluationStrategyBase(ABC):
         )
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.tensor_parallel_size = tensor_parallel_size
         self.task_manager = create_task_manager(task_search_path)
         self.model_storage_path = model_storage_path
         self.quantization_config = quantization_config
@@ -100,18 +144,34 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
             )
 
         worker_count = (
-            self.num_gpus
+            _gpu_worker_capacity(
+                total_gpus=self.num_gpus,
+                vllm=vllm,
+                tensor_parallel_size=self.tensor_parallel_size,
+                in_memory=in_memory,
+            )
             if (self.num_gpus and self.num_gpus > 0)
             else (self.num_workers or 1)
         )
+        actor_gpu_request = _gpus_per_evaluation(
+            total_gpus=self.num_gpus,
+            vllm=vllm,
+            tensor_parallel_size=self.tensor_parallel_size,
+            in_memory=in_memory,
+        )
         self.actor_pool = ray.util.ActorPool(
             [
-                self.actor_cls.remote(
+                (
+                    self.actor_cls.options(num_gpus=actor_gpu_request).remote
+                    if actor_gpu_request > 0
+                    else self.actor_cls.remote
+                )(
                     self.config,
                     self.genome,
                     self.merge_options,
                     model_storage_path=self.model_storage_path,
                     vllm=vllm,
+                    tensor_parallel_size=self.tensor_parallel_size,
                     batch_size=self.batch_size,
                     task_manager=self.task_manager,
                     quantization_config=self.quantization_config,
@@ -142,6 +202,7 @@ class BufferedRayEvaluationStrategyActor:
         vllm: bool = False,
         num_gpus: Optional[int] = None,
         num_workers: Optional[int] = None,
+        tensor_parallel_size: int = 1,
         batch_size: Optional[int] = None,
         task_manager: Optional[lm_eval.tasks.TaskManager] = None,
         model_storage_path: Optional[str] = None,
@@ -157,6 +218,12 @@ class BufferedRayEvaluationStrategyActor:
             else get_torch_accelerator_count(self.merge_options.device)
         )
         self.num_workers = num_workers or 1
+        self.tensor_parallel_size = tensor_parallel_size
+        self.eval_gpus_per_task = _gpus_per_evaluation(
+            total_gpus=self.num_gpus,
+            vllm=vllm,
+            tensor_parallel_size=tensor_parallel_size,
+        )
         self.input_queue = []
         self.batch_size = batch_size
         self.task_manager = task_manager
@@ -178,8 +245,17 @@ class BufferedRayEvaluationStrategyActor:
 
         try:
             while not self._shutdown:
-                capacity = self.num_gpus if self.num_gpus > 0 else self.num_workers
-                while self.input_queue and (len(merging) + len(merged) < capacity):
+                merge_capacity = (
+                    self.num_gpus if self.num_gpus > 0 else self.num_workers
+                )
+                eval_capacity = (
+                    max(1, self.num_gpus // self.eval_gpus_per_task)
+                    if self.num_gpus > 0 and self.eval_gpus_per_task > 0
+                    else self.num_workers
+                )
+                while self.input_queue and (
+                    len(merging) + len(merged) < merge_capacity
+                ):
                     genotype, future_result = self.input_queue.pop(0)
                     if self.num_gpus > 0:
                         merging[
@@ -200,19 +276,22 @@ class BufferedRayEvaluationStrategyActor:
                             )
                         ] = future_result
 
-                while merged and len(evaluating) < capacity:
+                while merged and len(evaluating) < eval_capacity:
                     future_result, merged_path = merged.pop()
                     kwargs = {}
                     if self.quantization_config is not None:
                         kwargs["quantization_config"] = self.quantization_config
                     if self.num_gpus > 0:
                         evaluating[
-                            evaluate_model_ray.remote(
+                            evaluate_model_ray.options(
+                                num_gpus=self.eval_gpus_per_task
+                            ).remote(
                                 merged_path,
                                 self.config.tasks,
                                 num_fewshot=self.config.num_fewshot,
                                 limit=self.config.limit,
                                 vllm=self.vllm,
+                                tensor_parallel_size=self.tensor_parallel_size,
                                 batch_size=self.batch_size,
                                 task_manager=self.task_manager,
                                 apply_chat_template=self.config.apply_chat_template,
@@ -283,6 +362,7 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             vllm=vllm,
             num_gpus=self.num_gpus,
             num_workers=self.num_workers,
+            tensor_parallel_size=self.tensor_parallel_size,
             task_manager=self.task_manager,
             batch_size=self.batch_size,
             quantization_config=self.quantization_config,
@@ -304,11 +384,19 @@ def evaluate_genotype_serial(
     merge_options: MergeOptions,
     model_storage_path: Optional[str] = None,
     vllm: bool = False,
+    tensor_parallel_size: int = 1,
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
 ):
-    pg = ray.util.placement_group([{"CPU": 1, "GPU": 1}], strategy="STRICT_PACK")
+    gpus_per_eval = _gpus_per_evaluation(
+        total_gpus=tensor_parallel_size,
+        vllm=vllm,
+        tensor_parallel_size=tensor_parallel_size,
+    )
+    pg = ray.util.placement_group(
+        [{"CPU": 1, "GPU": gpus_per_eval}], strategy="STRICT_PACK"
+    )
     strat = ray.util.scheduling_strategies.PlacementGroupSchedulingStrategy(
         placement_group=pg
     )
@@ -329,12 +417,16 @@ def evaluate_genotype_serial(
     if quantization_config is not None:
         kwargs["quantization_config"] = quantization_config
     res = ray.get(
-        evaluate_model_ray.options(scheduling_strategy=strat).remote(
+        evaluate_model_ray.options(
+            scheduling_strategy=strat,
+            num_gpus=gpus_per_eval,
+        ).remote(
             merged_path,
             config.tasks,
             num_fewshot=config.num_fewshot,
             limit=config.limit,
             vllm=vllm,
+            tensor_parallel_size=tensor_parallel_size,
             batch_size=batch_size,
             task_manager=task_manager,
             apply_chat_template=config.apply_chat_template,
@@ -480,6 +572,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                         self.merge_options,
                         model_storage_path=self.model_storage_path,
                         vllm=self.vllm,
+                        tensor_parallel_size=self.tensor_parallel_size,
                         batch_size=self.batch_size,
                         task_manager=self.task_manager,
                         quantization_config=self.quantization_config,

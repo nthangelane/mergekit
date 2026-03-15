@@ -26,7 +26,7 @@ class ModelTokenEmbedding(BaseModel, frozen=True):
 
 
 class ZeroEmbedding(BaseModel, frozen=True):
-    kind: Literal["zero"]
+    kind: Literal["zero"] = "zero"
 
 
 class TokenEmbeddingConfig(BaseModel, frozen=True):

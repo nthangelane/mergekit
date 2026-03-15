@@ -1,22 +1,22 @@
-# Experiment 5: Large-Scale Same-Family Merge
-# Meta Llama checkpoints are gated. Ensure your Hugging Face token can access
-# both source models before running this preset.
+# Experiment 4: General + Code Specialist Merge
+# HumanEval or MBPP, tokens/sec, and VRAM should be collected separately for the
+# best checkpoint. This preset keeps the source pair strictly same-family.
 #
 # Suggested run after larger GPU capacity is available:
 #   python -m mergekit.scripts.evolve_ga \
-#     experiments/thesis/exp05_llama3_8b_same_family/config.yml \
-#     --storage-path workspace/thesis/exp05_llama3_8b_same_family \
-#     --max-fevals 80 \
+#     experiments/thesis/eks_gpu/exp04_mistral7b_general_code/config.yml \
+#     --storage-path workspace/thesis/eks_gpu/exp04_mistral7b_general_code \
+#     --max-fevals 120 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
 
 genome:
   type: multi_method
 
   models:
-    - meta-llama/Meta-Llama-3-8B
-    - meta-llama/Meta-Llama-3-8B-Instruct
+    - mistralai/Mistral-7B-v0.1
+    - mistralai/Mistral-7B-Instruct-v0.2
 
-  base_model: meta-llama/Meta-Llama-3-8B
+  base_model: mistralai/Mistral-7B-v0.1
   tokenizer_source: base
 
   allowed_methods:
@@ -26,7 +26,7 @@ genome:
     - dare_linear
     - dare_ties
 
-  layer_granularity: 8
+  layer_granularity: 4
   max_models_per_layer: 2
   normalize: true
   allow_negative_weights: false
@@ -38,14 +38,14 @@ tasks:
     weight: 0.30
     metric: acc,none
   - name: gsm8k
-    weight: 0.25
+    weight: 0.20
     metric: exact_match,strict-match
-  - name: truthfulqa_mc
-    weight: 0.15
-    metric: mc2,none
   - name: ifeval
-    weight: 0.15
+    weight: 0.20
     metric: inst_level_strict_acc
+  - name: arc_easy
+    weight: 0.15
+    metric: acc,none
   - name: wikitext
     weight: 0.15
     metric: ppl,none
@@ -53,15 +53,15 @@ tasks:
 random_init: false
 
 ga:
-  population_size: 10
-  elite_fraction: 0.30
-  mutation_rate: 0.16
-  mutation_sigma: 0.03
+  population_size: 12
+  elite_fraction: 0.25
+  mutation_rate: 0.18
+  mutation_sigma: 0.035
   crossover: semantic
   semantic_crossover_prob: 0.80
-  method_mutation_rate: 0.12
-  model_mutation_rate: 0.10
-  parameter_mutation_rate: 0.18
+  method_mutation_rate: 0.14
+  model_mutation_rate: 0.12
+  parameter_mutation_rate: 0.20
   tournament_size: 3
 
 limit: 32

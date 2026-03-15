@@ -5,6 +5,8 @@ import numpy as np
 from mergekit.evo.strategy import (
     SerialEvaluationStrategy,
     _evaluate_genotype_serial_cpu_impl,
+    _gpu_worker_capacity,
+    _gpus_per_evaluation,
 )
 
 
@@ -34,6 +36,20 @@ def test_serial_strategy_cpu_evaluates_genotypes_sequentially(monkeypatch):
 
     assert seen == [3, 1, 2]
     assert [result["score"] for result in results] == [3.0, 1.0, 2.0]
+
+
+def test_gpu_worker_capacity_scales_with_tensor_parallel():
+    assert _gpus_per_evaluation(total_gpus=10, vllm=True, tensor_parallel_size=2) == 2
+    assert _gpu_worker_capacity(total_gpus=10, vllm=True, tensor_parallel_size=2) == 5
+
+
+def test_tensor_parallel_requires_vllm_backend():
+    try:
+        _gpus_per_evaluation(total_gpus=4, vllm=False, tensor_parallel_size=2)
+    except ValueError as exc:
+        assert "requires the vLLM backend" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected tensor parallel validation to fail")
 
 
 def test_serial_cpu_helper_reports_merge_failure(monkeypatch, capsys):

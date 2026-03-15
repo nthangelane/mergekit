@@ -1,0 +1,49 @@
+# Local GA evolution config focused on preserving strong single-model baselines.
+# The search space is intentionally narrow: pairwise linear merges plus passthrough.
+# Keep only the two strongest baseline candidates because the current multi-method
+# genome encodes two model-selection slots per layer for this experiment.
+
+genome:
+  type: multi_method
+
+  models:
+    - lomahony/pythia-70m-helpful-sft
+    - EleutherAI/pythia-70m-deduped
+
+  tokenizer_source: lomahony/pythia-70m-helpful-sft
+
+  allowed_methods:
+    - linear
+    - passthrough
+
+  layer_granularity: 0
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: wikitext
+    weight: 0.2
+    metric: byte_perplexity,none
+  - name: sciq
+    weight: 0.8
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 12
+  elite_fraction: 0.25
+  mutation_rate: 0.3
+  mutation_sigma: 0.05
+  crossover: semantic
+  semantic_crossover_prob: 0.75
+  method_mutation_rate: 0.35
+  model_mutation_rate: 0.2
+  parameter_mutation_rate: 0.15
+  tournament_size: 3
+
+limit: 64
+num_fewshot: 0

@@ -5,8 +5,8 @@
 #
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
-#     experiments/thesis/exp02_pythia28b_base_chat/config.yml \
-#     --storage-path workspace/thesis/exp02_pythia28b_base_chat \
+#     experiments/thesis/eks_gpu/exp02_pythia28b_base_chat/config.yml \
+#     --storage-path workspace/thesis/eks_gpu/exp02_pythia28b_base_chat \
 #     --max-fevals 320 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
 

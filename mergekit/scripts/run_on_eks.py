@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional, Sequence
 
 import click
+from click.core import ParameterSource
 
 try:
     from dotenv import load_dotenv
@@ -50,6 +51,32 @@ DEFAULT_COST_TAGS = {
     "Environment": "research",
     "Owner": "nkululekothangelane",
     "ManagedBy": "mergekit-eks",
+}
+SCALE_PROFILES: dict[str, dict[str, object]] = {
+    "throughput-20": {
+        "description": "20 single-GPU Ray workers for high-throughput GA evaluation.",
+        "gpu_node_type": "g6.12xlarge",
+        "gpu_gpus_per_node": 4,
+        "gpu_worker_gpus": 1,
+        "gpu_nodes": 5,
+        "gpu_max_nodes": 5,
+    },
+    "throughput-28": {
+        "description": "28 single-GPU Ray workers for maximum cloud throughput.",
+        "gpu_node_type": "g6e.12xlarge",
+        "gpu_gpus_per_node": 4,
+        "gpu_worker_gpus": 1,
+        "gpu_nodes": 7,
+        "gpu_max_nodes": 7,
+    },
+    "tp2-large-model": {
+        "description": "2-GPU Ray workers for tensor-parallel 7B and 8B runs.",
+        "gpu_node_type": "g6e.12xlarge",
+        "gpu_gpus_per_node": 4,
+        "gpu_worker_gpus": 2,
+        "gpu_nodes": 5,
+        "gpu_max_nodes": 7,
+    },
 }
 
 
@@ -602,6 +629,8 @@ def _build_entrypoint(
     max_fevals: int,
     strategy: str,
     num_gpus: int,
+    vllm: bool,
+    tensor_parallel_size: int,
     random_seed: int,
     limit: Optional[int],
     merge_cuda: bool,
@@ -623,6 +652,9 @@ def _build_entrypoint(
         strategy,
         "--num-gpus",
         str(num_gpus),
+        "--vllm" if vllm else "--no-vllm",
+        "--tensor-parallel-size",
+        str(tensor_parallel_size),
         "--random-seed",
         str(random_seed),
         "--merge-cuda" if merge_cuda else "--no-merge-cuda",
@@ -634,6 +666,55 @@ def _build_entrypoint(
         cmd.extend(["--limit", str(limit)])
     cmd.extend(extra_args)
     return shlex.join(cmd)
+
+
+def _ray_worker_scale_bounds(
+    *,
+    cpu_nodes: int,
+    cpu_max_nodes: int,
+    gpu_nodes: int,
+    gpu_max_nodes: int,
+    gpu_worker_pods_per_node: int,
+) -> dict[str, int]:
+    cpu_workers = max(cpu_nodes - 1, 0)
+    cpu_workers_max = max(cpu_max_nodes - 1, 0)
+    gpu_workers = gpu_nodes * gpu_worker_pods_per_node
+    gpu_workers_max = gpu_max_nodes * gpu_worker_pods_per_node
+    return {
+        "cpu_workers": cpu_workers,
+        "cpu_workers_max": cpu_workers_max,
+        "gpu_workers": gpu_workers,
+        "gpu_workers_max": gpu_workers_max,
+        "total_workers": cpu_workers + gpu_workers,
+        "total_workers_max": cpu_workers_max + gpu_workers_max,
+    }
+
+
+def _uses_default_source(ctx: click.Context, parameter_name: str) -> bool:
+    source = ctx.get_parameter_source(parameter_name)
+    return source in (None, ParameterSource.DEFAULT, ParameterSource.DEFAULT_MAP)
+
+
+def _apply_scale_profile(
+    ctx: click.Context,
+    scale_profile: Optional[str],
+    settings: dict[str, object],
+) -> tuple[dict[str, object], Optional[dict[str, object]], list[str], list[str]]:
+    if not scale_profile:
+        return settings, None, [], []
+
+    profile = SCALE_PROFILES[scale_profile]
+    applied: list[str] = []
+    preserved: list[str] = []
+    for key, value in profile.items():
+        if key == "description":
+            continue
+        if _uses_default_source(ctx, key):
+            settings[key] = value
+            applied.append(key)
+        else:
+            preserved.append(key)
+    return settings, profile, applied, preserved
 
 
 @click.group()
@@ -682,6 +763,12 @@ def cli(
     default=lambda: os.getenv("AWS_REGION", "us-east-1"),
     show_default="env[AWS_REGION] or 'us-east-1'",
 )
+@click.option(
+    "--scale-profile",
+    type=click.Choice(sorted(SCALE_PROFILES)),
+    default=None,
+    help="Named cloud scale profile for common Ray worker layouts",
+)
 @click.option("--cpu-node-type", default="m6i.xlarge", show_default=True)
 @click.option(
     "--cpu-nodes",
@@ -691,6 +778,18 @@ def cli(
 )
 @click.option("--cpu-max-nodes", default=3, show_default=True)
 @click.option("--gpu-node-type", default="g6.xlarge", show_default=True)
+@click.option(
+    "--gpu-gpus-per-node",
+    default=1,
+    show_default=True,
+    help="Physical GPU count on the selected GPU node type",
+)
+@click.option(
+    "--gpu-worker-gpus",
+    default=1,
+    show_default=True,
+    help="GPUs advertised by each Ray GPU worker pod",
+)
 @click.option("--gpu-nodes", default=0, show_default=True)
 @click.option("--gpu-max-nodes", default=1, show_default=True)
 @click.pass_context
@@ -699,10 +798,13 @@ def bootstrap(
     cluster_name: str,
     ray_cluster_name: str,
     region: str,
+    scale_profile: Optional[str],
     cpu_node_type: str,
     cpu_nodes: int,
     cpu_max_nodes: int,
     gpu_node_type: str,
+    gpu_gpus_per_node: int,
+    gpu_worker_gpus: int,
     gpu_nodes: int,
     gpu_max_nodes: int,
 ) -> None:
@@ -711,6 +813,68 @@ def bootstrap(
     dry_run = ctx.obj["dry_run"]
     namespace = ctx.obj["namespace"]
     image = ctx.obj["image"]
+
+    resolved_settings, profile, applied_fields, preserved_fields = _apply_scale_profile(
+        ctx,
+        scale_profile,
+        {
+            "cpu_node_type": cpu_node_type,
+            "cpu_nodes": cpu_nodes,
+            "cpu_max_nodes": cpu_max_nodes,
+            "gpu_node_type": gpu_node_type,
+            "gpu_gpus_per_node": gpu_gpus_per_node,
+            "gpu_worker_gpus": gpu_worker_gpus,
+            "gpu_nodes": gpu_nodes,
+            "gpu_max_nodes": gpu_max_nodes,
+        },
+    )
+    cpu_node_type = str(resolved_settings["cpu_node_type"])
+    cpu_nodes = int(resolved_settings["cpu_nodes"])
+    cpu_max_nodes = int(resolved_settings["cpu_max_nodes"])
+    gpu_node_type = str(resolved_settings["gpu_node_type"])
+    gpu_gpus_per_node = int(resolved_settings["gpu_gpus_per_node"])
+    gpu_worker_gpus = int(resolved_settings["gpu_worker_gpus"])
+    gpu_nodes = int(resolved_settings["gpu_nodes"])
+    gpu_max_nodes = int(resolved_settings["gpu_max_nodes"])
+
+    if scale_profile and profile is not None:
+        click.echo(f"Using scale profile '{scale_profile}': {profile['description']}")
+        if applied_fields:
+            click.echo("Profile defaults applied: " + ", ".join(applied_fields))
+        if preserved_fields:
+            click.echo("Explicit CLI overrides kept: " + ", ".join(preserved_fields))
+
+    if gpu_gpus_per_node < 1:
+        raise click.ClickException("--gpu-gpus-per-node must be at least 1.")
+    if gpu_worker_gpus < 1:
+        raise click.ClickException("--gpu-worker-gpus must be at least 1.")
+    if gpu_worker_gpus > gpu_gpus_per_node:
+        raise click.ClickException(
+            "--gpu-worker-gpus cannot exceed --gpu-gpus-per-node."
+        )
+
+    gpu_worker_pods_per_node = max(1, gpu_gpus_per_node // gpu_worker_gpus)
+    if gpu_gpus_per_node % gpu_worker_gpus != 0:
+        click.echo(
+            "Warning: --gpu-gpus-per-node is not evenly divisible by --gpu-worker-gpus; some node GPUs will remain unused."
+        )
+    scale = _ray_worker_scale_bounds(
+        cpu_nodes=cpu_nodes,
+        cpu_max_nodes=cpu_max_nodes,
+        gpu_nodes=gpu_nodes,
+        gpu_max_nodes=gpu_max_nodes,
+        gpu_worker_pods_per_node=gpu_worker_pods_per_node,
+    )
+    click.echo(
+        "Planned Ray worker scale: "
+        f"cpu={scale['cpu_workers']}..{scale['cpu_workers_max']} "
+        f"gpu={scale['gpu_workers']}..{scale['gpu_workers_max']} "
+        f"total={scale['total_workers']}..{scale['total_workers_max']}"
+    )
+    if scale["total_workers_max"] >= 20:
+        click.echo(
+            "Cloud scale target: 20-30 workers is supported by this bootstrap shape."
+        )
 
     _verify_prerequisites(skip=dry_run)
 
@@ -788,8 +952,9 @@ def bootstrap(
         "RAY_CLUSTER_NAME": ray_cluster_name,
         "CPU_WORKER_REPLICAS": str(max(cpu_nodes - 1, 0)),
         "CPU_WORKER_MAX_REPLICAS": str(max(cpu_max_nodes - 1, 0)),
-        "GPU_WORKER_REPLICAS": str(gpu_nodes),
-        "GPU_WORKER_MAX_REPLICAS": str(gpu_max_nodes),
+        "GPU_WORKER_REPLICAS": str(gpu_nodes * gpu_worker_pods_per_node),
+        "GPU_WORKER_MAX_REPLICAS": str(gpu_max_nodes * gpu_worker_pods_per_node),
+        "GPU_WORKER_GPUS": str(gpu_worker_gpus),
         "EFS_FILE_SYSTEM_ID": efs_file_system_id,
     }
 
@@ -831,6 +996,13 @@ def bootstrap(
     show_default=True,
 )
 @click.option("--num-gpus", default=0, show_default=True)
+@click.option("--vllm/--no-vllm", default=False, show_default=True)
+@click.option(
+    "--tensor-parallel-size",
+    type=click.IntRange(1, 10),
+    default=1,
+    show_default=True,
+)
 @click.option("--limit", type=int, default=None)
 @click.option("--random-seed", default=42, show_default=True)
 @click.option("--merge-cuda/--no-merge-cuda", default=False, show_default=True)
@@ -858,6 +1030,8 @@ def submit(
     max_fevals: int,
     strategy: str,
     num_gpus: int,
+    vllm: bool,
+    tensor_parallel_size: int,
     limit: Optional[int],
     random_seed: int,
     merge_cuda: bool,
@@ -872,6 +1046,18 @@ def submit(
     namespace = ctx.obj["namespace"]
 
     _verify_prerequisites(skip=dry_run)
+    if tensor_parallel_size > 1 and not vllm:
+        raise click.ClickException(
+            "--tensor-parallel-size > 1 requires --vllm for submitted runs."
+        )
+    if tensor_parallel_size > 1 and num_gpus <= 0:
+        raise click.ClickException(
+            "--tensor-parallel-size > 1 requires --num-gpus to be greater than 0."
+        )
+    if tensor_parallel_size > num_gpus > 0:
+        raise click.ClickException(
+            "--tensor-parallel-size cannot exceed --num-gpus for a submitted run."
+        )
 
     entrypoint = _build_entrypoint(
         config_path=config_path,
@@ -879,6 +1065,8 @@ def submit(
         max_fevals=max_fevals,
         strategy=strategy,
         num_gpus=num_gpus,
+        vllm=vllm,
+        tensor_parallel_size=tensor_parallel_size,
         random_seed=random_seed,
         limit=limit,
         merge_cuda=merge_cuda,

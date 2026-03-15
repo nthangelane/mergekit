@@ -152,7 +152,10 @@ class PermutedEmbeddings(Task[Dict[ModelReference, torch.Tensor]]):
         cfg: TokenEmbeddingConfig,
     ) -> torch.Tensor:
         if isinstance(cfg.source, ZeroEmbedding):
-            pass
+            sample = next(iter(tensors.values()))
+            embed = torch.zeros(
+                sample.shape[1], dtype=sample.dtype, device=sample.device
+            )
         elif isinstance(cfg.source, ModelTokenEmbedding):
             model = cfg.source.model
             assert (

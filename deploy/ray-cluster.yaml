@@ -137,7 +137,7 @@ spec:
       maxReplicas: __GPU_WORKER_MAX_REPLICAS__
       rayStartParams:
         address: auto
-        num-gpus: "1"
+        num-gpus: "__GPU_WORKER_GPUS__"
       template:
         spec:
           nodeSelector:
@@ -184,11 +184,11 @@ spec:
                 requests:
                   cpu: "3"
                   memory: "12Gi"
-                  nvidia.com/gpu: "1"
+                  nvidia.com/gpu: "__GPU_WORKER_GPUS__"
                 limits:
                   cpu: "4"
                   memory: "14Gi"
-                  nvidia.com/gpu: "1"
+                  nvidia.com/gpu: "__GPU_WORKER_GPUS__"
               volumeMounts:
                 - name: shared-tmp
                   mountPath: /tmp/ray

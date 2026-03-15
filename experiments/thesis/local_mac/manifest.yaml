@@ -1,0 +1,19 @@
+suite: thesis
+group: local_mac
+execution_target: local_mac
+workspace_root: workspace/thesis/local_mac
+
+experiments:
+  - id: exp01
+    name: Tiny Controlled Merge Baseline
+    family: gpt_neo
+    config_path: experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml
+    storage_path: workspace/thesis/local_mac/exp01_tiny_controlled_merge
+    storage_subpath: thesis/local_mac/exp01_tiny_controlled_merge
+    recommended_population: 24
+    recommended_generations: 20
+    recommended_max_fevals: 480
+    recommended_strategy: pool
+    recommended_num_gpus: 0
+    recommended_num_workers: 4
+    recommended_tensor_parallel_size: 1

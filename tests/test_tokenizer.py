@@ -8,9 +8,12 @@ import tokenizers
 import torch
 from transformers import LlamaConfig, LlamaTokenizerFast, PreTrainedTokenizerBase
 
+from mergekit.common import ModelReference
 from mergekit.config import InputModelDefinition, MergeConfiguration
 from mergekit.io import LazyTensorLoader
 from mergekit.tokenizer import TokenizerConfig
+from mergekit.tokenizer.config import TokenEmbeddingConfig, ZeroEmbedding
+from mergekit.tokenizer.embed import PermutedEmbeddings
 from tests.common import make_picollama, run_and_check_merge
 
 
@@ -326,3 +329,32 @@ class TestTokenizerMerges:
             tokenizer=tokenizer_config,
         )
         return config
+
+
+def test_zero_embedding_defaults_kind():
+    cfg = TokenEmbeddingConfig(source=ZeroEmbedding())
+
+    assert isinstance(cfg.source, ZeroEmbedding)
+    assert cfg.source.kind == "zero"
+
+
+def test_zero_embedding_returns_zero_vector():
+    model = ModelReference.model_validate("model-a")
+    task = PermutedEmbeddings.model_construct(
+        gather_tensors=None,
+        tokenizer_task=None,
+        tokens=None,
+        pad_to_multiple_of=None,
+        base_model=None,
+    )
+    tensors = {model: torch.ones((2, 3), dtype=torch.float32)}
+    embed = task.compute_default_embedding(
+        tokenizer_info=None,
+        tensors=tensors,
+        permutations={model: {0: -1}},
+        token="<sep>",
+        token_id=0,
+        cfg=TokenEmbeddingConfig(source=ZeroEmbedding()),
+    )
+
+    assert torch.equal(embed, torch.zeros(3, dtype=torch.float32))

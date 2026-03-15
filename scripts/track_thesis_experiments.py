@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize thesis experiment status from manifest, local artifacts, and RayJobs."""
+"""Summarize thesis experiment status from manifests, local artifacts, and RayJobs."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Any, Dict, Iterable, Optional
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "experiments" / "thesis" / "manifest.yaml"
+SUITE_MANIFEST_PATH = ROOT / "experiments" / "thesis" / "manifest.yaml"
 
 
 @dataclass
@@ -30,8 +31,21 @@ class ExperimentLocalStatus:
     artifacts: list[str]
 
 
-def _load_manifest() -> dict:
-    return yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+def _load_yaml(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _load_suite(target: str) -> tuple[dict, list[dict]]:
+    suite = _load_yaml(SUITE_MANIFEST_PATH)
+    manifests = []
+    for rel_path in suite.get("manifests", []):
+        path = (ROOT / rel_path).resolve()
+        manifest = _load_yaml(path)
+        manifest["_path"] = str(path.relative_to(ROOT))
+        if target != "all" and manifest.get("group") != target:
+            continue
+        manifests.append(manifest)
+    return suite, manifests
 
 
 def _run_json(cmd: list[str]) -> Optional[dict]:
@@ -145,7 +159,17 @@ def _local_status(storage_path: Path) -> ExperimentLocalStatus:
     )
 
 
-def _cluster_snapshot(namespace: str, ray_cluster_name: str) -> dict:
+def _cluster_snapshot(
+    namespace: Optional[str], ray_cluster_name: Optional[str]
+) -> dict:
+    if not namespace or not ray_cluster_name:
+        return {
+            "rayjobs": {},
+            "raycluster": {},
+            "workload_counts": {},
+            "instance_types": {},
+        }
+
     rayjobs = _run_json(["kubectl", "get", "rayjobs", "-n", namespace, "-o", "json"])
     raycluster = _run_json(
         [
@@ -185,37 +209,57 @@ def _cluster_snapshot(namespace: str, ray_cluster_name: str) -> dict:
     }
 
 
-def _cluster_summary(snapshot: dict, experiments: list[dict]) -> dict:
-    raycluster = snapshot.get("raycluster", {})
-    gpu_workers = int(snapshot.get("workload_counts", {}).get("gpu", 0))
-    desired_gpu = int(str(raycluster.get("desiredGPU", "0")))
-    gpu_experiments = sum(
-        1 for exp in experiments if int(exp["recommended_num_gpus"]) > 0
+def _cluster_total_gpus(snapshot: dict) -> int:
+    raw = snapshot.get("raycluster", {}).get("desiredGPU", 0)
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cluster_ready_workers(snapshot: dict) -> Optional[int]:
+    raw = snapshot.get("raycluster", {}).get("readyWorkerReplicas")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fit_status(exp: dict, manifest: dict, snapshot: dict) -> tuple[str, Optional[str]]:
+    if manifest.get("execution_target") == "local_mac":
+        return "ready_local", None
+
+    if exp.get("requires_gated_hf_access"):
+        return "gated", "requires gated Hugging Face access"
+
+    required_gpus = int(exp.get("recommended_num_gpus", 0) or 0)
+    available_gpus = _cluster_total_gpus(snapshot)
+    has_cluster_data = bool(snapshot.get("raycluster") or snapshot.get("rayjobs"))
+
+    if not has_cluster_data:
+        return "cluster_unknown", "kubectl unavailable or cluster unreachable"
+    if available_gpus >= required_gpus:
+        return "ready_now", None
+    if available_gpus > 0:
+        return (
+            "scale_required",
+            f"needs {required_gpus} GPU(s), cluster advertises {available_gpus}",
+        )
+    return (
+        "not_provisioned",
+        f"needs {required_gpus} GPU(s), cluster advertises 0",
     )
-    blocked = [
-        exp["id"] for exp in experiments if exp["current_readiness"] == "blocked"
-    ]
-
-    can_run_all = not blocked and gpu_workers >= gpu_experiments
-    reasons = []
-    if blocked:
-        reasons.append(f"blocked experiments: {', '.join(blocked)}")
-    if gpu_workers < gpu_experiments:
-        reasons.append(
-            f"only {gpu_workers} GPU node(s) for {gpu_experiments} GPU-backed experiments"
-        )
-    if desired_gpu < gpu_experiments:
-        reasons.append(
-            f"Ray cluster advertises {desired_gpu} total GPU(s), below the required {gpu_experiments}"
-        )
-
-    return {
-        "can_run_all_now": can_run_all,
-        "reasons": reasons,
-    }
 
 
-def _row(job_status: Optional[dict], local: ExperimentLocalStatus, exp: dict) -> dict:
+def _row(
+    job_status: Optional[dict],
+    local: ExperimentLocalStatus,
+    exp: dict,
+    manifest: dict,
+    fit: str,
+) -> dict:
     ray_state = "-"
     if job_status:
         ray_state = (
@@ -224,10 +268,12 @@ def _row(job_status: Optional[dict], local: ExperimentLocalStatus, exp: dict) ->
 
     return {
         "id": exp["id"],
-        "name": exp["name"],
-        "readiness": exp["current_readiness"],
+        "target": manifest["group"],
+        "fit": fit,
         "rayjob": ray_state,
         "local": local.state,
+        "gpus": str(exp.get("recommended_num_gpus", "-")),
+        "tp": str(exp.get("recommended_tensor_parallel_size", "-")),
         "gens": str(local.generations or "-"),
         "best": _fmt_float(local.best_score),
         "updated": local.updated_at or "-",
@@ -239,9 +285,12 @@ def _print_table(rows: Iterable[dict]) -> None:
     rows = list(rows)
     headers = [
         "id",
-        "readiness",
+        "target",
+        "fit",
         "rayjob",
         "local",
+        "gpus",
+        "tp",
         "gens",
         "best",
         "updated",
@@ -259,53 +308,142 @@ def _print_table(rows: Iterable[dict]) -> None:
         print("  ".join(str(row[header]).ljust(widths[header]) for header in headers))
 
 
-def _collect_status() -> dict:
-    manifest = _load_manifest()
-    experiments = manifest["experiments"]
-    snapshot = _cluster_snapshot(manifest["namespace"], manifest["ray_cluster_name"])
-    summary = _cluster_summary(snapshot, experiments)
+def _group_summary(
+    manifest: dict, snapshot: dict, rows: list[dict], notes: list[str]
+) -> dict:
+    fit_counts = Counter(row["fit"] for row in rows)
+    profile = manifest.get("target_cluster_profile", {})
+    worker_target_min = profile.get("target_total_workers_min")
+    worker_target_max = profile.get("target_total_workers_max")
+    ready_workers = _cluster_ready_workers(snapshot)
+    worker_target_status = None
+    if (
+        ready_workers is not None
+        and worker_target_min is not None
+        and worker_target_max is not None
+    ):
+        if ready_workers < worker_target_min:
+            worker_target_status = (
+                f"below_target ({ready_workers} < {worker_target_min})"
+            )
+        elif ready_workers > worker_target_max:
+            worker_target_status = (
+                f"above_target ({ready_workers} > {worker_target_max})"
+            )
+        else:
+            worker_target_status = f"within_target ({ready_workers})"
+    return {
+        "fit_counts": dict(fit_counts),
+        "notes": notes,
+        "cluster_total_gpus": _cluster_total_gpus(snapshot),
+        "ready_workers": ready_workers if ready_workers is not None else "-",
+        "worker_target_min": worker_target_min,
+        "worker_target_max": worker_target_max,
+        "worker_target_status": worker_target_status,
+    }
 
-    rows = []
-    for exp in experiments:
-        local = _local_status(ROOT / exp["storage_path"])
-        job_status = snapshot["rayjobs"].get(exp["job_name"])
-        rows.append(_row(job_status, local, exp))
+
+def _collect_status(target: str) -> dict:
+    suite, manifests = _load_suite(target)
+    snapshot_cache: dict[tuple[str, str], dict] = {}
+    groups = []
+
+    for manifest in manifests:
+        snapshot = {
+            "rayjobs": {},
+            "raycluster": {},
+            "workload_counts": {},
+            "instance_types": {},
+        }
+        if manifest.get("execution_target") == "eks_gpu":
+            cache_key = (
+                manifest.get("namespace", ""),
+                manifest.get("ray_cluster_name", ""),
+            )
+            if cache_key not in snapshot_cache:
+                snapshot_cache[cache_key] = _cluster_snapshot(*cache_key)
+            snapshot = snapshot_cache[cache_key]
+
+        rows = []
+        notes = []
+        for exp in manifest["experiments"]:
+            local = _local_status(ROOT / exp["storage_path"])
+            fit, reason = _fit_status(exp, manifest, snapshot)
+            job_status = snapshot["rayjobs"].get(exp.get("job_name", ""))
+            rows.append(_row(job_status, local, exp, manifest, fit))
+            if reason:
+                notes.append(f"{exp['id']}: {reason}")
+
+        groups.append(
+            {
+                "manifest": manifest,
+                "cluster": snapshot,
+                "summary": _group_summary(manifest, snapshot, rows, notes),
+                "rows": rows,
+            }
+        )
 
     return {
-        "manifest": manifest,
-        "cluster": snapshot,
-        "summary": summary,
-        "rows": rows,
+        "suite": suite,
+        "groups": groups,
     }
 
 
 def _print_status(payload: dict) -> None:
-    manifest = payload["manifest"]
-    cluster = payload["cluster"]
-    summary = payload["summary"]
+    print(f"Suite: {payload['suite']['suite']}")
+    print(f"Suite manifest: {SUITE_MANIFEST_PATH.relative_to(ROOT)}")
 
-    print(f"Suite: {manifest['suite']}")
-    print(f"Manifest: {MANIFEST_PATH.relative_to(ROOT)}")
-    print(
-        "Cluster: "
-        f"namespace={manifest['namespace']} "
-        f"ray_cluster={manifest['ray_cluster_name']} "
-        f"workers={cluster['raycluster'].get('readyWorkerReplicas', '-')}"
-    )
-    if cluster["instance_types"]:
-        instance_summary = ", ".join(
-            f"{k} x{v}" for k, v in sorted(cluster["instance_types"].items())
-        )
-        print(f"Nodes: {instance_summary}")
-    print(
-        "All 5 runnable at once now: " + ("YES" if summary["can_run_all_now"] else "NO")
-    )
-    if summary["reasons"]:
-        print("Why not:")
-        for reason in summary["reasons"]:
-            print(f"  - {reason}")
-    print()
-    _print_table(payload["rows"])
+    for group in payload["groups"]:
+        manifest = group["manifest"]
+        cluster = group["cluster"]
+        summary = group["summary"]
+
+        print()
+        print(f"Group: {manifest['group']} ({manifest['execution_target']})")
+        print(f"Manifest: {manifest['_path']}")
+        print(f"Workspace: {manifest.get('workspace_root', '-')}")
+
+        if manifest.get("execution_target") == "eks_gpu":
+            profile = manifest.get("target_cluster_profile", {})
+            if profile:
+                print(
+                    "Target cluster: "
+                    f"{profile.get('name', '-')} | "
+                    f"workers={profile.get('target_total_workers_min', '-')}..{profile.get('target_total_workers_max', '-')} | "
+                    f"per_run_gpus={profile.get('per_experiment_gpu_cap', '-')} | "
+                    f"min_vram={profile.get('minimum_gpu_vram_gb', '-')}GiB"
+                )
+                node_types = profile.get("preferred_gpu_node_types") or []
+                if node_types:
+                    print("Preferred nodes: " + ", ".join(node_types))
+            print(
+                "Current cluster: "
+                f"namespace={manifest.get('namespace', '-')} "
+                f"ray_cluster={manifest.get('ray_cluster_name', '-')} "
+                f"workers={summary['ready_workers']} "
+                f"desired_gpus={summary['cluster_total_gpus']}"
+            )
+            if cluster["instance_types"]:
+                instance_summary = ", ".join(
+                    f"{k} x{v}" for k, v in sorted(cluster["instance_types"].items())
+                )
+                print(f"Nodes: {instance_summary}")
+            if summary["worker_target_status"]:
+                print("Worker scale: " f"{summary['worker_target_status']}")
+
+        if summary["fit_counts"]:
+            fit_summary = ", ".join(
+                f"{status}={count}"
+                for status, count in sorted(summary["fit_counts"].items())
+            )
+            print(f"Fit states: {fit_summary}")
+        if summary["notes"]:
+            print("Notes:")
+            for note in summary["notes"]:
+                print(f"  - {note}")
+
+        print()
+        _print_table(group["rows"])
 
 
 def main() -> int:
@@ -313,10 +451,15 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=int, default=20)
+    parser.add_argument(
+        "--target",
+        choices=["all", "local_mac", "eks_gpu"],
+        default="all",
+    )
     args = parser.parse_args()
 
     while True:
-        payload = _collect_status()
+        payload = _collect_status(args.target)
         if args.as_json:
             print(json.dumps(payload, indent=2))
         else:

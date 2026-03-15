@@ -1,10 +1,14 @@
 import math
+import os
 
 import pandas
+import pytest
 
 from mergekit.scripts.evolve_ga import (
     _best_weighted_score_from_frame,
+    _init_ray_for_baselines,
     _meets_improvement_thresholds,
+    _reusable_baseline_csv_path,
     _score_improvement,
 )
 
@@ -48,3 +52,53 @@ def test_improvement_thresholds_reject_undefined_pct_when_pct_required():
     delta, pct = _score_improvement(0.25, 0.0)
 
     assert not _meets_improvement_thresholds(delta, pct, min_abs=0.1, min_pct=1.0)
+
+
+def test_reusable_baseline_csv_path_accepts_complete_existing_scores(tmp_path):
+    csv_path = tmp_path / "baseline_results.csv"
+    pandas.DataFrame(
+        [
+            {"model": "model-a", "weighted_score": 0.5},
+            {"model": "model-b", "weighted_score": 0.4},
+        ]
+    ).to_csv(csv_path, index=False)
+
+    assert _reusable_baseline_csv_path(str(csv_path), ["model-a", "model-b"]) == str(
+        csv_path
+    )
+
+
+def test_reusable_baseline_csv_path_rejects_missing_scores(tmp_path):
+    csv_path = tmp_path / "baseline_results.csv"
+    pandas.DataFrame(
+        [
+            {"model": "model-a", "weighted_score": 0.5},
+            {"model": "model-b", "weighted_score": None},
+        ]
+    ).to_csv(csv_path, index=False)
+
+    assert _reusable_baseline_csv_path(str(csv_path), ["model-a", "model-b"]) is None
+
+
+def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
+    init_calls = []
+
+    monkeypatch.delenv("RAY_ADDRESS", raising=False)
+    monkeypatch.setattr("mergekit.scripts.evolve_ga.ray.is_initialized", lambda: False)
+
+    def fake_init(*args, **kwargs):
+        init_calls.append(kwargs)
+        if kwargs.get("address") == "auto":
+            raise ConnectionError("no ray instance")
+        return None
+
+    monkeypatch.setattr("mergekit.scripts.evolve_ga.ray.init", fake_init)
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga.stage_log", lambda *args, **kwargs: None
+    )
+
+    _init_ray_for_baselines()
+
+    assert len(init_calls) == 2
+    assert init_calls[0]["address"] == "auto"
+    assert "address" not in init_calls[1]

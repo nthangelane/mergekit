@@ -1,0 +1,110 @@
+suite: thesis
+group: eks_gpu
+execution_target: eks_gpu
+namespace: mergekit
+ray_cluster_name: mergekit-ga
+dashboard_service: mergekit-ga-head-svc
+workspace_root: workspace/thesis/eks_gpu
+
+target_cluster_profile:
+  name: thesis_high_vram_cloud_scale
+  target_total_workers_min: 20
+  target_total_workers_max: 30
+  per_experiment_gpu_cap: 10
+  minimum_gpu_vram_gb: 24
+  preferred_gpu_node_types:
+    - g6.12xlarge
+    - g6e.12xlarge
+    - g6e.48xlarge
+    - p5.48xlarge
+  preferred_scale_profiles:
+    - name: throughput-20
+      gpu_worker_gpus: 1
+      gpu_nodes: 5
+      gpu_max_nodes: 5
+      expected_gpu_workers: 20
+    - name: throughput-28
+      gpu_worker_gpus: 1
+      gpu_nodes: 7
+      gpu_max_nodes: 7
+      expected_gpu_workers: 28
+    - name: tp2-large-model
+      gpu_worker_gpus: 2
+      gpu_nodes: 5
+      gpu_max_nodes: 7
+      expected_gpu_workers_min: 10
+      expected_gpu_workers_max: 14
+  notes:
+    - Tensor parallel values above 1 require Ray worker pods that advertise more than one GPU.
+    - Use --gpu-gpus-per-node for the EC2 node shape and --gpu-worker-gpus for the Ray worker pod shape.
+    - The preferred scale profile names map directly to `run_on_eks bootstrap --scale-profile ...`.
+    - Keep per-run --num-gpus at or below 10 even when the cluster scales to 20-30 workers.
+
+experiments:
+  - id: exp02
+    name: Controlled Base + Chat Merge
+    family: gpt_neox
+    config_path: experiments/thesis/eks_gpu/exp02_pythia28b_base_chat/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp02_pythia28b_base_chat
+    storage_subpath: thesis/eks_gpu/exp02_pythia28b_base_chat
+    job_name: thesis-exp02-pythia28b
+    recommended_population: 20
+    recommended_generations: 16
+    recommended_max_fevals: 320
+    recommended_strategy: pool
+    recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false
+
+  - id: exp03
+    name: Multilingual Base + Instruct Merge
+    family: qwen2
+    config_path: experiments/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge
+    storage_subpath: thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge
+    job_name: thesis-exp03-qwen25-3b
+    recommended_population: 16
+    recommended_generations: 14
+    recommended_max_fevals: 224
+    recommended_strategy: pool
+    recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false
+
+  - id: exp04
+    name: General + Code Specialist Merge
+    family: mistral
+    config_path: experiments/thesis/eks_gpu/exp04_mistral7b_general_code/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp04_mistral7b_general_code
+    storage_subpath: thesis/eks_gpu/exp04_mistral7b_general_code
+    job_name: thesis-exp04-mistral7b
+    recommended_population: 12
+    recommended_generations: 10
+    recommended_max_fevals: 120
+    recommended_strategy: pool
+    recommended_num_gpus: 8
+    recommended_tensor_parallel_size: 2
+    recommended_gpu_worker_gpus: 2
+    minimum_gpu_vram_gb: 48
+    requires_gated_hf_access: false
+
+  - id: exp05
+    name: Large-Scale Same-Family Merge
+    family: llama3
+    config_path: experiments/thesis/eks_gpu/exp05_llama3_8b_same_family/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp05_llama3_8b_same_family
+    storage_subpath: thesis/eks_gpu/exp05_llama3_8b_same_family
+    job_name: thesis-exp05-llama3-8b
+    recommended_population: 10
+    recommended_generations: 8
+    recommended_max_fevals: 80
+    recommended_strategy: pool
+    recommended_num_gpus: 10
+    recommended_tensor_parallel_size: 2
+    recommended_gpu_worker_gpus: 2
+    minimum_gpu_vram_gb: 48
+    requires_gated_hf_access: true

@@ -1,8 +1,8 @@
 # Experiment 1: Tiny Controlled Merge Baseline
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
-#     experiments/thesis/exp01_tiny_controlled_merge/config.yml \
-#     --storage-path workspace/thesis/exp01_tiny_controlled_merge \
+#     experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml \
+#     --storage-path workspace/thesis/local_mac/exp01_tiny_controlled_merge \
 #     --max-fevals 480
 
 genome:

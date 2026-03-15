@@ -186,11 +186,9 @@ class MultiMethodGenomeDefinition(BaseModel, frozen=True):
         for method_name in self.allowed_methods:
             method = next(m for m, n in METHOD_NAMES.items() if n == method_name)
             min_models = METHOD_MIN_MODELS.get(method, 2)
-            max_models = METHOD_MAX_MODELS.get(method, None)
 
             available_models = len(self.models)
             max_per_layer = self.max_models_per_layer or available_models
-            effective_upper = min(available_models, max_per_layer)
 
             if available_models < min_models:
                 raise ValueError(
@@ -200,12 +198,6 @@ class MultiMethodGenomeDefinition(BaseModel, frozen=True):
             if max_per_layer < min_models:
                 raise ValueError(
                     f"Method {method_name} requires at least {min_models} models per layer, but max_models_per_layer is {max_per_layer}"
-                )
-
-            if max_models is not None and effective_upper > max_models:
-                raise ValueError(
-                    f"Method {method_name} supports at most {max_models} models per layer, "
-                    f"but up to {effective_upper} would be selected. Reduce max_models_per_layer or remove the method."
                 )
 
         return self
@@ -345,10 +337,14 @@ class MultiMethodGenome:
                     total = float(model_weights.sum())
                 model_weights = model_weights / total
 
-                # Keep only top-k models
+                # Keep only the number of models compatible with the chosen method.
+                min_models = METHOD_MIN_MODELS.get(method, 2)
+                max_models = METHOD_MAX_MODELS.get(method, None)
                 top_k = int(np.sum(model_weights > 0.1))
-                if top_k < 2:
-                    top_k = 2  # Always use at least 2 models
+                if top_k < min_models:
+                    top_k = min_models
+                if max_models is not None:
+                    top_k = min(top_k, max_models)
                 top_k = min(self.max_models, top_k)
                 indices = np.argsort(-model_weights)[:top_k]
                 mask = np.zeros_like(model_weights)
@@ -394,12 +390,8 @@ class MultiMethodGenome:
 
         method_enum = next(m for m, n in METHOD_NAMES.items() if n == method_name)
         min_models = METHOD_MIN_MODELS.get(method_enum, 2)
-        max_models = METHOD_MAX_MODELS.get(method_enum, None)
-
-        num_models = len(self.definition.models)
-        if num_models < min_models:
-            return False
-        if max_models is not None and num_models > max_models:
+        selectable_models = self.model_selection_dim
+        if selectable_models < min_models:
             return False
 
         # Check base model requirement
@@ -480,6 +472,7 @@ class MultiMethodGenome:
     def _simple_config(self, layer_group: LayerGroupGenome) -> MergeConfiguration:
         """Create a simple config when all layers use the same method."""
         method_name = METHOD_NAMES[layer_group.method]
+        min_models = METHOD_MIN_MODELS.get(layer_group.method, 1)
 
         # Select models based on weights
         selected_models = []
@@ -487,9 +480,9 @@ class MultiMethodGenome:
             if weight > 1e-6 and i < self.num_models:
                 selected_models.append((self.definition.models[i], weight))
 
-        if len(selected_models) < 2:
-            # Fallback: use top 2 models
-            indices = np.argsort(-layer_group.model_selection)[:2]
+        if len(selected_models) < min_models:
+            fallback_k = max(1, min_models)
+            indices = np.argsort(-layer_group.model_selection)[:fallback_k]
             selected_models = [
                 (self.definition.models[i], layer_group.model_selection[i])
                 for i in indices
@@ -756,11 +749,7 @@ class MultiMethodGenome:
 
                 # Validate method compatibility with current models
                 min_models = METHOD_MIN_MODELS.get(chosen_method, 2)
-                max_models = METHOD_MAX_MODELS.get(chosen_method, None)
-
-                if len(self.definition.models) < min_models or (
-                    max_models and len(self.definition.models) > max_models
-                ):
+                if self.model_selection_dim < min_models:
                     # Fall back to a compatible method
                     compatible_methods = [
                         m

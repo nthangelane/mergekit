@@ -1,8 +1,14 @@
 import numpy as np
 import torch
 
+from mergekit.common import ModelReference
 from mergekit.evo.cache_utils import genotype_exact_hash
+from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.ga import GAOptimizer, GAParams
+from mergekit.evo.multi_method_genome import (
+    MultiMethodGenome,
+    MultiMethodGenomeDefinition,
+)
 
 
 class FakeGenome:
@@ -150,3 +156,52 @@ def test_ga_optimizer_skips_persisted_failed_blacklist_entries():
     assert opt._last_eval_stats["evaluations"] == 1.0
     assert opt._last_eval_stats["cache_hits"] == 1.0
     assert opt._last_eval_stats["failed_evals"] == 1.0
+
+
+def test_enhanced_ga_seeds_passthrough_individuals(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    genome = MultiMethodGenome(
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear", "passthrough"],
+                "max_models_per_layer": 2,
+            }
+        )
+    )
+
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(population_size=3),
+        random_init=False,
+        seed=0,
+    )
+
+    pop = opt._init_population()
+
+    assert pop.shape[0] == 3
+    assert any(individual[0] == 1.0 for individual in pop[1:])
+    assert any(
+        np.allclose(individual[1:3], np.array([1.0, 0.0], dtype=np.float32))
+        or np.allclose(individual[1:3], np.array([0.0, 1.0], dtype=np.float32))
+        for individual in pop[1:]
+    )

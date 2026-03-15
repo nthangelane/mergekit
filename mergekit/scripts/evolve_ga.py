@@ -93,6 +93,39 @@ def _best_weighted_score_from_frame(frame: "pandas.DataFrame") -> Optional[float
     return float(numeric_scores.max())
 
 
+def _reusable_baseline_csv_path(
+    baseline_csv_path: str,
+    expected_models: List[str],
+) -> Optional[str]:
+    if not os.path.exists(baseline_csv_path):
+        return None
+
+    try:
+        frame = pandas.read_csv(baseline_csv_path)
+    except Exception as exc:
+        stage_log(
+            "Stage-Baseline",
+            f"Existing baseline_results.csv could not be read; rerunning baselines: {exc}",
+            level=logging.WARNING,
+        )
+        return None
+
+    if "model" not in frame.columns or "weighted_score" not in frame.columns:
+        return None
+
+    reusable_models = set(
+        frame.loc[
+            pandas.to_numeric(frame["weighted_score"], errors="coerce").notna(), "model"
+        ]
+        .dropna()
+        .astype(str)
+    )
+    if not set(expected_models).issubset(reusable_models):
+        return None
+
+    return baseline_csv_path
+
+
 def _score_improvement(
     current_score: float,
     baseline_score: float,
@@ -206,6 +239,39 @@ def prune_stale_merged_artifacts(
             entry.unlink(missing_ok=True)
 
 
+def _init_ray_for_baselines() -> None:
+    """Initialize Ray for baseline evaluation.
+
+    Prefer attaching to an existing cluster when `RAY_ADDRESS` is provided or when
+    a local auto-discovered instance exists. Fall back to a local runtime for
+    standalone local experiments.
+    """
+
+    if ray.is_initialized():
+        return
+
+    ray_address = os.environ.get("RAY_ADDRESS")
+    try:
+        ray.init(
+            address=ray_address or "auto",
+            ignore_reinit_error=True,
+            logging_level=logging.ERROR,
+        )
+    except ConnectionError:
+        if ray_address:
+            raise
+
+        stage_log(
+            "Stage-Baseline",
+            "No running Ray instance found; starting a local Ray runtime for baselines.",
+            level=logging.WARNING,
+        )
+        ray.init(
+            ignore_reinit_error=True,
+            logging_level=logging.ERROR,
+        )
+
+
 @click.command("mergekit-evolve-ga")
 @click.argument("genome-config-path", type=str)
 @click.option("--max-fevals", type=int, default=100)
@@ -266,6 +332,13 @@ def prune_stale_merged_artifacts(
     required=True,
 )
 @click.option("--num-gpus", type=int, help="Number of GPUs to use across all nodes")
+@click.option(
+    "--tensor-parallel-size",
+    type=click.IntRange(1, 10),
+    default=1,
+    show_default=True,
+    help="GPUs per vLLM evaluation replica (requires multi-GPU Ray workers)",
+)
 @click.option(
     "--num-workers",
     type=int,
@@ -367,6 +440,7 @@ def main(
     in_memory: bool,
     storage_path: Optional[str],
     num_gpus: Optional[int],
+    tensor_parallel_size: int,
     num_workers: Optional[int],
     merge_cuda: bool,
     trust_remote_code: bool,
@@ -414,6 +488,30 @@ def main(
     os.makedirs(storage_path, exist_ok=True)
     stage_log("Stage-Init", f"Storage path: {storage_path}")
     merge_cuda = _resolve_merge_cuda(merge_cuda, num_gpus)
+    if tensor_parallel_size > 1:
+        if not vllm:
+            raise click.ClickException(
+                "--tensor-parallel-size > 1 requires --vllm because the HF backend is single-GPU here."
+            )
+        if in_memory:
+            raise click.ClickException(
+                "--tensor-parallel-size > 1 is not supported with --in-memory."
+            )
+        if num_gpus is not None and num_gpus <= 0:
+            raise click.ClickException(
+                "--tensor-parallel-size > 1 requires --num-gpus to be greater than 0."
+            )
+        if num_gpus is not None and tensor_parallel_size > num_gpus:
+            raise click.ClickException(
+                "--tensor-parallel-size cannot exceed --num-gpus for a run."
+            )
+        stage_log(
+            "Stage-Init",
+            (
+                "Using vLLM tensor parallel evaluation with "
+                f"{tensor_parallel_size} GPU(s) per candidate."
+            ),
+        )
     failed_blacklist_scope = _failed_blacklist_scope(config)
     persisted_failed_genotypes = _load_failed_genotype_blacklist(
         storage_path, failed_blacklist_scope
@@ -603,6 +701,7 @@ def main(
         genome,
         merge_options,
         num_gpus=num_gpus,
+        tensor_parallel_size=tensor_parallel_size,
         num_workers=num_workers,
         vllm=vllm,
         in_memory=in_memory,
@@ -1313,14 +1412,20 @@ def run_baseline_evaluations(
         )
         return None
 
+    baseline_csv_path = _reusable_baseline_csv_path(
+        os.path.join(storage_dir, "baseline_results.csv"),
+        [str(model_ref) for model_ref in models],
+    )
+    if baseline_csv_path is not None:
+        stage_log(
+            "Stage-Baseline",
+            f"Reusing existing baseline metrics from {baseline_csv_path}",
+        )
+        return baseline_csv_path
+
     task_manager = create_task_manager(task_search_path)
 
-    if not ray.is_initialized():
-        ray.init(
-            address=os.environ.get("RAY_ADDRESS", "auto"),
-            ignore_reinit_error=True,
-            logging_level=logging.ERROR,
-        )
+    _init_ray_for_baselines()
 
     use_cuda = (merge_cuda or (num_gpus or 0) > 0) and (num_gpus or 0) > 0
     device = "cuda" if use_cuda else "cpu"
@@ -1347,7 +1452,7 @@ def run_baseline_evaluations(
         task_manager = create_task_manager(task_search_path)
         model_args: Dict[str, Any] = {
             "pretrained": model_name,
-            "dtype": "float32",
+            "dtype": "bfloat16",
             "use_cache": True,
             "trust_remote_code": trust_remote_code,
         }

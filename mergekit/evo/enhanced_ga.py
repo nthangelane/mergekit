@@ -286,6 +286,32 @@ class EnhancedGAOptimizer:
             x0 = x0.view(-1).numpy()
         pop.append(x0.copy().astype(np.float32))
 
+        if (
+            not self.random_init
+            and self.is_multi_method
+            and hasattr(self.genome, "definition")
+            and "passthrough" in self.genome.definition.allowed_methods
+            and getattr(self.genome, "method_dim", 0) > 0
+            and getattr(self.genome, "model_selection_dim", 0) > 0
+        ):
+            passthrough_idx = self.genome.definition.allowed_methods.index(
+                "passthrough"
+            )
+            model_start = self.genome.method_dim
+            model_end = model_start + self.genome.model_selection_dim
+            max_passthrough_seeds = min(
+                self.genome.model_selection_dim,
+                len(self.genome.definition.models),
+                self.pop_size - len(pop),
+            )
+
+            for model_idx in range(max_passthrough_seeds):
+                seed = x0.copy()
+                seed[0] = float(passthrough_idx)
+                seed[model_start:model_end] = 0.0
+                seed[model_start + model_idx] = 1.0
+                pop.append(seed.astype(np.float32))
+
         if not self.random_init and hasattr(self.genome, "models"):
             # Add model-specific seeds for traditional genomes
             if hasattr(self.genome, "definition") and hasattr(

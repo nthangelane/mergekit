@@ -40,6 +40,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
         num_fewshot,
         limit,
         vllm,
+        tensor_parallel_size,
         batch_size,
         task_manager,
         apply_chat_template,
@@ -51,6 +52,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
         captured["num_fewshot"] = num_fewshot
         captured["limit"] = limit
         captured["vllm"] = vllm
+        captured["tensor_parallel_size"] = tensor_parallel_size
         captured["batch_size"] = batch_size
         captured["task_manager"] = task_manager
         captured["apply_chat_template"] = apply_chat_template
@@ -72,6 +74,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
         "/tmp/merged-model",
         config,
         vllm=False,
+        tensor_parallel_size=1,
         batch_size=8,
         task_manager="task-manager",
         quantization_config=None,
@@ -81,6 +84,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
     assert captured["merged_path"] == "/tmp/merged-model"
     assert captured["tasks"] == ["task-a"]
     assert captured["vllm"] is False
+    assert captured["tensor_parallel_size"] == 1
     assert captured["model_kwargs"]["device"] == "cuda"
     assert captured["apply_chat_template"] is True
     assert captured["fewshot_as_multiturn"] is False

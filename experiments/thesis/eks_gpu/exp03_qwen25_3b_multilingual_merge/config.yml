@@ -5,8 +5,8 @@
 #
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
-#     experiments/thesis/exp03_qwen25_3b_multilingual_merge/config.yml \
-#     --storage-path workspace/thesis/exp03_qwen25_3b_multilingual_merge \
+#     experiments/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge/config.yml \
+#     --storage-path workspace/thesis/eks_gpu/exp03_qwen25_3b_multilingual_merge \
 #     --max-fevals 224 \
 #     --i-understand-the-depths-of-the-evils-i-am-unleashing
 
