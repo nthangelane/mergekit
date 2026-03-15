@@ -40,7 +40,7 @@ from mergekit.evo.helpers import (
     _eval_model,
     evaluate_model,
     evaluate_model_cpu,
-    merge_model,
+    merge_model_with_details,
 )
 from mergekit.evo.monkeypatch import (
     NoInit,
@@ -113,12 +113,25 @@ class OnDiskMergeEvaluator(MergeActorBase):
         except Exception:
             pass
         LOG.info("Merging model")
-        merged_path = merge_model(
+        merge_info = merge_model_with_details(
             genotype, self.genome, self.model_storage_path, self.merge_options
         )
+        merged_path = merge_info.get("merged_path")
         if not merged_path:
-            LOG.error("Model merge failed")
-            return {"score": None, "results": None}
+            LOG.error(
+                "Model merge failed: %s",
+                merge_info.get("error_message", "Unknown merge failure"),
+            )
+            return {
+                "score": None,
+                "results": None,
+                "error_stage": merge_info.get("error_stage", "merge"),
+                "error_type": merge_info.get("error_type", "merge_failed"),
+                "error_message": merge_info.get(
+                    "error_message",
+                    "Model merge failed",
+                ),
+            }
 
         model_kwargs = {
             "device": "cpu",
@@ -155,12 +168,25 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
         gc.collect()
         os.environ.setdefault("TRANSFORMERS_NO_CUDA", "1")
         LOG.info("Merging model (CPU)")
-        merged_path = merge_model(
+        merge_info = merge_model_with_details(
             genotype, self.genome, self.model_storage_path, self.merge_options
         )
+        merged_path = merge_info.get("merged_path")
         if not merged_path:
-            LOG.error("Model merge failed")
-            return {"score": None, "results": None}
+            LOG.error(
+                "Model merge failed: %s",
+                merge_info.get("error_message", "Unknown merge failure"),
+            )
+            return {
+                "score": None,
+                "results": None,
+                "error_stage": merge_info.get("error_stage", "merge"),
+                "error_type": merge_info.get("error_type", "merge_failed"),
+                "error_message": merge_info.get(
+                    "error_message",
+                    "Model merge failed",
+                ),
+            }
 
         model_kwargs = {
             "device": "cpu",
@@ -324,7 +350,13 @@ class InMemoryMergeEvaluator(MergeActorBase):
             config = self.genome.genotype_merge_config(genotype)
         except InvalidGenotypeError as e:
             LOG.error("Invalid genotype", exc_info=e)
-            return {"score": None, "results": None}
+            return {
+                "score": None,
+                "results": None,
+                "error_stage": "merge",
+                "error_type": "invalid_genotype",
+                "error_message": str(e),
+            }
 
         self._maybe_init_model(config)
 

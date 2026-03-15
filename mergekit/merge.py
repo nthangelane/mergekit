@@ -32,6 +32,13 @@ from mergekit.tokenizer import TokenizerInfo
 LOG = logging.getLogger(__name__)
 
 
+def _link_or_copy_file(src_path: str, dst_path: str) -> None:
+    try:
+        os.link(src_path, dst_path)
+    except OSError:
+        shutil.copy2(src_path, dst_path)
+
+
 def run_merge(
     merge_config: MergeConfiguration,
     out_path: str,
@@ -231,7 +238,7 @@ def _copy_tagalong_files(
         fp = os.path.join(donor_local_path, file_name)
         if os.path.exists(fp):
             LOG.info(f"Copying {file_name} from {donor_model}")
-            shutil.copy(
+            _link_or_copy_file(
                 fp,
                 os.path.join(out_path, file_name),
             )
@@ -263,7 +270,7 @@ def _copy_tokenizer(
             "merges.txt",
         ]:
             if os.path.exists(os.path.join(donor_local_path, file_name)):
-                shutil.copy(
+                _link_or_copy_file(
                     os.path.join(donor_local_path, file_name),
                     os.path.join(out_path, file_name),
                 )

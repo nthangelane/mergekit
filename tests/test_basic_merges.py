@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 
 import pytest
+import torch
 from transformers import AutoConfig
 
 from mergekit.config import (
@@ -116,6 +117,41 @@ class TestBasicMerges:
     def test_linear_merge(self, model_a, model_b):
         config = self.two_model_config(model_a, model_b, merge_method="linear")
         run_and_check_merge(config)
+
+    def test_linear_merge_of_identical_models_is_invariant_when_normalized(
+        self, model_a
+    ):
+        config = MergeConfiguration(
+            merge_method="linear",
+            models=[
+                InputModelDefinition(model=model_a, parameters={"weight": 1.0}),
+                InputModelDefinition(model=model_a, parameters={"weight": 2.0}),
+                InputModelDefinition(model=model_a, parameters={"weight": 3.0}),
+            ],
+            parameters={"normalize": True},
+        )
+
+        def _check_identity(merged_path: str):
+            source_loader = LazyTensorLoader.from_disk(model_a, lazy_unpickle=False)
+            merged_loader = LazyTensorLoader.from_disk(merged_path, lazy_unpickle=False)
+
+            assert set(source_loader.index.tensor_paths) == set(
+                merged_loader.index.tensor_paths
+            )
+
+            for tensor_name in sorted(source_loader.index.tensor_paths):
+                source_tensor = source_loader.get_tensor(tensor_name)
+                merged_tensor = merged_loader.get_tensor(tensor_name)
+                assert source_tensor.shape == merged_tensor.shape
+                max_diff = (merged_tensor - source_tensor).abs().max().item()
+                assert torch.allclose(
+                    merged_tensor,
+                    source_tensor,
+                    atol=1e-6,
+                    rtol=1e-5,
+                ), f"{tensor_name} drifted under normalized identical-model merge (max diff {max_diff})"
+
+        run_and_check_merge(config, validate=_check_identity)
 
     def test_slerp_merge(self, model_a, model_b):
         config = self.two_model_config(

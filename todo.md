@@ -1,0 +1,9 @@
+- [x] Fix score direction for loss-like metrics in GA evaluation.
+- [x] Audit baseline/upload comparison logic after score normalization.
+- [x] Make the CPU `serial` strategy actually serial or rename it.
+- [x] Fix merge timing and merge-failure reporting in serial CPU evaluation.
+- [x] Add a CLI override for evaluation `limit`.
+- [x] Clean up repeated `lm_eval` and Hugging Face warning noise.
+- [x] Add an invariance test for normalized merges of identical source models.
+- [x] Reduce repeated fetch and tokenizer-copy overhead per genotype.
+- [ ] Persist an exact-hash failed-genotype blacklist across runs.

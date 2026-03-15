@@ -24,10 +24,13 @@ from mergekit.evo.actors import (
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.helpers import (
+    evaluate_model_cpu,
     evaluate_model_ray,
     evaluate_model_ray_cpu,
+    merge_model_with_details,
     merge_model_ray,
     merge_model_ray_cpu,
+    merge_model_with_details_ray,
 )
 from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
@@ -309,11 +312,19 @@ def evaluate_genotype_serial(
     strat = ray.util.scheduling_strategies.PlacementGroupSchedulingStrategy(
         placement_group=pg
     )
-    merged_path = merge_model_ray.options(scheduling_strategy=strat).remote(
+    merge_info = merge_model_with_details_ray.options(scheduling_strategy=strat).remote(
         genotype, genome, model_storage_path, merge_options
     )
+    merge_info = ray.get(merge_info)
+    merged_path = merge_info.get("merged_path")
     if not merged_path:
-        return {"score": None, "results": None}
+        return {
+            "score": None,
+            "results": None,
+            "error_stage": merge_info.get("error_stage", "merge"),
+            "error_type": merge_info.get("error_type", "merge_failed"),
+            "error_message": merge_info.get("error_message", "Model merge failed"),
+        }
     kwargs = {}
     if quantization_config is not None:
         kwargs["quantization_config"] = quantization_config
@@ -335,8 +346,7 @@ def evaluate_genotype_serial(
     return res
 
 
-@ray.remote
-def evaluate_genotype_serial_cpu(
+def _evaluate_genotype_serial_cpu_impl(
     genotype: np.ndarray,
     config: EvolMergeConfiguration,
     genome: ModelGenome,
@@ -347,40 +357,93 @@ def evaluate_genotype_serial_cpu(
 ):
     import sys
     import time
-    start_time = time.time()
+
+    start_time = time.perf_counter()
     print(f"[EVAL] Starting genotype evaluation...", flush=True)
     sys.stdout.flush()
-    
+
     print(f"[EVAL] Step 1/2: Merging models...", flush=True)
     sys.stdout.flush()
-    merge_start = time.time()
-    merged_path = merge_model_ray_cpu.remote(
-        genotype, genome, model_storage_path, merge_options
+    merge_start = time.perf_counter()
+    merge_info = merge_model_with_details(
+        genotype,
+        genome,
+        model_storage_path,
+        merge_options,
     )
+    merged_path = merge_info.get("merged_path")
     if not merged_path:
-        print(f"[EVAL] Merge failed - returning None", flush=True)
+        merge_seconds = time.perf_counter() - merge_start
+        total_seconds = time.perf_counter() - start_time
+        print(
+            "[EVAL] Merge failed after "
+            f"{merge_seconds:.1f}s; skipping evaluation. "
+            f"reason={merge_info.get('error_type', 'merge_failed')}: "
+            f"{merge_info.get('error_message', 'Model merge failed')}",
+            flush=True,
+        )
+        print(f"[EVAL] Total time: {total_seconds:.1f}s | Score: N/A", flush=True)
         sys.stdout.flush()
-        return {"score": None, "results": None}
-    print(f"[EVAL] Merge completed in {time.time() - merge_start:.1f}s", flush=True)
+        return {
+            "score": None,
+            "results": None,
+            "error_stage": merge_info.get("error_stage", "merge"),
+            "error_type": merge_info.get("error_type", "merge_failed"),
+            "error_message": merge_info.get("error_message", "Model merge failed"),
+            "error": "merge_failed",
+        }
+    print(
+        f"[EVAL] Merge completed in {time.perf_counter() - merge_start:.1f}s",
+        flush=True,
+    )
     sys.stdout.flush()
-    
+
     print(f"[EVAL] Step 2/2: Evaluating merged model on {config.tasks}...", flush=True)
     sys.stdout.flush()
-    eval_start = time.time()
-    res = ray.get(
-        evaluate_model_ray_cpu.remote(
-            merged_path,
-            config.tasks,
-            num_fewshot=config.num_fewshot,
-            limit=config.limit,
-            batch_size=batch_size,
-            task_manager=task_manager,
-        )
+    eval_start = time.perf_counter()
+    res = evaluate_model_cpu(
+        merged_path,
+        config.tasks,
+        num_fewshot=config.num_fewshot,
+        limit=config.limit,
+        batch_size=batch_size,
+        task_manager=task_manager,
     )
-    print(f"[EVAL] Evaluation completed in {time.time() - eval_start:.1f}s", flush=True)
-    print(f"[EVAL] Total time: {time.time() - start_time:.1f}s | Score: {res.get('score', 'N/A')}", flush=True)
+    eval_seconds = time.perf_counter() - eval_start
+    if res.get("score") is None:
+        print(
+            f"[EVAL] Evaluation completed in {eval_seconds:.1f}s but returned no score",
+            flush=True,
+        )
+    else:
+        print(f"[EVAL] Evaluation completed in {eval_seconds:.1f}s", flush=True)
+    print(
+        f"[EVAL] Total time: {time.perf_counter() - start_time:.1f}s | Score: {res.get('score', 'N/A')}",
+        flush=True,
+    )
     sys.stdout.flush()
     return res
+
+
+@ray.remote
+def evaluate_genotype_serial_cpu(
+    genotype: np.ndarray,
+    config: EvolMergeConfiguration,
+    genome: ModelGenome,
+    merge_options: MergeOptions,
+    model_storage_path: Optional[str] = None,
+    batch_size: Optional[int] = None,
+    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+):
+    return _evaluate_genotype_serial_cpu_impl(
+        genotype,
+        config,
+        genome,
+        merge_options,
+        model_storage_path=model_storage_path,
+        batch_size=batch_size,
+        task_manager=task_manager,
+    )
 
 
 class SerialEvaluationStrategy(EvaluationStrategyBase):
@@ -423,12 +486,18 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         else:
             # CPU-only path: no GPUs available
             print(f"[SERIAL] Using CPU-only path (no GPUs detected)", flush=True)
-            print(f"[SERIAL] Spawning {len(genotypes)} Ray tasks for parallel evaluation...", flush=True)
             sys.stdout.flush()
-            results = ray.get(
-                [
-                    evaluate_genotype_serial_cpu.remote(
-                        x,
+            results = []
+            total = len(genotypes)
+            for idx, genotype in enumerate(genotypes, start=1):
+                print(
+                    f"[SERIAL] Evaluating genotype {idx}/{total} sequentially...",
+                    flush=True,
+                )
+                sys.stdout.flush()
+                results.append(
+                    _evaluate_genotype_serial_cpu_impl(
+                        genotype,
                         self.config,
                         self.genome,
                         self.merge_options,
@@ -436,9 +505,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                         batch_size=self.batch_size,
                         task_manager=self.task_manager,
                     )
-                    for x in genotypes
-                ]
-            )
+                )
             print(f"[SERIAL] All {len(genotypes)} evaluations completed!", flush=True)
             sys.stdout.flush()
             return results

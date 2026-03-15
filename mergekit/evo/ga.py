@@ -15,12 +15,15 @@
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import numpy as np
+
+from mergekit.evo.cache_utils import genotype_cache_key, persisted_failure_result
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.strategy import EvaluationStrategyBase
 
-OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, float]], None]
+OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
 OnGenerationStart = Callable[[int, int, int, int, float], None]
 
@@ -48,6 +51,21 @@ def _uniform_crossover(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
     mask = np.random.randint(0, 2, size=x1.shape, dtype=np.bool_)
     return np.where(mask, x1, x2)
 
+
+def _summarize_failure_reasons(results: List[dict]) -> str:
+    counts: Dict[str, int] = {}
+    for result in results:
+        if result.get("score") is not None:
+            continue
+        stage = result.get("error_stage") or "unknown"
+        error_type = result.get("error_type") or "unknown"
+        key = f"{stage}:{error_type}"
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return ""
+    return ";".join(f"{key}:{count}" for key, count in sorted(counts.items()))
+
+
 class GAOptimizer:
     """Simple genetic algorithm optimizer for model genome parameters.
 
@@ -62,6 +80,7 @@ class GAOptimizer:
         params: GAParams,
         random_init: bool = False,
         seed: Optional[int] = None,
+        persisted_failed_genotypes: Optional[Dict[str, dict]] = None,
         on_population_evaluated: Optional[OnPopulationEvaluated] = None,
         on_new_best: Optional[OnNewBest] = None,
         on_generation_start: Optional[OnGenerationStart] = None,
@@ -71,9 +90,16 @@ class GAOptimizer:
         self.params = params
         self.random_init = random_init
         self.rs = np.random.RandomState(seed) if seed is not None else np.random
+        self._persisted_failed_genotypes = dict(persisted_failed_genotypes or {})
         self.on_population_evaluated = on_population_evaluated
         self.on_new_best = on_new_best
         self.on_generation_start = on_generation_start
+        self._last_eval_stats: Dict[str, Any] = {
+            "evaluations": 0,
+            "cache_hits": 0,
+            "failed_evals": 0,
+            "failure_reasons": "",
+        }
 
         x0 = self.genome.initial_genotype(random=self.random_init).view(-1).numpy()
         self._baseline_genotype = x0.astype(np.float32)
@@ -130,6 +156,7 @@ class GAOptimizer:
                     "timestamp": datetime.datetime.now().isoformat(),
                     "generation": int(generation_idx),
                 }
+                info.update(self._last_eval_stats)
                 self.on_population_evaluated(res_list, pop, fevals, info)
             if gen_best_score > best_score:
                 best_score = gen_best_score
@@ -222,15 +249,26 @@ class GAOptimizer:
             cached = self._fitness_cache.get(k)
             if cached is not None:
                 results[i] = cached[1]
-            else:
-                to_eval.append(pop[i])
-                to_eval_idx.append(i)
+                continue
+
+            blacklisted = persisted_failure_result(
+                self._persisted_failed_genotypes, pop[i]
+            )
+            if blacklisted is not None:
+                self._fitness_cache[k] = (-np.inf, blacklisted)
+                results[i] = blacklisted
+                continue
+
+            to_eval.append(pop[i])
+            to_eval_idx.append(i)
 
         eval_results: List[dict] = []
         if to_eval:
             eval_results = list(self.strategy.evaluate_genotypes(to_eval))
             for i, res in zip(to_eval_idx, eval_results):
-                self._fitness_cache[keys[i]] = (float(res.get("score") or -np.inf), res)
+                score = res.get("score")
+                cache_score = float(score) if score is not None else -np.inf
+                self._fitness_cache[keys[i]] = (cache_score, res)
                 results[i] = res
 
         # type: ignore
@@ -238,6 +276,13 @@ class GAOptimizer:
         fitness = np.array(
             [r["score"] if r["score"] is not None else -np.inf for r in results_final]
         )
+        failures = sum(1 for r in results_final if r.get("score") is None)
+        self._last_eval_stats = {
+            "evaluations": float(len(to_eval)),
+            "cache_hits": float(len(pop) - len(to_eval)),
+            "failed_evals": float(failures),
+            "failure_reasons": _summarize_failure_reasons(results_final),
+        }
         return fitness, results_final
 
     def _select_parent(self, fitness: np.ndarray) -> int:
@@ -279,6 +324,4 @@ class GAOptimizer:
         x[mask] += noise[mask]
 
     def _hash(self, x: np.ndarray) -> Tuple[int, ...]:
-        r = max(self.params.cache_round, 1e-9)
-        q = np.round(x / r).astype(np.int64)
-        return tuple(q.tolist())
+        return genotype_cache_key(x, self.params.cache_round)

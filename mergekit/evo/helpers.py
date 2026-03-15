@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval
@@ -35,6 +36,31 @@ from mergekit.options import MergeOptions
 LOG = logging.getLogger(__name__)
 
 _CHAT_TEMPLATE_WARNING_EMITTED = False
+_LOWER_IS_BETTER_HINTS = (
+    "loss",
+    "error",
+    "perplexity",
+    "ppl",
+    "wer",
+    "cer",
+    "rmse",
+    "mae",
+    "mse",
+)
+_HIGHER_IS_BETTER_HINTS = (
+    "acc",
+    "accuracy",
+    "f1",
+    "bleu",
+    "rouge",
+    "mcc",
+    "pearson",
+    "spearman",
+    "pass@",
+)
+_DATASETS_TRUST_REMOTE_CODE_FRAGMENT = "`trust_remote_code` is not supported anymore."
+_LOCAL_MODEL_SHA_WARNING_PREFIX = "Failed to get model SHA for "
+_LOCAL_MODEL_SHA_WARNING_FRAGMENT = "Repo id must be in the form"
 
 
 def _emit_chat_template_retry_warning() -> None:
@@ -45,6 +71,92 @@ def _emit_chat_template_retry_warning() -> None:
             "Chat template requested but tokenizer lacks template; retrying without chat formatting."
         )
         _CHAT_TEMPLATE_WARNING_EMITTED = True
+
+
+class _ExpectedEvalNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if _DATASETS_TRUST_REMOTE_CODE_FRAGMENT in message:
+            return False
+        if (
+            message.startswith(_LOCAL_MODEL_SHA_WARNING_PREFIX)
+            and _LOCAL_MODEL_SHA_WARNING_FRAGMENT in message
+        ):
+            return False
+        return True
+
+
+@contextmanager
+def _suppress_expected_eval_noise():
+    """Temporarily filter known low-signal lm-eval/HF warnings.
+
+    These messages are expected for local merged checkpoints and for legacy
+    task YAMLs that still set `trust_remote_code` in dataset kwargs. They add
+    log spam but do not signal actionable failures for GA runs.
+    """
+
+    noise_filter = _ExpectedEvalNoiseFilter()
+    root_logger = logging.getLogger()
+    target_loggers = [
+        logging.getLogger("datasets.load"),
+        logging.getLogger("lm-eval"),
+    ]
+
+    seen_handlers = set()
+    handlers: List[logging.Handler] = []
+    for logger in [root_logger, *target_loggers]:
+        for handler in logger.handlers:
+            handler_id = id(handler)
+            if handler_id in seen_handlers:
+                continue
+            seen_handlers.add(handler_id)
+            handlers.append(handler)
+
+    for logger in target_loggers:
+        logger.addFilter(noise_filter)
+    for handler in handlers:
+        handler.addFilter(noise_filter)
+    try:
+        yield
+    finally:
+        for handler in handlers:
+            handler.removeFilter(noise_filter)
+        for logger in target_loggers:
+            logger.removeFilter(noise_filter)
+
+
+def _infer_higher_is_better(metric_name: str) -> bool:
+    metric_lower = metric_name.lower()
+    if any(token in metric_lower for token in _LOWER_IS_BETTER_HINTS):
+        return False
+    if any(token in metric_lower for token in _HIGHER_IS_BETTER_HINTS):
+        return True
+    return True
+
+
+def _metric_score_sign(results: Dict[str, Any], task_name: str, metric_name: str) -> float:
+    higher_is_better = (
+        results.get("higher_is_better", {}).get(task_name, {}).get(metric_name)
+    )
+    if higher_is_better is None:
+        higher_is_better = _infer_higher_is_better(metric_name)
+    return 1.0 if higher_is_better else -1.0
+
+
+def _failure_result(
+    stage: str,
+    error_type: str,
+    error_message: str,
+    *,
+    results: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "score": None,
+        "results": results or {},
+        "error_stage": stage,
+        "error_type": error_type,
+        "error_message": error_message,
+    }
 
 _SIGNATURE_FIELDS = (
     "architectures",
@@ -184,15 +296,16 @@ def _eval_model(
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     **kwargs,
 ) -> Dict[str, Any]:
-    results = lm_eval.simple_evaluate(
-        model=model,
-        model_args=model_args,
-        tasks=list(set([task.name for task in tasks])),
-        log_samples=False,
-        verbosity="WARNING",
-        task_manager=task_manager,
-        **kwargs,
-    )
+    with _suppress_expected_eval_noise():
+        results = lm_eval.simple_evaluate(
+            model=model,
+            model_args=model_args,
+            tasks=list(set([task.name for task in tasks])),
+            log_samples=False,
+            verbosity="WARNING",
+            task_manager=task_manager,
+            **kwargs,
+        )
 
     logging.info(results["results"])
     res = 0
@@ -203,6 +316,7 @@ def _eval_model(
 
         task_results = results["results"][task.name]
         metric_value = None
+        selected_metric = task.metric
 
         # Try the exact metric first
         if task.metric in task_results:
@@ -223,6 +337,7 @@ def _eval_model(
             for alt_metric in alternatives:
                 if alt_metric in task_results:
                     metric_value = task_results[alt_metric]
+                    selected_metric = alt_metric
                     logging.info(
                         f"Auto-detected metric for {task.name}: {alt_metric} instead of {task.metric}"
                     )
@@ -236,6 +351,7 @@ def _eval_model(
                     for metric in available_metrics:
                         if "perplexity" in metric.lower() and "stderr" not in metric:
                             metric_value = task_results[metric]
+                            selected_metric = metric
                             logging.info(
                                 f"Pattern-matched perplexity metric for {task.name}: {metric}"
                             )
@@ -245,6 +361,7 @@ def _eval_model(
                     for metric in available_metrics:
                         if "acc" in metric.lower() and "stderr" not in metric:
                             metric_value = task_results[metric]
+                            selected_metric = metric
                             logging.info(
                                 f"Pattern-matched accuracy metric for {task.name}: {metric}"
                             )
@@ -264,7 +381,19 @@ def _eval_model(
             logging.warning(f"NaN result for {task.name}:{task.metric}, skipping")
             continue
 
-        res += metric_value * task.weight
+        try:
+            numeric_metric = float(metric_value)
+        except (TypeError, ValueError):
+            logging.error(
+                "Non-numeric metric %r for %s:%s, skipping",
+                metric_value,
+                task.name,
+                selected_metric,
+            )
+            continue
+
+        sign = _metric_score_sign(results, task.name, selected_metric)
+        res += sign * numeric_metric * task.weight
     return {"score": res, "results": results["results"]}
 
 
@@ -284,7 +413,11 @@ def evaluate_model(
     try:
         if not merged_path:
             logging.error("No merged model path provided; skipping evaluation.")
-            return {"score": None, "results": {}}
+            return _failure_result(
+                "eval",
+                "missing_merged_path",
+                "No merged model path provided; skipping evaluation.",
+            )
         extra_model_kwargs = dict(model_kwargs or {})
         requested_device = extra_model_kwargs.pop("device", None)
         model_args = {
@@ -313,24 +446,7 @@ def evaluate_model(
             eval_kwargs["device"] = device_arg
 
         try:
-            res = _eval_model(
-                "vllm" if vllm else "huggingface",
-                tasks,
-                model_args,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                bootstrap_iters=0,
-                **eval_kwargs,
-            )
-        except ValueError as exc:
-            message = str(exc).lower()
-            if "chat template" in message and eval_kwargs.get("apply_chat_template"):
-                _emit_chat_template_retry_warning()
-                fallback_kwargs = dict(eval_kwargs)
-                fallback_kwargs["apply_chat_template"] = False
-                fallback_kwargs["fewshot_as_multiturn"] = False
+            try:
                 res = _eval_model(
                     "vllm" if vllm else "huggingface",
                     tasks,
@@ -340,10 +456,31 @@ def evaluate_model(
                     batch_size=batch_size,
                     task_manager=task_manager,
                     bootstrap_iters=0,
-                    **fallback_kwargs,
+                    **eval_kwargs,
                 )
-            else:
-                raise
+            except ValueError as exc:
+                message = str(exc).lower()
+                if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                    _emit_chat_template_retry_warning()
+                    fallback_kwargs = dict(eval_kwargs)
+                    fallback_kwargs["apply_chat_template"] = False
+                    fallback_kwargs["fewshot_as_multiturn"] = False
+                    res = _eval_model(
+                        "vllm" if vllm else "huggingface",
+                        tasks,
+                        model_args,
+                        num_fewshot=num_fewshot,
+                        limit=limit,
+                        batch_size=batch_size,
+                        task_manager=task_manager,
+                        bootstrap_iters=0,
+                        **fallback_kwargs,
+                    )
+                else:
+                    raise
+        except Exception as exc:
+            logging.error("Model evaluation failed", exc_info=exc)
+            return _failure_result("eval", type(exc).__name__, str(exc))
         else:
             _apply_metric_guards(res)
         return res
@@ -370,7 +507,11 @@ def evaluate_model_cpu(
     try:
         if not merged_path:
             logging.error("No merged model path provided; skipping CPU evaluation.")
-            return {"score": None, "results": {}}
+            return _failure_result(
+                "eval",
+                "missing_merged_path",
+                "No merged model path provided; skipping CPU evaluation.",
+            )
         extra_kwargs = dict(model_kwargs or {})
         # Force CPU execution regardless of caller-specified overrides
         device_override = extra_kwargs.pop("device", "cpu")
@@ -386,24 +527,7 @@ def evaluate_model_cpu(
         eval_kwargs: Dict[str, Any] = {"device": device_override}
         eval_kwargs.update(kwargs)
         try:
-            res = _eval_model(
-                "huggingface",
-                tasks,
-                model_args,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                bootstrap_iters=0,
-                **eval_kwargs,
-            )
-        except ValueError as exc:
-            message = str(exc).lower()
-            if "chat template" in message and eval_kwargs.get("apply_chat_template"):
-                _emit_chat_template_retry_warning()
-                fallback_kwargs = dict(eval_kwargs)
-                fallback_kwargs["apply_chat_template"] = False
-                fallback_kwargs["fewshot_as_multiturn"] = False
+            try:
                 res = _eval_model(
                     "huggingface",
                     tasks,
@@ -413,10 +537,31 @@ def evaluate_model_cpu(
                     batch_size=batch_size,
                     task_manager=task_manager,
                     bootstrap_iters=0,
-                    **fallback_kwargs,
+                    **eval_kwargs,
                 )
-            else:
-                raise
+            except ValueError as exc:
+                message = str(exc).lower()
+                if "chat template" in message and eval_kwargs.get("apply_chat_template"):
+                    _emit_chat_template_retry_warning()
+                    fallback_kwargs = dict(eval_kwargs)
+                    fallback_kwargs["apply_chat_template"] = False
+                    fallback_kwargs["fewshot_as_multiturn"] = False
+                    res = _eval_model(
+                        "huggingface",
+                        tasks,
+                        model_args,
+                        num_fewshot=num_fewshot,
+                        limit=limit,
+                        batch_size=batch_size,
+                        task_manager=task_manager,
+                        bootstrap_iters=0,
+                        **fallback_kwargs,
+                    )
+                else:
+                    raise
+        except Exception as exc:
+            logging.error("CPU model evaluation failed", exc_info=exc)
+            return _failure_result("eval", type(exc).__name__, str(exc))
         else:
             _apply_metric_guards(res)
         return res
@@ -428,12 +573,12 @@ def evaluate_model_cpu(
 evaluate_model_ray_cpu = ray.remote(num_cpus=1)(evaluate_model_cpu)
 
 
-def merge_model(
+def merge_model_with_details(
     genotype: torch.Tensor,
     genome: ModelGenome,
     model_storage_path: str,
     merge_options: MergeOptions,
-) -> str:
+) -> Dict[str, Any]:
     # monkeypatch_tqdm()
     try:
         # Handle both traditional and multi-method genomes
@@ -446,7 +591,12 @@ def merge_model(
         _validate_merge_compatibility(cfg, merge_options)
     except (InvalidGenotypeError, MultiMethodInvalidGenotypeError) as e:
         logging.error("Invalid genotype: %s", e)
-        return None
+        return {
+            "merged_path": None,
+            "error_stage": "merge",
+            "error_type": "invalid_genotype",
+            "error_message": str(e),
+        }
 
     os.makedirs(model_storage_path, exist_ok=True)
     res = tempfile.mkdtemp(prefix="merged", dir=model_storage_path)
@@ -455,8 +605,33 @@ def merge_model(
     except Exception as exc:  # pragma: no cover - run_merge handles many cases
         logging.error("Merge execution failed", exc_info=exc)
         shutil.rmtree(res, ignore_errors=True)
-        return None
-    return res
+        return {
+            "merged_path": None,
+            "error_stage": "merge",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+        }
+    return {
+        "merged_path": res,
+        "error_stage": None,
+        "error_type": None,
+        "error_message": None,
+    }
+
+
+def merge_model(
+    genotype: torch.Tensor,
+    genome: ModelGenome,
+    model_storage_path: str,
+    merge_options: MergeOptions,
+) -> str:
+    result = merge_model_with_details(
+        genotype,
+        genome,
+        model_storage_path,
+        merge_options,
+    )
+    return result["merged_path"]
 
 
 merge_model_ray = ray.remote(
@@ -466,11 +641,24 @@ merge_model_ray = ray.remote(
     retry_exceptions=[ConnectionError],
 )(merge_model)
 
+merge_model_with_details_ray = ray.remote(
+    num_cpus=1,
+    num_gpus=1,
+    max_retries=3,
+    retry_exceptions=[ConnectionError],
+)(merge_model_with_details)
+
 merge_model_ray_cpu = ray.remote(
     num_cpus=1,
     max_retries=3,
     retry_exceptions=[ConnectionError],
 )(merge_model)
+
+merge_model_with_details_ray_cpu = ray.remote(
+    num_cpus=1,
+    max_retries=3,
+    retry_exceptions=[ConnectionError],
+)(merge_model_with_details)
 
 
 def _apply_metric_guards(result: dict) -> None:
@@ -500,37 +688,55 @@ def _apply_metric_guards(result: dict) -> None:
         if perplexity is not None:
             try:
                 if float(perplexity) > 1e5:
+                    message = (
+                        f"Perplexity {float(perplexity):.3g} for task {task_name} exceeds guard threshold"
+                    )
                     logging.warning(
-                        "Perplexity %.3g for task %s exceeds guard threshold; marking evaluation as failed",
-                        float(perplexity),
-                        task_name,
+                        "%s; marking evaluation as failed",
+                        message,
                     )
                     result["score"] = None
+                    result.setdefault("error_stage", "eval")
+                    result.setdefault("error_type", "metric_guard")
+                    result.setdefault("error_message", message)
                     return
             except (TypeError, ValueError):
+                message = (
+                    f"Non-numeric perplexity {perplexity!r} for task {task_name}"
+                )
                 logging.warning(
-                    "Non-numeric perplexity %r for task %s; marking evaluation as failed",
-                    perplexity,
-                    task_name,
+                    "%s; marking evaluation as failed",
+                    message,
                 )
                 result["score"] = None
+                result.setdefault("error_stage", "eval")
+                result.setdefault("error_type", "metric_guard")
+                result.setdefault("error_message", message)
                 return
 
         if accuracy is not None:
             try:
                 if float(accuracy) < 1e-3:
+                    message = (
+                        f"Accuracy {float(accuracy):.3g} for task {task_name} below guard threshold"
+                    )
                     logging.warning(
-                        "Accuracy %.3g for task %s below guard threshold; marking evaluation as failed",
-                        float(accuracy),
-                        task_name,
+                        "%s; marking evaluation as failed",
+                        message,
                     )
                     result["score"] = None
+                    result.setdefault("error_stage", "eval")
+                    result.setdefault("error_type", "metric_guard")
+                    result.setdefault("error_message", message)
                     return
             except (TypeError, ValueError):
+                message = f"Non-numeric accuracy {accuracy!r} for task {task_name}"
                 logging.warning(
-                    "Non-numeric accuracy %r for task %s; marking evaluation as failed",
-                    accuracy,
-                    task_name,
+                    "%s; marking evaluation as failed",
+                    message,
                 )
                 result["score"] = None
+                result.setdefault("error_stage", "eval")
+                result.setdefault("error_type", "metric_guard")
+                result.setdefault("error_message", message)
                 return

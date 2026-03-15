@@ -14,6 +14,7 @@
 # along with this program. If not, see http://www.gnu.org/licenses/.
 
 import csv
+import hashlib
 import logging
 import math
 import os
@@ -73,6 +74,49 @@ LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
 def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
     """Emit a structured log message for high-level run stages."""
     LOGGER.log(level, "[%s] %s", stage, message)
+
+
+def _best_weighted_score_from_frame(frame: "pandas.DataFrame") -> Optional[float]:
+    """Return the best normalized score from a baseline/comparison table."""
+    if "weighted_score" not in frame.columns:
+        return None
+
+    numeric_scores = pandas.to_numeric(frame["weighted_score"], errors="coerce").dropna()
+    if numeric_scores.empty:
+        return None
+    return float(numeric_scores.max())
+
+
+def _score_improvement(
+    current_score: float,
+    baseline_score: float,
+) -> Tuple[float, Optional[float]]:
+    """Return absolute and percentage improvement over a baseline score.
+
+    Scores are already normalized so that larger is always better. Percentage
+    improvement is therefore measured against the baseline magnitude, not the
+    raw baseline sign, which keeps loss-derived negative scores intuitive.
+    """
+    delta = current_score - baseline_score
+    baseline_magnitude = abs(float(baseline_score))
+    if baseline_magnitude == 0.0:
+        return delta, None
+    return delta, (delta / baseline_magnitude) * 100.0
+
+
+def _meets_improvement_thresholds(
+    delta: float,
+    pct: Optional[float],
+    min_abs: float,
+    min_pct: float,
+) -> bool:
+    if delta < min_abs:
+        return False
+    if min_pct <= 0.0:
+        return True
+    if pct is None:
+        return False
+    return pct >= min_pct
 
 
 def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]] = None) -> None:
@@ -168,6 +212,12 @@ def prune_stale_merged_artifacts(storage_path: str, *, keep: Optional[List[Path]
 @click.option("--allow-crimes/--no-allow-crimes", is_flag=True, default=False)
 @click.option("--random-seed", type=int, default=0)
 @click.option("--batch-size", type=int, default=None, help="Batch size for evaluation")
+@click.option(
+    "--limit",
+    type=int,
+    default=None,
+    help="Evaluation sample limit (overrides YAML if set)",
+)
 @click.option("use_wandb", "--wandb/--no-wandb", is_flag=True, default=False)
 @click.option("--wandb-project", type=str, help="Wandb project name")
 @click.option("--wandb-entity", type=str, help="Wandb entity name")
@@ -258,6 +308,7 @@ def main(
     allow_crimes: bool,
     random_seed: int,
     batch_size: Optional[int],
+    limit: Optional[int],
     use_wandb: bool,
     wandb_project: Optional[str],
     wandb_entity: Optional[str],
@@ -287,6 +338,9 @@ def main(
     with open(genome_config_path, "r", encoding="utf-8") as config_file:
         raw_config = yaml.safe_load(config_file)
     config = EvolMergeConfiguration.model_validate(raw_config)
+    if limit is not None:
+        config = config.model_copy(update={"limit": limit})
+        stage_log("Stage-Init", f"Overriding evaluation limit from CLI: {limit}")
 
     stage_log("Stage-Init", "Validating configuration settings...")
     check_for_naughty_config(config, allow=allow_benchmark_tasks)
@@ -319,10 +373,7 @@ def main(
         if baseline_csv_path:
             try:
                 baseline_df = pandas.read_csv(baseline_csv_path)
-                if "weighted_score" in baseline_df.columns:
-                    numeric_scores = baseline_df["weighted_score"].dropna()
-                    if not numeric_scores.empty:
-                        baseline_best_score = float(numeric_scores.max())
+                baseline_best_score = _best_weighted_score_from_frame(baseline_df)
             except Exception as exc:  # pragma: no cover - defensive logging only
                 stage_log(
                     "Stage-Baseline",
@@ -535,6 +586,7 @@ def main(
     generation_durations: List[float] = []
     generation_best_history: List[float] = []
     last_global_best = float("-inf")
+    logged_failed_hashes: set[str] = set()
     total_generations = max(1, math.ceil(max_fevals / max(ga_params.population_size, 1)))
 
     def _format_time(seconds: Optional[float]) -> str:
@@ -654,6 +706,7 @@ def main(
         evaluations = int(info.get("evaluations", 0))
         cache_hits = int(info.get("cache_hits", 0))
         failed_evals = int(info.get("failed_evals", 0))
+        failure_reasons = str(info.get("failure_reasons", "") or "")
         crossover_children = int(info.get("crossover_children", 0))
         crossover_type = info.get("crossover_type", ga_params.crossover)
         immigrants = int(info.get("immigrants", 0))
@@ -695,11 +748,18 @@ def main(
         else:
             delta_str = f"{improvement:+.6f}"
 
+        def _hash_genotype_for_log(genotype_candidate: np.ndarray) -> str:
+            arr = np.asarray(genotype_candidate, dtype=np.float32).ravel()
+            round_step = max(float(ga_params.cache_round), 1e-9)
+            quantized = np.round(arr / round_step).astype(np.int64)
+            return hashlib.sha1(quantized.tobytes()).hexdigest()[:16]
+
         print(
             f"[GA] gen={generation} best={gen_best_str} mean={gen_mean_str} std={gen_std_str} "
             f"global_best={global_best_str} Δbest={delta_str} "
             f"evaluated={evaluations} cache_hits={cache_hits} failed={failed_evals} "
             f"crossover_children={crossover_children} type={crossover_type} immigrants={immigrants}"
+            + (f" failure_reasons={failure_reasons}" if failure_reasons else "")
         )
 
         generation_durations.append(max(float(eval_seconds), 0.0))
@@ -724,13 +784,13 @@ def main(
             header = (
                 "generation,fevals,gen_best,gen_mean,gen_std,best_so_far,mutation_sigma,"
                 "eval_seconds,timestamp,evaluations,cache_hits,failed_evals,crossover_children,"
-                "crossover_type,immigrants,base_model_counts,merge_method_counts\n"
+                "crossover_type,immigrants,base_model_counts,merge_method_counts,failure_reasons\n"
             )
             line = (
                 f"{generation},{step},{gen_best},{gen_mean},{gen_std},{best_so_far},"
                 f"{ga_params.mutation_sigma},{eval_seconds},{timestamp},{evaluations},"
                 f"{cache_hits},{failed_evals},{crossover_children},{crossover_type},{immigrants},"
-                f"{base_model_counts_str},{merge_method_counts_str}\n"
+                f"{base_model_counts_str},{merge_method_counts_str},{failure_reasons}\n"
             )
             if not os.path.exists(hist_path):
                 with open(hist_path, "w", encoding="utf-8") as f:
@@ -742,6 +802,43 @@ def main(
         except Exception as e:
             logging.warning("Failed to write ga_history.csv", exc_info=e)
 
+        try:
+            failed_path = os.path.join(storage_path, "failed_genotypes.csv")
+            file_exists = os.path.exists(failed_path)
+            with open(failed_path, "a", encoding="utf-8", newline="") as failed_file:
+                writer = csv.writer(failed_file)
+                if not file_exists:
+                    writer.writerow(
+                        [
+                            "generation",
+                            "fevals",
+                            "genotype_hash",
+                            "error_stage",
+                            "error_type",
+                            "error_message",
+                        ]
+                    )
+
+                for genotype_candidate, result in zip(genotype_iterable, res_list):
+                    if result.get("score") is not None:
+                        continue
+                    genotype_hash = _hash_genotype_for_log(np.asarray(genotype_candidate))
+                    if genotype_hash in logged_failed_hashes:
+                        continue
+                    logged_failed_hashes.add(genotype_hash)
+                    writer.writerow(
+                        [
+                            generation,
+                            step,
+                            genotype_hash,
+                            result.get("error_stage", "unknown"),
+                            result.get("error_type", "unknown"),
+                            result.get("error_message", ""),
+                        ]
+                    )
+        except Exception as e:
+            logging.warning("Failed to write failed_genotypes.csv", exc_info=e)
+
         # Log per-generation aggregates and extras
         tracker.log_metrics(
             {
@@ -751,6 +848,9 @@ def main(
                 "population/evaluations": float(evaluations),
                 "population/cache_hits": float(cache_hits),
                 "population/failed_evals": float(failed_evals),
+                "population/failure_reason_kinds": float(
+                    len([x for x in failure_reasons.split(";") if x])
+                ),
                 "population/gen_best": (
                     float(gen_best) if gen_best is not None else None
                 ),
@@ -872,16 +972,18 @@ def main(
             baseline_best_score is not None
             and math.isfinite(baseline_best_score)
         ):
-            baseline_delta = final_best - baseline_best_score
+            baseline_delta, baseline_pct_change = _score_improvement(
+                final_best,
+                baseline_best_score,
+            )
             summary_parts.append(
                 f"baseline_best={baseline_best_score:.4f}"
             )
             summary_parts.append(f"Δvs_baseline={baseline_delta:+.4f}")
-            if baseline_best_score != 0.0:
-                pct_change = (baseline_delta / baseline_best_score) * 100.0
+            if baseline_pct_change is not None:
                 pct_str = (
-                    f"Δvs_baseline_pct={pct_change:+.2f}%"
-                    if math.isfinite(pct_change)
+                    f"Δvs_baseline_pct={baseline_pct_change:+.2f}%"
+                    if math.isfinite(baseline_pct_change)
                     else "Δvs_baseline_pct=undefined"
                 )
             else:  # pragma: no cover - guard against zero baseline best
@@ -949,10 +1051,18 @@ def main(
                     f"- Best score: {best_score:.6f}",
                 ]
                 if baseline_best_score is not None and math.isfinite(baseline_best_score):
+                    baseline_delta, baseline_pct_change = _score_improvement(
+                        best_score,
+                        baseline_best_score,
+                    )
                     summary_lines.append(f"- Best baseline score: {baseline_best_score:.6f}")
                     summary_lines.append(
-                        f"- Δ vs baseline: {best_score - baseline_best_score:+.6f}"
+                        f"- Δ vs baseline: {baseline_delta:+.6f}"
                     )
+                    if baseline_pct_change is not None and math.isfinite(baseline_pct_change):
+                        summary_lines.append(
+                            f"- Δ vs baseline (%): {baseline_pct_change:+.2f}%"
+                        )
                 summary_lines.append("- Tasks:")
                 summary_lines.extend(task_lines)
                 with open(readme_path, "a", encoding="utf-8") as fp:
@@ -975,14 +1085,23 @@ def main(
                     )
                     allow_upload = False
                 else:
-                    delta = best_score - baseline_best_score
-                    pct = (delta / baseline_best_score) * 100.0 if baseline_best_score != 0 else float("inf")
-                    if delta < hf_min_improvement or pct < hf_min_improvement_pct:
+                    delta, pct = _score_improvement(best_score, baseline_best_score)
+                    if not _meets_improvement_thresholds(
+                        delta,
+                        pct,
+                        hf_min_improvement,
+                        hf_min_improvement_pct,
+                    ):
+                        pct_display = (
+                            f"{pct:+.2f}%"
+                            if pct is not None and math.isfinite(pct)
+                            else "undefined"
+                        )
                         stage_log(
                             "Stage-GA",
                             "Upload skipped: improvement thresholds not met. "
                             f"Δ={delta:+.6f} (min {hf_min_improvement:+.6f}), "
-                            f"Δ%={pct:+.2f}% (min {hf_min_improvement_pct:.2f}%).",
+                            f"Δ%={pct_display} (min {hf_min_improvement_pct:.2f}%).",
                             level=logging.WARNING,
                         )
                         allow_upload = False

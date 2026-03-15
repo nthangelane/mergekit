@@ -31,6 +31,30 @@ class FakeStrategy:
         return res
 
 
+class CountingFailureStrategy:
+    def __init__(self):
+        self.calls = 0
+
+    def evaluate_genotypes(self, genotypes):
+        self.calls += len(genotypes)
+        res = []
+        for genotype in genotypes:
+            flat = np.array(genotype).ravel().astype(np.float32)
+            if flat[0] < 0:
+                res.append(
+                    {
+                        "score": None,
+                        "results": None,
+                        "error_stage": "merge",
+                        "error_type": "invalid_genotype",
+                        "error_message": "negative leading weight",
+                    }
+                )
+            else:
+                res.append({"score": float(flat.sum()), "results": {}})
+        return res
+
+
 def test_ga_optimizer_improves_score():
     dim = 6
     genome = FakeGenome(dim=dim)
@@ -61,3 +85,34 @@ def test_ga_optimizer_improves_score():
 
     assert best_score > baseline, "GA should improve over baseline"
     assert best_x.shape[0] == dim, "Returned best_x should be flattened genotype"
+
+
+def test_ga_optimizer_caches_failed_genotypes_without_retry():
+    genome = FakeGenome(dim=4)
+    strategy = CountingFailureStrategy()
+    params = GAParams(population_size=4)
+    opt = GAOptimizer(
+        genome=genome,
+        strategy=strategy,  # type: ignore[arg-type]
+        params=params,
+        seed=0,
+    )
+    opt._fitness_cache = {}
+
+    failed = np.array([-1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    valid = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    pop = np.stack([failed, valid], axis=0)
+
+    fitness_first, results_first = opt._evaluate_population(pop)
+    fitness_second, results_second = opt._evaluate_population(pop)
+
+    assert strategy.calls == 2
+    assert np.isneginf(fitness_first[0])
+    assert fitness_first[1] == 1.0
+    assert np.array_equal(fitness_first, fitness_second)
+    assert results_first[0]["error_type"] == "invalid_genotype"
+    assert results_second[0]["error_message"] == "negative leading weight"
+    assert opt._last_eval_stats["evaluations"] == 0.0
+    assert opt._last_eval_stats["cache_hits"] == 2.0
+    assert opt._last_eval_stats["failed_evals"] == 1.0
+    assert opt._last_eval_stats["failure_reasons"] == "merge:invalid_genotype:1"

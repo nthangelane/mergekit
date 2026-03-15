@@ -118,8 +118,9 @@ Key GA options:
 - `--mutation-sigma`: Gaussian noise stddev for mutation (default 0.05)
 - `--crossover`: `arithmetic` or `uniform` (default `arithmetic`)
 - `--tournament-size`: selection tournament size (default 4)
+- `--limit`: max eval samples per task; useful for smoke tests and overrides YAML `limit`
 
-Shared options with `mergekit-evolve`: `--strategy (pool|buffered|serial)`, `--vllm`, `--in-memory`, `--wandb`, `--batch-size`, `--num-gpus`, `--timeout`, `--reshard`, `--trust-remote-code`, etc.
+Shared options with `mergekit-evolve`: `--strategy (pool|buffered|serial)`, `--vllm`, `--in-memory`, `--wandb`, `--batch-size`, `--limit`, `--num-gpus`, `--timeout`, `--reshard`, `--trust-remote-code`, etc.
 
 Outputs:
 
@@ -140,6 +141,7 @@ Example commands
 mergekit-evolve-ga \
   --strategy serial \
   --no-merge-cuda \
+  --limit 32 \
   --max-fevals 16 \
   --storage-path /tmp/mk-ga \
   examples/evolve_ga_tiny.yml
@@ -193,7 +195,7 @@ mergekit-evolve-ga \
 
 Example config
 
-- A tiny, quick-start config is included at `examples/evolve_ga_tiny.yml` (uses three copies of `EleutherAI/pythia-70m-deduped`). You can adjust `ga:` parameters in YAML or override via CLI flags.
+- A tiny, quick-start config is included at `examples/evolve_ga_tiny.yml` (uses three copies of `EleutherAI/pythia-70m-deduped`). You can adjust `ga:` parameters in YAML or override via CLI flags like `--limit 32` for a cheaper smoke test.
 
 #### TinyLlama SLM demo (M1-friendly)
 

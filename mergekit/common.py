@@ -6,6 +6,7 @@ import logging
 import os
 import os.path
 import warnings
+from functools import lru_cache
 from typing import (
     Any,
     Callable,
@@ -31,6 +32,34 @@ from transformers import AutoConfig, PretrainedConfig
 from typing_extensions import TypeVar
 
 from mergekit.io import LazyTensorLoader, ShardedTensorIndex
+
+
+@lru_cache(maxsize=None)
+def _snapshot_local_path(
+    repo_id: str,
+    revision: Optional[str],
+    cache_dir: Optional[str],
+) -> str:
+    has_safetensors = any(
+        fn.lower().endswith(".safetensors")
+        for fn in huggingface_hub.list_repo_files(
+            repo_id, repo_type="model", revision=revision
+        )
+    )
+    patterns = ["tokenizer.model", "*.json"]
+    if has_safetensors:
+        patterns.append("*.safetensors")
+    else:
+        patterns.append("*.bin")
+
+    return str(
+        huggingface_hub.snapshot_download(
+            repo_id,
+            revision=revision,
+            cache_dir=cache_dir,
+            allow_patterns=patterns,
+        )
+    )
 
 
 def _coerce_dtype_value(dtype: Optional[Union[str, torch.dtype]]) -> Optional[str]:
@@ -230,23 +259,13 @@ class ModelReference(BaseModel, frozen=True):
 
         path = self.model.path
         if not os.path.exists(path):
-            has_safetensors = any(
-                fn.lower().endswith(".safetensors")
-                for fn in huggingface_hub.list_repo_files(
-                    path, repo_type="model", revision=self.model.revision
-                )
+            normalized_cache_dir = (
+                os.path.abspath(cache_dir) if cache_dir is not None else None
             )
-            patterns = ["tokenizer.model", "*.json"]
-            if has_safetensors:
-                patterns.append("*.safetensors")
-            else:
-                patterns.append("*.bin")
-
-            path = huggingface_hub.snapshot_download(
+            path = _snapshot_local_path(
                 path,
-                revision=self.model.revision,
-                cache_dir=cache_dir,
-                allow_patterns=patterns,
+                self.model.revision,
+                normalized_cache_dir,
             )
         return path
 

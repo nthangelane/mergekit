@@ -78,6 +78,10 @@ mergekit-evolve-ga [OPTIONS] --storage-path PATH GENOME_CONFIG_PATH
 
 YAML configuration supports both traditional and enhanced GA parameters:
 
+- `limit`: optional top-level evaluation sample cap per task for faster smoke tests.
+- `num_fewshot`: optional top-level few-shot override passed to lm-eval.
+- `--limit` overrides the YAML `limit` value when provided on the CLI.
+
 #### Traditional Configuration
 ```yaml
 genome:
@@ -86,6 +90,7 @@ genome:
 tasks:
   - name: truthfulqa_mc
     weight: 1.0
+limit: 128
 ga:
   population_size: 32
   elite_fraction: 0.125
@@ -230,6 +235,7 @@ multi_method_genome:
 ### Execution Options
 
 - `--max-fevals`: maximum evaluations before stopping
+- `--limit`: maximum evaluation samples per task (overrides YAML `limit`)
 - `--timeout`: optional time budget in seconds
 
 Shared options with `mergekit-evolve`:
@@ -238,7 +244,7 @@ Shared options with `mergekit-evolve`:
 - `--vllm`: evaluate with vLLM backend
 - `--in-memory`: in-memory merges (pool strategy only)
 - `--wandb`: enable Weights & Biases logging
-- `--num-gpus`, `--batch-size`, `--reshard`, `--trust-remote-code`, etc.
+- `--num-gpus`, `--batch-size`, `--limit`, `--reshard`, `--trust-remote-code`, etc.
 
 ## Example Workflows
 
@@ -249,6 +255,7 @@ mergekit-evolve-ga \
   --storage-path /path/to/storage \
   --strategy pool \
   --population-size 32 \
+  --limit 64 \
   --max-fevals 100 \
   config_traditional.yml
 ```
@@ -273,6 +280,7 @@ mergekit-evolve-ga \
   --strategy serial \
   --no-merge-cuda \
   --num-gpus 0 \
+  --limit 32 \
   --max-fevals 16 \
   --storage-path /tmp/test \
   config_minimal.yml
@@ -292,6 +300,7 @@ You can run a full end-to-end pipeline on a CPU-only node using the serial strat
 mergekit-evolve-ga \
   --strategy serial \
   --no-merge-cuda \
+  --limit 32 \
   --max-fevals 16 \
   --storage-path /tmp/mk-ga \
   examples/evolve_ga_tiny.yml
@@ -300,6 +309,7 @@ mergekit-evolve-ga \
 Notes:
 - `--vllm` is GPU-only; omit it on CPU.
 - Serial strategy automatically switches to a CPU path when no GPUs are detected.
+- `--limit` is the fastest way to shrink eval cost for a quick verification run without editing the YAML file.
 
 ### Apple M1 Micro Example
 
