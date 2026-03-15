@@ -1356,24 +1356,39 @@ def _write_ga_outputs(storage_path: str) -> None:
             )
 
         gen_best_vals = [float(r.get("gen_best", 0.0) or 0.0) for r in rows]
-        min_v = min(gen_best_vals)
-        max_v = max(gen_best_vals)
+        finite_vals = [v for v in gen_best_vals if math.isfinite(v)]
         blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-        if max_v == min_v:
-            spark = "".join(blocks[0] for _ in gen_best_vals)
-        else:
-            spark = "".join(
-                blocks[
-                    min(
-                        len(blocks) - 1,
-                        max(0, int((v - min_v) / (max_v - min_v) * (len(blocks) - 1))),
-                    )
-                ]
-                for v in gen_best_vals
-            )
         f.write("\nGen-best sparkline:\n")
-        f.write(spark + "\n")
-        f.write(f"min={min_v:.5f} max={max_v:.5f}\n")
+        if not finite_vals:
+            f.write("(insufficient finite values)\n")
+            f.write("min=N/A max=N/A\n")
+        else:
+            min_v = min(finite_vals)
+            max_v = max(finite_vals)
+            if max_v == min_v:
+                spark = "".join(blocks[0] for _ in gen_best_vals)
+            else:
+                spark = "".join(
+                    blocks[
+                        min(
+                            len(blocks) - 1,
+                            max(
+                                0,
+                                int(
+                                    (
+                                        (v if math.isfinite(v) else min_v)
+                                        - min_v
+                                    )
+                                    / (max_v - min_v)
+                                    * (len(blocks) - 1)
+                                ),
+                            ),
+                        )
+                    ]
+                    for v in gen_best_vals
+                )
+            f.write(spark + "\n")
+            f.write(f"min={min_v:.5f} max={max_v:.5f}\n")
 
     # Optional plot (best/mean over generations)
     try:
