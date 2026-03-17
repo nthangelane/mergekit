@@ -16,6 +16,10 @@ from mergekit.common import ModelReference
 from mergekit.config import MergeConfiguration
 
 
+class InvalidGenotypeError(RuntimeError):
+    pass
+
+
 # Available merge methods as an enum for genetic encoding
 class MergeMethod(IntEnum):
     LINEAR = 0
@@ -252,6 +256,92 @@ class MultiMethodGenome:
         )
         self.total_dim = self.num_layer_groups * self.layer_group_dim
 
+    def method_name_from_gene_value(self, method_value: Union[float, int]) -> str:
+        """Decode a method gene into the configured method name."""
+        if not self.definition.allowed_methods:
+            raise ValueError("No allowed_methods configured for multi-method genome")
+
+        idx = int(
+            np.clip(float(method_value), 0, len(self.definition.allowed_methods) - 1)
+        )
+        return self.definition.allowed_methods[idx]
+
+    def method_gene_value(self, method_name: str) -> float:
+        """Encode a configured method name into the stored gene value."""
+        if method_name not in self.definition.allowed_methods:
+            raise ValueError(f"Method {method_name} is not enabled in allowed_methods")
+        return float(self.definition.allowed_methods.index(method_name))
+
+    def method_enum_from_name(self, method_name: str) -> MergeMethod:
+        return next(
+            method for method, name in METHOD_NAMES.items() if name == method_name
+        )
+
+    def project_model_selection_for_method(
+        self, model_weights: np.ndarray, method_name: str
+    ) -> np.ndarray:
+        """Project model-selection weights to satisfy the sampled method."""
+        weights = np.abs(np.asarray(model_weights, dtype=np.float32))
+        if weights.size == 0:
+            return weights
+
+        total = float(weights.sum())
+        if total <= 1e-8 or not np.isfinite(total):
+            weights[:] = 1.0 / float(len(weights))
+        else:
+            weights /= total
+
+        method_enum = self.method_enum_from_name(method_name)
+        max_models = METHOD_MAX_MODELS.get(method_enum, None)
+        if max_models is None:
+            return weights
+
+        top_k = max(1, int(max_models))
+        indices = np.argsort(-weights)[:top_k]
+        projected = np.zeros_like(weights)
+        projected[indices] = weights[indices]
+
+        if top_k == 1:
+            projected[indices[0]] = 1.0
+            return projected
+
+        projected_total = float(projected.sum())
+        if projected_total <= 1e-8 or not np.isfinite(projected_total):
+            projected[indices] = 1.0 / float(top_k)
+        else:
+            projected /= projected_total
+        return projected
+
+    def sample_parameters_for_method(
+        self,
+        method_name: str,
+        rs: Optional[np.random.RandomState] = None,
+    ) -> np.ndarray:
+        """Sample bounded method parameters for adaptive operator selection."""
+        random_state = rs if rs is not None else np.random.RandomState()
+        method = self.method_enum_from_name(method_name)
+        params = np.zeros(self.param_dim, dtype=np.float32)
+        param_count = METHOD_PARAM_COUNTS.get(method, 0)
+        if param_count == 0:
+            return params
+
+        if method_name in {"slerp", "nuslerp"}:
+            params[0] = float(random_state.uniform(0.2, 0.8))
+        elif method_name in {"linear", "task_arithmetic", "karcher", "model_stock"}:
+            params[0] = float(random_state.uniform(0.8, 1.2))
+        elif method_name in {"ties", "dare_ties", "dare_linear"}:
+            params[0] = float(random_state.uniform(0.8, 1.2))
+            if param_count > 1:
+                params[1] = float(random_state.uniform(0.2, 0.6))
+        else:
+            params[:param_count] = random_state.uniform(
+                0.0, 1.0, size=param_count
+            ).astype(np.float32)
+
+        return self._constrain_parameters(method, params[:param_count]).astype(
+            np.float32
+        )
+
     def initial_genotype(self, random: bool = False) -> torch.Tensor:
         """Generate an initial genotype."""
         if random:
@@ -315,10 +405,7 @@ class MultiMethodGenome:
             # Decode method
             if self.method_dim > 0:
                 method_val = genotype[offset]
-                method_idx = int(
-                    torch.clamp(method_val, 0, len(self.definition.allowed_methods) - 1)
-                )
-                method_name = self.definition.allowed_methods[method_idx]
+                method_name = self.method_name_from_gene_value(float(method_val))
                 method = MergeMethod[method_name.upper()]
             else:
                 method = MergeMethod.LINEAR  # Default
@@ -456,18 +543,450 @@ class MultiMethodGenome:
 
         return constrained
 
+    def _layer_range_for_index(self, layer_idx: int) -> Tuple[int, int]:
+        if self.definition.layer_granularity > 0:
+            start = layer_idx * self.definition.layer_granularity
+            end = min(start + self.definition.layer_granularity, self.num_layers)
+            return start, end
+        return 0, self.num_layers
+
+    def _select_models_for_layer_group(
+        self, layer_group: LayerGroupGenome
+    ) -> List[Tuple[ModelReference, float]]:
+        min_models = METHOD_MIN_MODELS.get(layer_group.method, 1)
+        selected_models: List[Tuple[ModelReference, float]] = []
+        for i, weight in enumerate(layer_group.model_selection):
+            if weight > 1e-6 and i < self.num_models:
+                selected_models.append((self.definition.models[i], float(weight)))
+
+        if len(selected_models) < min_models:
+            fallback_k = max(1, min_models)
+            indices = np.argsort(-layer_group.model_selection)[:fallback_k]
+            selected_models = [
+                (self.definition.models[i], float(layer_group.model_selection[i]))
+                for i in indices
+                if i < self.num_models
+            ]
+        return selected_models
+
+    def _neutral_layer_group_for_method(
+        self, method: MergeMethod, reference_group: LayerGroupGenome
+    ) -> LayerGroupGenome:
+        model_selection = np.zeros_like(
+            reference_group.model_selection, dtype=np.float32
+        )
+        preferred_idx = 0
+        if self.definition.base_model is not None:
+            for idx, model_ref in enumerate(self.definition.models):
+                if model_ref == self.definition.base_model:
+                    preferred_idx = idx
+                    break
+        elif len(reference_group.model_selection) > 0:
+            preferred_idx = int(np.argmax(reference_group.model_selection))
+
+        max_models = METHOD_MAX_MODELS.get(method, None)
+        min_models = METHOD_MIN_MODELS.get(method, 1)
+        if max_models == 1 or method == MergeMethod.PASSTHROUGH:
+            model_selection[preferred_idx] = 1.0
+        elif max_models == 2:
+            available = [
+                idx for idx in range(min(self.num_models, len(model_selection)))
+            ]
+            if preferred_idx in available:
+                available.remove(preferred_idx)
+            secondary_idx = available[0] if available else preferred_idx
+            model_selection[preferred_idx] = 1.0
+            if secondary_idx != preferred_idx:
+                model_selection[secondary_idx] = 1.0
+        else:
+            top_k = min(max(min_models, 1), len(model_selection))
+            if top_k <= 1:
+                model_selection[preferred_idx] = 1.0
+            else:
+                indices = np.argsort(-reference_group.model_selection)[:top_k]
+                if len(indices) == 0:
+                    model_selection[preferred_idx] = 1.0
+                else:
+                    model_selection[indices] = 1.0
+
+        total = float(model_selection.sum())
+        if total <= 1e-8:
+            model_selection[preferred_idx] = 1.0
+            total = float(model_selection.sum())
+        model_selection /= total
+
+        params = np.zeros(METHOD_PARAM_COUNTS.get(method, 0), dtype=np.float32)
+        if method in [
+            MergeMethod.LINEAR,
+            MergeMethod.TASK_ARITHMETIC,
+            MergeMethod.KARCHER,
+            MergeMethod.MODEL_STOCK,
+        ]:
+            params[0] = 1.0
+        elif method in [
+            MergeMethod.TIES,
+            MergeMethod.DARE_TIES,
+            MergeMethod.DARE_LINEAR,
+            MergeMethod.DELLA_LINEAR,
+        ]:
+            if len(params) > 0:
+                params[0] = 1.0
+            if len(params) > 1:
+                params[1] = 1.0
+        elif method in [
+            MergeMethod.BREADCRUMBS,
+            MergeMethod.BREADCRUMBS_TIES,
+            MergeMethod.DELLA,
+        ]:
+            if len(params) > 0:
+                params[0] = 1.0
+            if len(params) > 1:
+                params[1] = 1.0
+            if len(params) > 2:
+                params[2] = 0.5
+        elif method in [MergeMethod.SLERP, MergeMethod.NUSLERP]:
+            params[0] = 0.0
+
+        params = self._constrain_parameters(method, params)
+        return LayerGroupGenome(
+            method=method,
+            model_selection=model_selection,
+            parameters=params,
+        )
+
+    def _slice_entry_for_layer_group(
+        self,
+        layer_group: LayerGroupGenome,
+        layer_idx: int,
+        forced_method: Optional[MergeMethod] = None,
+    ) -> Dict[str, Any]:
+        method = forced_method or layer_group.method
+        group_for_slice = (
+            layer_group
+            if forced_method is None or layer_group.method == forced_method
+            else self._neutral_layer_group_for_method(forced_method, layer_group)
+        )
+        method_name = METHOD_NAMES[method]
+        selected_models = self._select_models_for_layer_group(group_for_slice)
+        start, end = self._layer_range_for_index(layer_idx)
+        slice_entry: Dict[str, Any] = {"sources": []}
+
+        if method_name in ["linear", "task_arithmetic", "karcher", "model_stock"]:
+            for model_ref, weight in selected_models:
+                weight_value = float(weight * group_for_slice.parameters[0])
+                slice_entry["sources"].append(
+                    {
+                        "model": model_ref,
+                        "layer_range": [start, end],
+                        "parameters": {
+                            "weight": float(np.nan_to_num(weight_value, nan=0.0))
+                        },
+                    }
+                )
+        elif method_name in ["ties", "dare_ties", "dare_linear", "della_linear"]:
+            density_value = (
+                float(np.clip(group_for_slice.parameters[1], 0.0, 1.0))
+                if len(group_for_slice.parameters) > 1
+                else 1.0
+            )
+            for model_ref, weight in selected_models:
+                weight_value = float(weight * group_for_slice.parameters[0])
+                params = {
+                    "weight": float(np.nan_to_num(weight_value, nan=0.0)),
+                    "density": density_value,
+                }
+                if (
+                    method_name == "della_linear"
+                    and len(group_for_slice.parameters) > 2
+                ):
+                    params["epsilon"] = float(
+                        np.clip(group_for_slice.parameters[2], 0.0, 1.0)
+                    )
+                slice_entry["sources"].append(
+                    {
+                        "model": model_ref,
+                        "layer_range": [start, end],
+                        "parameters": params,
+                    }
+                )
+        elif method_name in ["breadcrumbs", "breadcrumbs_ties", "della"]:
+            density_value = (
+                float(np.clip(group_for_slice.parameters[1], 0.0, 1.0))
+                if len(group_for_slice.parameters) > 1
+                else 1.0
+            )
+            third_value = (
+                float(np.clip(group_for_slice.parameters[2], 0.0, 1.0))
+                if len(group_for_slice.parameters) > 2
+                else 0.5
+            )
+            for model_ref, weight in selected_models:
+                weight_value = float(weight * group_for_slice.parameters[0])
+                params = {
+                    "weight": float(np.nan_to_num(weight_value, nan=0.0)),
+                    "density": density_value,
+                }
+                if method_name == "della":
+                    params["epsilon"] = third_value
+                else:
+                    params["gamma"] = third_value
+                slice_entry["sources"].append(
+                    {
+                        "model": model_ref,
+                        "layer_range": [start, end],
+                        "parameters": params,
+                    }
+                )
+        elif method_name == "slerp":
+            ordered = sorted(selected_models, key=lambda item: item[1], reverse=True)[
+                :2
+            ]
+            if len(ordered) < 2:
+                raise InvalidGenotypeError("SLERP requires at least 2 selected models")
+            (model1, weight1), (model2, weight2) = ordered
+            slice_entry = {
+                "sources": [
+                    {
+                        "model": model1,
+                        "layer_range": [start, end],
+                        "parameters": {"weight": float(weight1)},
+                    },
+                    {
+                        "model": model2,
+                        "layer_range": [start, end],
+                        "parameters": {"weight": float(weight2)},
+                    },
+                ],
+                "parameters": {
+                    "t": float(np.clip(group_for_slice.parameters[0], 0, 1))
+                },
+            }
+        elif method_name == "nuslerp":
+            filtered = [
+                (model, weight)
+                for model, weight in selected_models
+                if model != self.definition.base_model
+            ]
+            ordered = sorted(filtered, key=lambda item: abs(item[1]), reverse=True)[:2]
+            if len(ordered) < 2:
+                raise InvalidGenotypeError(
+                    "NuSLERP requires at least 2 non-base selected models"
+                )
+            scale = (
+                float(group_for_slice.parameters[0])
+                if len(group_for_slice.parameters)
+                else 1.0
+            )
+            slice_entry["sources"] = [
+                {
+                    "model": model_ref,
+                    "layer_range": [start, end],
+                    "parameters": {"weight": float(weight * scale)},
+                }
+                for model_ref, weight in ordered
+            ]
+        elif method_name == "passthrough":
+            model_ref = selected_models[0][0]
+            slice_entry["sources"] = [{"model": model_ref, "layer_range": [start, end]}]
+        elif method_name == "arcee_fusion":
+            for model_ref, _weight in selected_models[:2]:
+                slice_entry["sources"].append(
+                    {
+                        "model": model_ref,
+                        "layer_range": [start, end],
+                    }
+                )
+        else:
+            raise InvalidGenotypeError(
+                f"Unsupported method for slice config: {method_name}"
+            )
+
+        return slice_entry
+
+    def _config_common_fields(self) -> Dict[str, Any]:
+        config_dict: Dict[str, Any] = {"dtype": "bfloat16"}
+        if self.definition.base_model is not None:
+            config_dict["base_model"] = self.definition.base_model
+        if self.definition.tokenizer_source:
+            config_dict["tokenizer_source"] = self.definition.tokenizer_source
+        elif self.definition.base_model is not None:
+            config_dict["tokenizer_source"] = self.definition.base_model
+        return config_dict
+
+    def _single_method_layered_config(
+        self,
+        method: MergeMethod,
+        layer_groups: List[LayerGroupGenome],
+    ) -> MergeConfiguration:
+        method_name = METHOD_NAMES[method]
+        slices = [
+            self._slice_entry_for_layer_group(layer_group, layer_idx)
+            for layer_idx, layer_group in enumerate(layer_groups)
+        ]
+        config_dict: Dict[str, Any] = {
+            "merge_method": method_name,
+            "slices": slices,
+            **self._config_common_fields(),
+        }
+        if method_name in {
+            "linear",
+            "ties",
+            "dare_ties",
+            "task_arithmetic",
+            "dare_linear",
+        }:
+            config_dict["parameters"] = {"normalize": True, "int8_mask": True}
+        return MergeConfiguration.model_validate(config_dict)
+
+    def _mixed_method_plan(
+        self, layer_groups: List[LayerGroupGenome]
+    ) -> Dict[str, Any]:
+        methods_in_order: List[MergeMethod] = []
+        for layer_group in layer_groups:
+            if layer_group.method not in methods_in_order:
+                methods_in_order.append(layer_group.method)
+
+        components: List[Dict[str, Any]] = []
+        for method in methods_in_order:
+            component_name = METHOD_NAMES[method]
+            component_slices = [
+                self._slice_entry_for_layer_group(
+                    layer_group,
+                    layer_idx,
+                    forced_method=method,
+                )
+                for layer_idx, layer_group in enumerate(layer_groups)
+            ]
+            component_config = MergeConfiguration.model_validate(
+                {
+                    "merge_method": component_name,
+                    "slices": component_slices,
+                    **self._config_common_fields(),
+                    "parameters": (
+                        {"normalize": True, "int8_mask": True}
+                        if component_name
+                        in {
+                            "linear",
+                            "ties",
+                            "dare_ties",
+                            "task_arithmetic",
+                            "dare_linear",
+                        }
+                        else None
+                    ),
+                }
+            )
+            components.append(
+                {
+                    "name": component_name,
+                    "config": component_config,
+                }
+            )
+
+        final_slices: List[Dict[str, Any]] = []
+        current_component = METHOD_NAMES[layer_groups[0].method]
+        current_start, current_end = self._layer_range_for_index(0)
+        for layer_idx in range(1, len(layer_groups)):
+            component_name = METHOD_NAMES[layer_groups[layer_idx].method]
+            start, end = self._layer_range_for_index(layer_idx)
+            if component_name == current_component and start == current_end:
+                current_end = end
+                continue
+            final_slices.append(
+                {
+                    "component": current_component,
+                    "layer_range": [current_start, current_end],
+                }
+            )
+            current_component = component_name
+            current_start, current_end = start, end
+        final_slices.append(
+            {
+                "component": current_component,
+                "layer_range": [current_start, current_end],
+            }
+        )
+
+        return {
+            "kind": "layered",
+            "components": components,
+            "final_slices": final_slices,
+            "methods": [
+                METHOD_NAMES[layer_group.method] for layer_group in layer_groups
+            ],
+            "tokenizer_source": self.definition.tokenizer_source
+            or self.definition.base_model,
+        }
+
+    def genotype_to_merge_plan(
+        self, genotype: Union[torch.Tensor, np.ndarray]
+    ) -> Dict[str, Any]:
+        layer_groups = self.decode_genotype(genotype)
+        unique_methods = {layer_group.method for layer_group in layer_groups}
+        if len(unique_methods) == 1:
+            return {
+                "kind": "config",
+                "config": self._single_method_layered_config(
+                    layer_groups[0].method, layer_groups
+                ),
+                "methods": [METHOD_NAMES[layer_groups[0].method]],
+            }
+        return self._mixed_method_plan(layer_groups)
+
+    def method_label_for_genotype(
+        self, genotype: Union[torch.Tensor, np.ndarray]
+    ) -> str:
+        layer_groups = self.decode_genotype(genotype)
+        unique_methods = []
+        for layer_group in layer_groups:
+            method_name = METHOD_NAMES[layer_group.method]
+            if method_name not in unique_methods:
+                unique_methods.append(method_name)
+        if len(unique_methods) == 1:
+            return unique_methods[0]
+        return "layered_mixed"
+
+    def execution_plan_dict(
+        self, genotype: Union[torch.Tensor, np.ndarray]
+    ) -> Dict[str, Any]:
+        plan = self.genotype_to_merge_plan(genotype)
+        if plan["kind"] == "config":
+            config = plan["config"]
+            return {
+                "kind": "config",
+                "merge_method": config.merge_method,
+                "config": config.model_dump(exclude_defaults=True, mode="json"),
+            }
+        return {
+            "kind": "layered",
+            "components": [
+                {
+                    "name": component["name"],
+                    "config": component["config"].model_dump(
+                        exclude_defaults=True, mode="json"
+                    ),
+                }
+                for component in plan["components"]
+            ],
+            "final_slices": plan["final_slices"],
+            "methods": plan["methods"],
+            "tokenizer_source": (
+                str(plan["tokenizer_source"])
+                if plan.get("tokenizer_source") is not None
+                else None
+            ),
+        }
+
     def genotype_to_merge_config(
         self, genotype: Union[torch.Tensor, np.ndarray]
     ) -> MergeConfiguration:
         """Convert genotype to a MergeConfiguration."""
-        layer_groups = self.decode_genotype(genotype)
-
-        # Check if all layers use the same method (can use simple config)
-        methods = [lg.method for lg in layer_groups]
-        if len(set(methods)) == 1 and self.num_layer_groups == 1:
-            return self._simple_config(layer_groups[0])
-        else:
-            return self._complex_config(layer_groups)
+        plan = self.genotype_to_merge_plan(genotype)
+        if plan["kind"] != "config":
+            raise InvalidGenotypeError(
+                "Mixed-method layered genotypes require execution via genotype_to_merge_plan"
+            )
+        return plan["config"]
 
     def _simple_config(self, layer_group: LayerGroupGenome) -> MergeConfiguration:
         """Create a simple config when all layers use the same method."""
@@ -758,12 +1277,7 @@ class MultiMethodGenome:
                     ]
                     if compatible_methods:
                         method_name = np.random.choice(compatible_methods)
-                        method_enum = next(
-                            m for m, n in METHOD_NAMES.items() if n == method_name
-                        )
-                        child[offset] = float(
-                            list(METHOD_NAMES.keys()).index(method_enum)
-                        )
+                        child[offset] = self.method_gene_value(str(method_name))
             else:
                 source_lg = lg1[layer_idx]
 
@@ -845,11 +1359,7 @@ class MultiMethodGenome:
                 ]
                 if compatible_methods:
                     new_method_name = np.random.choice(compatible_methods)
-                    new_method_enum = next(
-                        m for m, n in METHOD_NAMES.items() if n == new_method_name
-                    )
-                    new_method_idx = list(METHOD_NAMES.keys()).index(new_method_enum)
-                    mutated[offset] = float(new_method_idx)
+                    mutated[offset] = self.method_gene_value(str(new_method_name))
 
             # Model selection mutation
             model_start = offset + self.method_dim

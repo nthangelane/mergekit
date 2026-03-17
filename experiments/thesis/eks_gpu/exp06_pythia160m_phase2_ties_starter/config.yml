@@ -1,0 +1,102 @@
+# Experiment 6: Pythia-160M phase-2 starter with TIES enabled.
+# This is a conservative cloud-side starter preset for the next size bracket.
+
+genome:
+  type: multi_method
+
+  models:
+    - EleutherAI/pythia-160m-deduped
+    - EleutherAI/pythia-160m
+
+  base_model: EleutherAI/pythia-160m-deduped
+  tokenizer_source: base
+
+  allowed_methods:
+    - passthrough
+    - linear
+    - slerp
+    - ties
+
+  layer_granularity: 2
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: boolq
+    weight: 0.25
+    metric: acc,none
+  - name: piqa
+    weight: 0.25
+    metric: acc,none
+  - name: sciq
+    weight: 0.20
+    metric: acc,none
+  - name: arc_easy
+    weight: 0.15
+    metric: acc,none
+  - name: wikitext
+    weight: 0.15
+    metric: byte_perplexity,none
+
+two_stage: true
+stage1_tasks:
+  - name: boolq
+    weight: 0.35
+    metric: acc,none
+  - name: sciq
+    weight: 0.35
+    metric: acc,none
+  - name: wikitext
+    weight: 0.30
+    metric: byte_perplexity,none
+stage1_limit: 16
+stage2_limit: 64
+stage2_top_k: 8
+
+random_init: false
+
+ga:
+  population_size: 16
+  elite_fraction: 0.125
+  mutation_rate: 0.12
+  mutation_sigma: 0.02
+  crossover: semantic
+  semantic_crossover_prob: 0.80
+  method_mutation_rate: 0.12
+  model_mutation_rate: 0.10
+  parameter_mutation_rate: 0.12
+  tournament_size: 4
+  adaptive_method_sampling: true
+  initial_method_probs:
+    passthrough: 0.20
+    linear: 0.35
+    slerp: 0.30
+    ties: 0.15
+  operator_temperature: 1.0
+  operator_update_smoothing: 0.20
+  operator_avg_child_weight: 0.50
+  operator_parent_improvement_weight: 0.30
+  operator_survival_weight: 0.20
+  passthrough_penalty: 0.01
+  passthrough_max_fraction: 0.25
+  explorer_fraction: 0.25
+  diversity_parent_selection: true
+  diversity_parent_weight: 0.15
+  gene_diversity_bonus_weight: 0.03
+  behavior_diversity_bonus_weight: 0.02
+
+behavior_prompts:
+  - "Answer briefly: The capital of Germany is"
+  - "Continue: The sun rises in the"
+behavior_probe_max_new_tokens: 24
+behavior_repetition_ngram_size: 4
+behavior_min_distinct_ratio: 0.15
+behavior_reject_on_degenerate: true
+
+limit: 64
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

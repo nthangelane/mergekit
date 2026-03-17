@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -20,7 +21,7 @@ import transformers
 
 from mergekit.common import ModelReference
 from mergekit.config import MergeConfiguration
-from mergekit.evo.config import TaskConfiguration
+from mergekit.evo.config import PHASE1_TASK_MIX_PROFILES, TaskConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
 from mergekit.evo.monkeypatch import monkeypatch_lmeval_vllm
 
@@ -147,6 +148,173 @@ def _metric_score_sign(
     return 1.0 if higher_is_better else -1.0
 
 
+def _normalize_higher_is_better_metric(value: float) -> float:
+    if 0.0 <= value <= 1.0:
+        return value
+    if 0.0 <= value <= 100.0:
+        return value / 100.0
+    return value / (1.0 + abs(value))
+
+
+def _normalize_lower_is_better_metric(value: float) -> float:
+    safe_value = max(0.0, float(value))
+    return 1.0 / (1.0 + safe_value)
+
+
+def _weighted_average(pairs: List[tuple[float, float]]) -> float:
+    total_weight = float(sum(weight for weight, _ in pairs))
+    if total_weight <= 0.0:
+        return 0.0
+    return float(sum(weight * value for weight, value in pairs) / total_weight)
+
+
+def _resolve_metric_value(
+    task: TaskConfiguration, task_results: Dict[str, Any]
+) -> tuple[Optional[str], Optional[float]]:
+    metric_value = None
+    selected_metric = task.metric
+
+    if task.metric in task_results:
+        metric_value = task_results[task.metric]
+    else:
+        metric_alternatives = {
+            "ppl,none": [
+                "word_perplexity,none",
+                "perplexity,none",
+                "byte_perplexity,none",
+            ],
+            "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
+            "acc_norm,none": ["acc_norm,none", "acc,none", "accuracy,none"],
+        }
+        for alt_metric in metric_alternatives.get(task.metric, []):
+            if alt_metric in task_results:
+                metric_value = task_results[alt_metric]
+                selected_metric = alt_metric
+                break
+
+        if metric_value is None:
+            available_metrics = list(task_results.keys())
+            if "ppl" in task.metric or "perplexity" in task.metric:
+                for metric in available_metrics:
+                    if "perplexity" in metric.lower() and "stderr" not in metric:
+                        metric_value = task_results[metric]
+                        selected_metric = metric
+                        break
+            elif "acc" in task.metric:
+                for metric in available_metrics:
+                    if "acc" in metric.lower() and "stderr" not in metric:
+                        metric_value = task_results[metric]
+                        selected_metric = metric
+                        break
+
+    if metric_value is None:
+        return None, None
+    if isinstance(metric_value, float) and math.isnan(metric_value):
+        return selected_metric, None
+    try:
+        return selected_metric, float(metric_value)
+    except (TypeError, ValueError):
+        return selected_metric, None
+
+
+def score_evaluation_payload(
+    eval_payload: Dict[str, Any],
+    tasks: List[TaskConfiguration],
+    *,
+    fitness_mode: str = "weighted_sum",
+    task_mix_profile: Optional[str] = None,
+    behavior_probe: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    task_results_map = eval_payload.get("results", {})
+    weighted_sum_score = 0.0
+    task_pairs: List[tuple[float, float]] = []
+    language_pairs: List[tuple[float, float]] = []
+    valid_metrics = 0
+
+    for task in tasks:
+        if task.name not in task_results_map:
+            logging.warning("Task %s not found in results", task.name)
+            continue
+
+        selected_metric, metric_value = _resolve_metric_value(
+            task, task_results_map[task.name]
+        )
+        if metric_value is None:
+            logging.error(
+                "Could not resolve metric %s for task %s. Available: %s",
+                task.metric,
+                task.name,
+                list(task_results_map[task.name].keys()),
+            )
+            continue
+
+        sign = _metric_score_sign(
+            eval_payload, task.name, selected_metric or task.metric
+        )
+        weighted_sum_score += sign * metric_value * task.weight
+        valid_metrics += 1
+
+        if sign > 0:
+            task_pairs.append(
+                (float(task.weight), _normalize_higher_is_better_metric(metric_value))
+            )
+        else:
+            language_pairs.append(
+                (float(task.weight), _normalize_lower_is_better_metric(metric_value))
+            )
+
+    if fitness_mode != "structured_phase1_tiny":
+        return {
+            "score": weighted_sum_score,
+            "results": task_results_map,
+            "fitness_components": {
+                "raw_weighted_score": weighted_sum_score,
+                "behavior_diversity_score": (
+                    float(behavior_probe.get("behavior_diversity_score", 0.0))
+                    if behavior_probe
+                    else 0.0
+                ),
+            },
+        }
+
+    profile = PHASE1_TASK_MIX_PROFILES.get(task_mix_profile or "tiny_local_default")
+    if not profile:
+        return {
+            "score": weighted_sum_score,
+            "results": task_results_map,
+            "fitness_components": {"raw_weighted_score": weighted_sum_score},
+        }
+
+    task_score = _weighted_average(task_pairs)
+    language_quality = _weighted_average(language_pairs)
+    metric_coverage = float(valid_metrics / len(tasks)) if tasks else 0.0
+    behavior_stability = (
+        float(behavior_probe.get("stability_score", 1.0)) if behavior_probe else 1.0
+    )
+    stability_score = (metric_coverage + behavior_stability) / 2.0
+    structured_score = (
+        float(profile["task_score_weight"]) * task_score
+        + float(profile["language_quality_weight"]) * language_quality
+        + float(profile["stability_weight"]) * stability_score
+    )
+    return {
+        "score": structured_score,
+        "results": task_results_map,
+        "fitness_components": {
+            "raw_weighted_score": weighted_sum_score,
+            "task_score": task_score,
+            "language_quality": language_quality,
+            "stability_score": stability_score,
+            "behavior_diversity_score": (
+                float(behavior_probe.get("behavior_diversity_score", 0.0))
+                if behavior_probe
+                else 0.0
+            ),
+            "diversity_bonus": 0.0,
+        },
+    }
+
+
 def _failure_result(
     stage: str,
     error_type: str,
@@ -160,6 +328,121 @@ def _failure_result(
         "error_stage": stage,
         "error_type": error_type,
         "error_message": error_message,
+    }
+
+
+def _distinct_token_ratio(text: str) -> float:
+    tokens = [token for token in text.split() if token]
+    if not tokens:
+        return 0.0
+    return float(len(set(tokens)) / len(tokens))
+
+
+def _has_repetition_loop(text: str, ngram_size: int) -> bool:
+    tokens = [token for token in text.split() if token]
+    if len(tokens) < ngram_size * 2:
+        return False
+    seen = {}
+    for idx in range(len(tokens) - ngram_size + 1):
+        ngram = tuple(tokens[idx : idx + ngram_size])
+        if ngram in seen and idx - seen[ngram] <= ngram_size:
+            return True
+        seen[ngram] = idx
+    return False
+
+
+def _run_behavior_probe(
+    merged_path: str,
+    prompts: List[str],
+    *,
+    max_new_tokens: int,
+    repetition_ngram_size: int,
+    min_distinct_ratio: float,
+    device: str,
+    model_kwargs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    load_kwargs: Dict[str, Any] = {"local_files_only": True}
+    extra_kwargs = dict(model_kwargs or {})
+    dtype_value = extra_kwargs.get("dtype")
+    if isinstance(dtype_value, str) and hasattr(torch, dtype_value):
+        load_kwargs["torch_dtype"] = getattr(torch, dtype_value)
+    if extra_kwargs.get("quantization_config") is not None:
+        load_kwargs["quantization_config"] = extra_kwargs["quantization_config"]
+    if extra_kwargs.get("low_cpu_mem_usage") is not None:
+        load_kwargs["low_cpu_mem_usage"] = extra_kwargs["low_cpu_mem_usage"]
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        merged_path, local_files_only=True
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        merged_path, **load_kwargs
+    )
+    model.to(device)
+    model.eval()
+
+    outputs: List[str] = []
+    degenerate_outputs = 0
+    distinct_ratios: List[float] = []
+    reject_reasons: List[str] = []
+    try:
+        for prompt in prompts:
+            encoded = tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+            )
+            encoded = {key: value.to(device) for key, value in encoded.items()}
+            with torch.no_grad():
+                generated = model.generate(
+                    **encoded,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            completion_tokens = generated[0][encoded["input_ids"].shape[-1] :]
+            completion = tokenizer.decode(
+                completion_tokens, skip_special_tokens=True
+            ).strip()
+            outputs.append(completion)
+            distinct_ratio = _distinct_token_ratio(completion)
+            distinct_ratios.append(distinct_ratio)
+
+            reasons = []
+            if not completion:
+                reasons.append("empty_output")
+            if _has_repetition_loop(completion, repetition_ngram_size):
+                reasons.append("repetition_loop")
+            if distinct_ratio < min_distinct_ratio:
+                reasons.append("low_distinct_ratio")
+            if reasons:
+                degenerate_outputs += 1
+                reject_reasons.append(f"{prompt[:24]}...:{','.join(reasons)}")
+    finally:
+        del model
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()
+
+    unique_output_fraction = float(len(set(outputs)) / len(outputs)) if outputs else 0.0
+    mean_distinct_ratio = (
+        float(sum(distinct_ratios) / len(distinct_ratios)) if distinct_ratios else 0.0
+    )
+    behavior_diversity_score = (unique_output_fraction + mean_distinct_ratio) / 2.0
+    stability_score = (
+        float(1.0 - (degenerate_outputs / len(outputs))) if outputs else 0.0
+    )
+    rejected = degenerate_outputs > 0
+    return {
+        "outputs": outputs,
+        "unique_output_fraction": unique_output_fraction,
+        "mean_distinct_ratio": mean_distinct_ratio,
+        "behavior_diversity_score": behavior_diversity_score,
+        "degenerate_output_count": float(degenerate_outputs),
+        "stability_score": stability_score,
+        "rejected": rejected,
+        "reject_reason": ";".join(reject_reasons) if reject_reasons else None,
     }
 
 
@@ -371,6 +654,9 @@ def _eval_model(
     tasks: List[TaskConfiguration],
     model_args: Optional[Dict[str, Any]] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    fitness_mode: str = "weighted_sum",
+    task_mix_profile: Optional[str] = None,
+    behavior_probe: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> Dict[str, Any]:
     with _suppress_expected_eval_noise():
@@ -383,95 +669,14 @@ def _eval_model(
             task_manager=task_manager,
             **kwargs,
         )
-
     logging.info(results["results"])
-    res = 0
-    for task in tasks:
-        if task.name not in results["results"]:
-            logging.warning(f"Task {task.name} not found in results")
-            continue
-
-        task_results = results["results"][task.name]
-        metric_value = None
-        selected_metric = task.metric
-
-        # Try the exact metric first
-        if task.metric in task_results:
-            metric_value = task_results[task.metric]
-        else:
-            # Auto-detect common metric alternatives
-            metric_alternatives = {
-                "ppl,none": [
-                    "word_perplexity,none",
-                    "perplexity,none",
-                    "byte_perplexity,none",
-                ],
-                "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
-                "acc_norm,none": ["acc_norm,none", "acc,none", "accuracy,none"],
-            }
-
-            alternatives = metric_alternatives.get(task.metric, [])
-            for alt_metric in alternatives:
-                if alt_metric in task_results:
-                    metric_value = task_results[alt_metric]
-                    selected_metric = alt_metric
-                    logging.info(
-                        f"Auto-detected metric for {task.name}: {alt_metric} instead of {task.metric}"
-                    )
-                    break
-
-            # If still not found, try pattern matching
-            if metric_value is None:
-                available_metrics = list(task_results.keys())
-                if "ppl" in task.metric or "perplexity" in task.metric:
-                    # Look for any perplexity metric
-                    for metric in available_metrics:
-                        if "perplexity" in metric.lower() and "stderr" not in metric:
-                            metric_value = task_results[metric]
-                            selected_metric = metric
-                            logging.info(
-                                f"Pattern-matched perplexity metric for {task.name}: {metric}"
-                            )
-                            break
-                elif "acc" in task.metric:
-                    # Look for any accuracy metric
-                    for metric in available_metrics:
-                        if "acc" in metric.lower() and "stderr" not in metric:
-                            metric_value = task_results[metric]
-                            selected_metric = metric
-                            logging.info(
-                                f"Pattern-matched accuracy metric for {task.name}: {metric}"
-                            )
-                            break
-
-        # Handle invalid values
-        if metric_value is None:
-            logging.error(
-                f"Could not find metric {task.metric} for task {task.name}. Available: {list(task_results.keys())}"
-            )
-            continue
-
-        # Handle NaN values
-        import math
-
-        if isinstance(metric_value, float) and math.isnan(metric_value):
-            logging.warning(f"NaN result for {task.name}:{task.metric}, skipping")
-            continue
-
-        try:
-            numeric_metric = float(metric_value)
-        except (TypeError, ValueError):
-            logging.error(
-                "Non-numeric metric %r for %s:%s, skipping",
-                metric_value,
-                task.name,
-                selected_metric,
-            )
-            continue
-
-        sign = _metric_score_sign(results, task.name, selected_metric)
-        res += sign * numeric_metric * task.weight
-    return {"score": res, "results": results["results"]}
+    return score_evaluation_payload(
+        results,
+        tasks,
+        fitness_mode=fitness_mode,
+        task_mix_profile=task_mix_profile,
+        behavior_probe=behavior_probe,
+    )
 
 
 def evaluate_model(
@@ -484,6 +689,13 @@ def evaluate_model(
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     model_kwargs: Optional[Dict[str, Any]] = None,
+    fitness_mode: str = "weighted_sum",
+    task_mix_profile: Optional[str] = None,
+    behavior_prompts: Optional[List[str]] = None,
+    behavior_probe_max_new_tokens: int = 24,
+    behavior_repetition_ngram_size: int = 4,
+    behavior_min_distinct_ratio: float = 0.2,
+    behavior_reject_on_degenerate: bool = False,
     **kwargs,
 ) -> dict:
     # monkeypatch_tqdm()
@@ -523,7 +735,30 @@ def evaluate_model(
         if device_arg is not None:
             eval_kwargs["device"] = device_arg
 
+        behavior_probe = None
         try:
+            if behavior_prompts:
+                behavior_probe = _run_behavior_probe(
+                    merged_path,
+                    list(behavior_prompts),
+                    max_new_tokens=behavior_probe_max_new_tokens,
+                    repetition_ngram_size=behavior_repetition_ngram_size,
+                    min_distinct_ratio=behavior_min_distinct_ratio,
+                    device=str(
+                        eval_kwargs.get("device", "cuda" if not vllm else "cuda")
+                    ),
+                    model_kwargs=model_args,
+                )
+                if behavior_reject_on_degenerate and behavior_probe.get("rejected"):
+                    return _failure_result(
+                        "smoke_test",
+                        "degenerate_output",
+                        str(
+                            behavior_probe.get("reject_reason")
+                            or "Behavior probe failed"
+                        ),
+                        results={"behavior_probe": behavior_probe},
+                    )
             try:
                 res = _eval_model(
                     "vllm" if vllm else "huggingface",
@@ -533,6 +768,9 @@ def evaluate_model(
                     limit=limit,
                     batch_size=batch_size,
                     task_manager=task_manager,
+                    fitness_mode=fitness_mode,
+                    task_mix_profile=task_mix_profile,
+                    behavior_probe=behavior_probe,
                     bootstrap_iters=0,
                     **eval_kwargs,
                 )
@@ -553,6 +791,9 @@ def evaluate_model(
                         limit=limit,
                         batch_size=batch_size,
                         task_manager=task_manager,
+                        fitness_mode=fitness_mode,
+                        task_mix_profile=task_mix_profile,
+                        behavior_probe=behavior_probe,
                         bootstrap_iters=0,
                         **fallback_kwargs,
                     )
@@ -560,9 +801,16 @@ def evaluate_model(
                     raise
         except Exception as exc:
             logging.error("Model evaluation failed", exc_info=exc)
-            return _failure_result("eval", type(exc).__name__, str(exc))
+            return _failure_result(
+                "eval",
+                type(exc).__name__,
+                str(exc),
+                results={"behavior_probe": behavior_probe} if behavior_probe else None,
+            )
         else:
             _apply_metric_guards(res)
+            if behavior_probe is not None:
+                res["behavior_probe"] = behavior_probe
         return res
     finally:
         if merged_path:
@@ -580,6 +828,13 @@ def evaluate_model_cpu(
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     model_kwargs: Optional[Dict[str, Any]] = None,
+    fitness_mode: str = "weighted_sum",
+    task_mix_profile: Optional[str] = None,
+    behavior_prompts: Optional[List[str]] = None,
+    behavior_probe_max_new_tokens: int = 24,
+    behavior_repetition_ngram_size: int = 4,
+    behavior_min_distinct_ratio: float = 0.2,
+    behavior_reject_on_degenerate: bool = False,
     **kwargs,
 ) -> dict:
     """CPU-only evaluation using HuggingFace backend and float32."""
@@ -606,7 +861,28 @@ def evaluate_model_cpu(
         }
         eval_kwargs: Dict[str, Any] = {"device": device_override}
         eval_kwargs.update(kwargs)
+        behavior_probe = None
         try:
+            if behavior_prompts:
+                behavior_probe = _run_behavior_probe(
+                    merged_path,
+                    list(behavior_prompts),
+                    max_new_tokens=behavior_probe_max_new_tokens,
+                    repetition_ngram_size=behavior_repetition_ngram_size,
+                    min_distinct_ratio=behavior_min_distinct_ratio,
+                    device="cpu",
+                    model_kwargs=model_args,
+                )
+                if behavior_reject_on_degenerate and behavior_probe.get("rejected"):
+                    return _failure_result(
+                        "smoke_test",
+                        "degenerate_output",
+                        str(
+                            behavior_probe.get("reject_reason")
+                            or "Behavior probe failed"
+                        ),
+                        results={"behavior_probe": behavior_probe},
+                    )
             try:
                 res = _eval_model(
                     "huggingface",
@@ -616,6 +892,9 @@ def evaluate_model_cpu(
                     limit=limit,
                     batch_size=batch_size,
                     task_manager=task_manager,
+                    fitness_mode=fitness_mode,
+                    task_mix_profile=task_mix_profile,
+                    behavior_probe=behavior_probe,
                     bootstrap_iters=0,
                     **eval_kwargs,
                 )
@@ -636,6 +915,9 @@ def evaluate_model_cpu(
                         limit=limit,
                         batch_size=batch_size,
                         task_manager=task_manager,
+                        fitness_mode=fitness_mode,
+                        task_mix_profile=task_mix_profile,
+                        behavior_probe=behavior_probe,
                         bootstrap_iters=0,
                         **fallback_kwargs,
                     )
@@ -643,9 +925,16 @@ def evaluate_model_cpu(
                     raise
         except Exception as exc:
             logging.error("CPU model evaluation failed", exc_info=exc)
-            return _failure_result("eval", type(exc).__name__, str(exc))
+            return _failure_result(
+                "eval",
+                type(exc).__name__,
+                str(exc),
+                results={"behavior_probe": behavior_probe} if behavior_probe else None,
+            )
         else:
             _apply_metric_guards(res)
+            if behavior_probe is not None:
+                res["behavior_probe"] = behavior_probe
         return res
     finally:
         if merged_path:
@@ -663,14 +952,20 @@ def merge_model_with_details(
 ) -> Dict[str, Any]:
     # monkeypatch_tqdm()
     try:
-        # Handle both traditional and multi-method genomes
-        if hasattr(genome, "genotype_to_merge_config"):
-            # MultiMethodGenome
+        plan = None
+        if hasattr(genome, "genotype_to_merge_plan"):
+            plan = genome.genotype_to_merge_plan(genotype)
+            if plan["kind"] == "config":
+                cfg = plan["config"]
+            else:
+                cfg = None
+        elif hasattr(genome, "genotype_to_merge_config"):
             cfg = genome.genotype_to_merge_config(genotype)
         else:
-            # Traditional ModelGenome
             cfg = genome.genotype_merge_config(genotype)
-        _validate_merge_compatibility(cfg, merge_options)
+
+        if cfg is not None:
+            _validate_merge_compatibility(cfg, merge_options)
     except (InvalidGenotypeError, MultiMethodInvalidGenotypeError) as e:
         logging.error("Invalid genotype: %s", e)
         return {
@@ -683,7 +978,59 @@ def merge_model_with_details(
     os.makedirs(model_storage_path, exist_ok=True)
     res = tempfile.mkdtemp(prefix="merged", dir=model_storage_path)
     try:
-        run_merge(cfg, out_path=res, options=merge_options)
+        if cfg is not None:
+            run_merge(cfg, out_path=res, options=merge_options)
+            return {
+                "merged_path": res,
+                "error_stage": None,
+                "error_type": None,
+                "error_message": None,
+                "resolved_merge_config": cfg.model_dump(
+                    exclude_defaults=True, mode="json"
+                ),
+            }
+
+        component_root = tempfile.mkdtemp(
+            prefix="layered-components", dir=model_storage_path
+        )
+        component_paths: Dict[str, str] = {}
+        try:
+            for component in plan["components"]:
+                component_cfg: MergeConfiguration = component["config"]
+                _validate_merge_compatibility(component_cfg, merge_options)
+                component_path = os.path.join(component_root, component["name"])
+                run_merge(component_cfg, out_path=component_path, options=merge_options)
+                component_paths[component["name"]] = component_path
+
+            final_slices = []
+            for slice_def in plan["final_slices"]:
+                component_name = slice_def["component"]
+                component_path = component_paths[component_name]
+                final_slices.append(
+                    {
+                        "sources": [
+                            {
+                                "model": component_path,
+                                "layer_range": slice_def["layer_range"],
+                            }
+                        ]
+                    }
+                )
+
+            tokenizer_source = None
+            if plan["final_slices"]:
+                tokenizer_source = component_paths[plan["final_slices"][0]["component"]]
+            final_config = MergeConfiguration.model_validate(
+                {
+                    "merge_method": "passthrough",
+                    "slices": final_slices,
+                    "dtype": "bfloat16",
+                    "tokenizer_source": tokenizer_source,
+                }
+            )
+            run_merge(final_config, out_path=res, options=merge_options)
+        finally:
+            shutil.rmtree(component_root, ignore_errors=True)
     except Exception as exc:  # pragma: no cover - run_merge handles many cases
         logging.error("Merge execution failed", exc_info=exc)
         shutil.rmtree(res, ignore_errors=True)
@@ -698,6 +1045,9 @@ def merge_model_with_details(
         "error_stage": None,
         "error_type": None,
         "error_message": None,
+        "resolved_merge_plan": (
+            plan.get("methods") if isinstance(plan, dict) else None
+        ),
     }
 
 

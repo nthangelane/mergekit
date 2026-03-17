@@ -130,3 +130,21 @@ experiments:
     recommended_gpu_worker_gpus: 2
     minimum_gpu_vram_gb: 48
     requires_gated_hf_access: true
+
+  - id: exp06
+    name: Pythia-160M Phase-2 TIES Starter
+    family: pythia
+    reason: Conservative cloud-side starter for the next size bracket, expanding the method policy to include ties while keeping the family and checkpoint pair simple.
+    config_path: experiments/thesis/eks_gpu/exp06_pythia160m_phase2_ties_starter/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp06_pythia160m_phase2_ties_starter
+    storage_subpath: thesis/eks_gpu/exp06_pythia160m_phase2_ties_starter
+    job_name: thesis-exp06-pythia160m-phase2
+    recommended_population: 16
+    recommended_generations: 12
+    recommended_max_fevals: 192
+    recommended_strategy: pool
+    recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false

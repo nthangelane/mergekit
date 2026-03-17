@@ -378,3 +378,30 @@ def test_build_tokenizer_strips_model_source_unused_tokens(
 
     for idx in range(4):
         assert f"<UNUSED_{idx}>" not in vocab
+
+
+def test_permuted_embeddings_ignore_base_model_without_source_tensors(
+    model_base: str, model_chatml: str
+):
+    base_ref = ModelReference.model_validate(model_base)
+    chat_ref = ModelReference.model_validate(model_chatml)
+    tokenizer_info = build_tokenizer(
+        base_model=base_ref,
+        referenced_models=[base_ref, chat_ref],
+        tokenizer_source="base",
+        trust_remote_code=False,
+        add_tokens=[],
+    )
+    task = PermutedEmbeddings.model_construct(
+        gather_tensors=None,
+        tokenizer_task=None,
+        tokens=None,
+        pad_to_multiple_of=None,
+        base_model=base_ref,
+    )
+    tensors = {chat_ref: torch.randn(66, 3, dtype=torch.float32)}
+
+    result = task.execute(tokenizer_info=tokenizer_info, tensors=tensors)
+
+    assert list(result.keys()) == [chat_ref]
+    assert result[chat_ref].shape == (64, 3)

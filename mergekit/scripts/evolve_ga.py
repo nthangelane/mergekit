@@ -47,6 +47,7 @@ except ImportError:
 
 
 from mergekit.common import ModelReference, call_with_dtype
+from mergekit.config import MergeConfiguration
 from mergekit.evo.cache_utils import genotype_exact_hash
 from mergekit.evo.config import (
     EvolMergeConfiguration,
@@ -57,7 +58,11 @@ from mergekit.evo.config import (
 from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.genome import ModelGenome
-from mergekit.evo.helpers import _eval_model, validate_input_model_architecture
+from mergekit.evo.helpers import (
+    _eval_model,
+    merge_model_with_details,
+    validate_input_model_architecture,
+)
 from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
@@ -166,12 +171,15 @@ def _collect_merge_method_outcomes(
 
     for genotype_candidate, result in zip(genotype_iterable, results):
         try:
-            cfg = (
-                genome.genotype_to_merge_config(genotype_candidate)
-                if hasattr(genome, "genotype_to_merge_config")
-                else genome.genotype_merge_config(genotype_candidate)
-            )
-            method_name = str(getattr(cfg, "merge_method", None) or "unknown")
+            if hasattr(genome, "method_label_for_genotype"):
+                method_name = str(genome.method_label_for_genotype(genotype_candidate))
+            else:
+                cfg = (
+                    genome.genotype_to_merge_config(genotype_candidate)
+                    if hasattr(genome, "genotype_to_merge_config")
+                    else genome.genotype_merge_config(genotype_candidate)
+                )
+                method_name = str(getattr(cfg, "merge_method", None) or "unknown")
         except Exception:  # pragma: no cover - diagnostic path only
             logging.debug(
                 "Unable to decode genotype for merge-method outcome stats",
@@ -241,18 +249,43 @@ def _write_merge_method_history(
 ) -> None:
     history_path = os.path.join(storage_path, "ga_method_history.csv")
     file_exists = os.path.exists(history_path)
+    base_fields = ["generation", "fevals"]
+    dynamic_fields: List[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in dynamic_fields:
+                dynamic_fields.append(key)
     with open(history_path, "a", encoding="utf-8", newline="") as history_file:
-        fieldnames = [
-            "generation",
-            "fevals",
-            "merge_method",
-            "count",
-            "success_count",
-            "failure_count",
-            "success_rate",
-            "mean_score",
-            "best_score",
-        ]
+        fieldnames = base_fields + dynamic_fields
+        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "generation": generation,
+                    "fevals": fevals,
+                    **row,
+                }
+            )
+
+
+def _write_candidate_history(
+    storage_path: str,
+    generation: int,
+    fevals: int,
+    rows: List[Dict[str, Any]],
+) -> None:
+    history_path = os.path.join(storage_path, "ga_candidate_history.csv")
+    file_exists = os.path.exists(history_path)
+    base_fields = ["generation", "fevals"]
+    dynamic_fields: List[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in dynamic_fields:
+                dynamic_fields.append(key)
+    with open(history_path, "a", encoding="utf-8", newline="") as history_file:
+        fieldnames = base_fields + dynamic_fields
         writer = csv.DictWriter(history_file, fieldnames=fieldnames)
         if not file_exists:
             writer.writeheader()
@@ -947,12 +980,24 @@ def main(
         tracker.log_best_individual(x, score, step, genome)
 
     def save_best_config(x: np.ndarray):
-        if genome_type == "multi_method":
-            merge_config = genome.genotype_to_merge_config(x)
+        best_yaml: str
+        if genome_type == "multi_method" and hasattr(genome, "execution_plan_dict"):
+            plan_dict = genome.execution_plan_dict(x)
+            if plan_dict.get("kind") == "config":
+                merge_config = MergeConfiguration.model_validate(plan_dict["config"])
+                best_yaml = merge_config.to_yaml()
+            else:
+                best_yaml = yaml.safe_dump(
+                    {"layered_execution_plan": plan_dict},
+                    sort_keys=False,
+                ).rstrip()
         else:
-            merge_config = genome.genotype_merge_config(x)
-
-        best_yaml = merge_config.to_yaml()
+            merge_config = (
+                genome.genotype_to_merge_config(x)
+                if genome_type == "multi_method"
+                else genome.genotype_merge_config(x)
+            )
+            best_yaml = merge_config.to_yaml()
         config_path = os.path.join(storage_path, "best_config.yaml")
         with open(config_path, "w") as f:
             f.write(best_yaml)
@@ -1004,6 +1049,43 @@ def main(
             "ga/mutation_rate": ga_params.mutation_rate,
             "ga/mutation_sigma": ga_params.mutation_sigma,
             "ga/tournament_size": ga_params.tournament_size,
+            "ga/adaptive_method_sampling": float(
+                1.0 if (yaml_ga and yaml_ga.adaptive_method_sampling) else 0.0
+            ),
+            "eval/two_stage": float(1.0 if config.two_stage else 0.0),
+            "eval/stage1_limit": (
+                float(config.stage1_limit) if config.stage1_limit is not None else None
+            ),
+            "eval/stage2_limit": (
+                float(config.stage2_limit) if config.stage2_limit is not None else None
+            ),
+            "eval/stage2_top_k": (
+                float(config.stage2_top_k) if config.stage2_top_k is not None else None
+            ),
+            "eval/fitness_mode": config.fitness_mode,
+            "eval/task_mix_profile": config.task_mix_profile,
+            "eval/behavior_probe_enabled": float(
+                1.0 if config.behavior_prompts else 0.0
+            ),
+            "eval/behavior_probe_max_new_tokens": float(
+                config.behavior_probe_max_new_tokens
+            ),
+            "eval/behavior_min_distinct_ratio": float(
+                config.behavior_min_distinct_ratio
+            ),
+            "ga/gene_diversity_bonus_weight": (
+                float(getattr(yaml_ga, "gene_diversity_bonus_weight"))
+                if yaml_ga
+                and getattr(yaml_ga, "gene_diversity_bonus_weight", None) is not None
+                else None
+            ),
+            "ga/behavior_diversity_bonus_weight": (
+                float(getattr(yaml_ga, "behavior_diversity_bonus_weight"))
+                if yaml_ga
+                and getattr(yaml_ga, "behavior_diversity_bonus_weight", None)
+                is not None
+                else None
+            ),
         }
     )
 
@@ -1107,12 +1189,111 @@ def main(
             genome,
             configured_methods,
         )
+        population_metadata = info.get("population_metadata") or []
+        operator_summary = info.get("operator_summary") or {}
+        if operator_summary.get("metrics"):
+            merge_method_outcomes["metrics"].update(operator_summary["metrics"])
+        if operator_summary.get("history_rows"):
+            history_rows_by_method = {
+                str(row.get("merge_method")): dict(row)
+                for row in merge_method_outcomes["history_rows"]
+            }
+            for row in operator_summary["history_rows"]:
+                method_name = str(row.get("merge_method"))
+                merged_row = history_rows_by_method.get(method_name, {})
+                merged_row.update(row)
+                history_rows_by_method[method_name] = merged_row
+            merge_method_outcomes["history_rows"] = [
+                history_rows_by_method[key]
+                for key in sorted(history_rows_by_method.keys())
+            ]
         method_counter = merge_method_outcomes["method_counts"]
         method_success_counter = merge_method_outcomes["method_success_counts"]
         method_failure_counter = merge_method_outcomes["method_failure_counts"]
+        candidate_rows: List[Dict[str, Any]] = []
+        gene_diversity_values: List[float] = []
+        behavior_diversity_values: List[float] = []
+        stability_values: List[float] = []
 
         for genotype_candidate in genotype_iterable:
             _tally_config(genotype_candidate)
+
+        for idx, (genotype_candidate, result) in enumerate(
+            zip(genotype_iterable, res_list)
+        ):
+            try:
+                if hasattr(genome, "method_label_for_genotype"):
+                    candidate_method = str(
+                        genome.method_label_for_genotype(genotype_candidate)
+                    )
+                else:
+                    cfg = (
+                        genome.genotype_to_merge_config(genotype_candidate)
+                        if hasattr(genome, "genotype_to_merge_config")
+                        else genome.genotype_merge_config(genotype_candidate)
+                    )
+                    candidate_method = str(
+                        getattr(cfg, "merge_method", None) or "unknown"
+                    )
+            except Exception:
+                candidate_method = "decode_error"
+
+            metadata = (
+                population_metadata[idx] if idx < len(population_metadata) else {}
+            )
+            fitness_components = dict(result.get("fitness_components") or {})
+            behavior_probe = dict(result.get("behavior_probe") or {})
+            gene_diversity = fitness_components.get("gene_diversity_score")
+            behavior_diversity = fitness_components.get(
+                "behavior_diversity_score",
+                behavior_probe.get("behavior_diversity_score"),
+            )
+            stability_score = fitness_components.get(
+                "stability_score", behavior_probe.get("stability_score")
+            )
+            if gene_diversity is not None:
+                gene_diversity_values.append(float(gene_diversity))
+            if behavior_diversity is not None:
+                behavior_diversity_values.append(float(behavior_diversity))
+            if stability_score is not None:
+                stability_values.append(float(stability_score))
+
+            candidate_rows.append(
+                {
+                    "candidate_index": idx,
+                    "merge_method": candidate_method,
+                    "sampled_method": metadata.get("sampled_method"),
+                    "role": metadata.get("role") or metadata.get("origin"),
+                    "score": result.get("score"),
+                    "raw_score": result.get("raw_score"),
+                    "score_source": result.get("score_source"),
+                    "stage1_score": result.get("stage1_score"),
+                    "stage2_score": result.get("stage2_score"),
+                    "stage2_skipped": result.get("stage2_skipped"),
+                    "task_score": fitness_components.get("task_score"),
+                    "language_quality": fitness_components.get("language_quality"),
+                    "stability_score": stability_score,
+                    "gene_diversity_score": gene_diversity,
+                    "behavior_diversity_score": behavior_diversity,
+                    "passthrough_penalty": fitness_components.get(
+                        "passthrough_penalty"
+                    ),
+                    "gene_diversity_bonus": fitness_components.get(
+                        "gene_diversity_bonus"
+                    ),
+                    "behavior_diversity_bonus": fitness_components.get(
+                        "behavior_diversity_bonus"
+                    ),
+                    "error_stage": result.get("error_stage"),
+                    "error_type": result.get("error_type"),
+                    "error_message": result.get("error_message"),
+                    "behavior_rejected": behavior_probe.get("rejected"),
+                    "behavior_reject_reason": behavior_probe.get("reject_reason"),
+                    "parent_scores": ";".join(
+                        str(score) for score in metadata.get("parent_scores", [])
+                    ),
+                }
+            )
 
         def _format_counter(counter: Counter[str]) -> str:
             if not counter:
@@ -1124,6 +1305,32 @@ def main(
         merge_method_counts_str = _format_counter(method_counter)
         merge_method_success_counts_str = _format_counter(method_success_counter)
         merge_method_failure_counts_str = _format_counter(method_failure_counter)
+        sampled_method_counts = Counter(info.get("sampled_method_counts") or {})
+        sampled_method_counts_str = _format_counter(sampled_method_counts)
+        role_counts = Counter(info.get("role_counts") or {})
+        role_counts_str = _format_counter(role_counts)
+        candidate_score_values = [
+            float(row["score"])
+            for row in candidate_rows
+            if row.get("score") is not None and math.isfinite(float(row["score"]))
+        ]
+        median_score = (
+            float(np.median(candidate_score_values)) if candidate_score_values else None
+        )
+        passthrough_fraction = (
+            float(method_counter.get("passthrough", 0) / len(candidate_rows))
+            if candidate_rows
+            else 0.0
+        )
+        gene_diversity_mean = (
+            float(np.mean(gene_diversity_values)) if gene_diversity_values else None
+        )
+        behavior_diversity_mean = (
+            float(np.mean(behavior_diversity_values))
+            if behavior_diversity_values
+            else None
+        )
+        stability_mean = float(np.mean(stability_values)) if stability_values else None
 
         # Compute CSV row values
         generation = int(
@@ -1174,6 +1381,12 @@ def main(
             f"evaluated={evaluations} cache_hits={cache_hits} failed={failed_evals} "
             f"crossover_children={crossover_children} type={crossover_type} immigrants={immigrants}"
             + (f" methods={merge_method_counts_str}" if merge_method_counts_str else "")
+            + (
+                f" sampled_methods={sampled_method_counts_str}"
+                if sampled_method_counts_str
+                else ""
+            )
+            + (f" roles={role_counts_str}" if role_counts_str else "")
             + (
                 f" method_success={merge_method_success_counts_str}"
                 if merge_method_success_counts_str
@@ -1231,6 +1444,11 @@ def main(
             )
         except Exception as e:
             logging.warning("Failed to write ga_method_history.csv", exc_info=e)
+
+        try:
+            _write_candidate_history(storage_path, generation, step, candidate_rows)
+        except Exception as e:
+            logging.warning("Failed to write ga_candidate_history.csv", exc_info=e)
 
         new_failed_rows = []
         for genotype_candidate, result in zip(genotype_iterable, res_list):
@@ -1331,16 +1549,43 @@ def main(
                 "population/gen_mean": (
                     float(gen_mean) if gen_mean is not None else None
                 ),
+                "population/gen_median": median_score,
                 "population/gen_std": float(gen_std) if gen_std is not None else None,
                 "global/best_so_far": (
                     float(best_so_far) if best_so_far is not None else None
                 ),
                 "ga/crossover_children": float(crossover_children),
                 "ga/immigrants": float(immigrants),
+                "population/passthrough_fraction": passthrough_fraction,
+                "population/gene_diversity_mean": gene_diversity_mean,
+                "population/behavior_diversity_mean": behavior_diversity_mean,
+                "population/stability_mean": stability_mean,
+                "ga/adaptive_method_sampling": float(
+                    info.get("adaptive_method_sampling", 0.0)
+                ),
             },
             step=step,
         )
         tracker.log_metrics(merge_method_outcomes["metrics"], step=step)
+        method_probabilities = info.get("method_probabilities") or {}
+        if method_probabilities:
+            tracker.log_metrics(
+                {
+                    f"adaptive_method/{_sanitize_metric_key_fragment(method)}/probability_active": float(
+                        probability
+                    )
+                    for method, probability in method_probabilities.items()
+                },
+                step=step,
+            )
+        if role_counts:
+            tracker.log_metrics(
+                {
+                    f"population_role/{role}": float(count)
+                    for role, count in role_counts.items()
+                },
+                step=step,
+            )
 
         # Log top-5 scores
         scores = [r["score"] for r in res_list if r["score"] is not None]
@@ -1366,6 +1611,15 @@ def main(
         genome_type == "multi_method"
         or hasattr(config.ga, "semantic_crossover_prob")
         or getattr(config.ga, "crossover", None) == "semantic"
+        or bool(getattr(config.ga, "adaptive_method_sampling", False))
+        or getattr(config.ga, "initial_method_probs", None) is not None
+        or getattr(config.ga, "passthrough_penalty", None) is not None
+        or getattr(config.ga, "passthrough_max_fraction", None) is not None
+        or getattr(config.ga, "explorer_fraction", None) is not None
+        or bool(getattr(config.ga, "diversity_parent_selection", False))
+        or getattr(config.ga, "diversity_parent_weight", None) is not None
+        or getattr(config.ga, "gene_diversity_bonus_weight", None) is not None
+        or getattr(config.ga, "behavior_diversity_bonus_weight", None) is not None
     )
 
     if use_enhanced:
@@ -1396,6 +1650,94 @@ def main(
             and config.ga.parameter_mutation_rate is not None
         ):
             enhanced_params.parameter_mutation_rate = config.ga.parameter_mutation_rate
+        if (
+            hasattr(config.ga, "adaptive_method_sampling")
+            and config.ga.adaptive_method_sampling is not None
+        ):
+            enhanced_params.adaptive_method_sampling = (
+                config.ga.adaptive_method_sampling
+            )
+        if (
+            hasattr(config.ga, "initial_method_probs")
+            and config.ga.initial_method_probs is not None
+        ):
+            enhanced_params.initial_method_probs = dict(config.ga.initial_method_probs)
+        if (
+            hasattr(config.ga, "operator_temperature")
+            and config.ga.operator_temperature is not None
+        ):
+            enhanced_params.operator_temperature = config.ga.operator_temperature
+        if (
+            hasattr(config.ga, "operator_update_smoothing")
+            and config.ga.operator_update_smoothing is not None
+        ):
+            enhanced_params.operator_update_smoothing = (
+                config.ga.operator_update_smoothing
+            )
+        if (
+            hasattr(config.ga, "operator_avg_child_weight")
+            and config.ga.operator_avg_child_weight is not None
+        ):
+            enhanced_params.operator_avg_child_weight = (
+                config.ga.operator_avg_child_weight
+            )
+        if (
+            hasattr(config.ga, "operator_parent_improvement_weight")
+            and config.ga.operator_parent_improvement_weight is not None
+        ):
+            enhanced_params.operator_parent_improvement_weight = (
+                config.ga.operator_parent_improvement_weight
+            )
+        if (
+            hasattr(config.ga, "operator_survival_weight")
+            and config.ga.operator_survival_weight is not None
+        ):
+            enhanced_params.operator_survival_weight = (
+                config.ga.operator_survival_weight
+            )
+        if (
+            hasattr(config.ga, "passthrough_penalty")
+            and config.ga.passthrough_penalty is not None
+        ):
+            enhanced_params.passthrough_penalty = config.ga.passthrough_penalty
+        if (
+            hasattr(config.ga, "passthrough_max_fraction")
+            and config.ga.passthrough_max_fraction is not None
+        ):
+            enhanced_params.passthrough_max_fraction = (
+                config.ga.passthrough_max_fraction
+            )
+        if (
+            hasattr(config.ga, "explorer_fraction")
+            and config.ga.explorer_fraction is not None
+        ):
+            enhanced_params.explorer_fraction = config.ga.explorer_fraction
+        if (
+            hasattr(config.ga, "diversity_parent_selection")
+            and config.ga.diversity_parent_selection is not None
+        ):
+            enhanced_params.diversity_parent_selection = (
+                config.ga.diversity_parent_selection
+            )
+        if (
+            hasattr(config.ga, "diversity_parent_weight")
+            and config.ga.diversity_parent_weight is not None
+        ):
+            enhanced_params.diversity_parent_weight = config.ga.diversity_parent_weight
+        if (
+            hasattr(config.ga, "gene_diversity_bonus_weight")
+            and config.ga.gene_diversity_bonus_weight is not None
+        ):
+            enhanced_params.gene_diversity_bonus_weight = (
+                config.ga.gene_diversity_bonus_weight
+            )
+        if (
+            hasattr(config.ga, "behavior_diversity_bonus_weight")
+            and config.ga.behavior_diversity_bonus_weight is not None
+        ):
+            enhanced_params.behavior_diversity_bonus_weight = (
+                config.ga.behavior_diversity_bonus_weight
+            )
 
         optimizer = EnhancedGAOptimizer(
             genome=genome,
@@ -1486,12 +1828,17 @@ def main(
 
     # save the best merge configuration using original model references
     if best_x is not None:
+        best_config = None
+        best_plan_dict = None
         if genome_type == "multi_method":
             genome_pretty = MultiMethodGenome(
                 MultiMethodGenomeDefinition.model_validate(config.genome.model_dump()),
                 trust_remote_code=trust_remote_code,
             )
-            best_config = genome_pretty.genotype_to_merge_config(best_x)
+            if hasattr(genome_pretty, "execution_plan_dict"):
+                best_plan_dict = genome_pretty.execution_plan_dict(best_x)
+            if not best_plan_dict or best_plan_dict.get("kind") == "config":
+                best_config = genome_pretty.genotype_to_merge_config(best_x)
         else:
             genome_pretty = ModelGenome(
                 config.genome, trust_remote_code=trust_remote_code
@@ -1499,13 +1846,39 @@ def main(
             best_config = genome_pretty.genotype_merge_config(best_x)
 
         stage_log("Stage-GA", "Best merge configuration computed.")
-        print(best_config.to_yaml())
+        if best_config is not None:
+            print(best_config.to_yaml())
+        elif best_plan_dict is not None:
+            print(
+                yaml.safe_dump(
+                    {"layered_execution_plan": best_plan_dict},
+                    sort_keys=False,
+                ).rstrip()
+            )
 
         if save_final_model:
             stage_log("Stage-GA", "Saving final merged model artifacts...")
-            run_merge(
-                best_config, os.path.join(storage_path, "final_model"), merge_options
-            )
+            final_model_path = os.path.join(storage_path, "final_model")
+            if best_config is not None:
+                run_merge(best_config, final_model_path, merge_options)
+            else:
+                merge_result = merge_model_with_details(
+                    best_x,
+                    genome_pretty,
+                    os.path.join(storage_path, "merged"),
+                    merge_options,
+                )
+                merged_path = merge_result.get("merged_path")
+                if not merged_path:
+                    raise RuntimeError(
+                        merge_result.get(
+                            "error_message", "Failed to materialize layered final model"
+                        )
+                    )
+                if os.path.exists(final_model_path):
+                    shutil.rmtree(final_model_path, ignore_errors=True)
+                shutil.copytree(merged_path, final_model_path)
+                shutil.rmtree(merged_path, ignore_errors=True)
 
             _evaluate_and_write_final_comparison(
                 config,
@@ -1707,6 +2080,8 @@ def run_baseline_evaluations(
         batch_size: Optional[int],
         task_search_path: List[str],
         trust_remote_code: bool,
+        fitness_mode: str,
+        task_mix_profile: Optional[str],
     ) -> Dict[str, Any]:
         task_manager = create_task_manager(task_search_path)
         model_args: Dict[str, Any] = {
@@ -1724,6 +2099,8 @@ def run_baseline_evaluations(
                 limit=limit,
                 batch_size=batch_size,
                 task_manager=task_manager,
+                fitness_mode=fitness_mode,
+                task_mix_profile=task_mix_profile,
                 bootstrap_iters=0,
                 device="cuda",
             )
@@ -1748,6 +2125,8 @@ def run_baseline_evaluations(
         batch_size: Optional[int],
         task_search_path: List[str],
         trust_remote_code: bool,
+        fitness_mode: str,
+        task_mix_profile: Optional[str],
     ) -> Dict[str, Any]:
         task_manager = create_task_manager(task_search_path)
         model_args: Dict[str, Any] = {
@@ -1765,6 +2144,8 @@ def run_baseline_evaluations(
                 limit=limit,
                 batch_size=batch_size,
                 task_manager=task_manager,
+                fitness_mode=fitness_mode,
+                task_mix_profile=task_mix_profile,
                 bootstrap_iters=0,
                 device="cpu",
             )
@@ -1790,6 +2171,8 @@ def run_baseline_evaluations(
             batch_size,
             task_search_path,
             trust_remote_code,
+            config.fitness_mode,
+            config.task_mix_profile,
         )
         for model_ref in models
     }
@@ -1979,6 +2362,8 @@ def _evaluate_and_write_final_comparison(
             limit=config.limit,
             batch_size=batch_size,
             task_manager=task_manager,
+            fitness_mode=config.fitness_mode,
+            task_mix_profile=config.task_mix_profile,
             bootstrap_iters=0,
             **eval_kwargs,
         )

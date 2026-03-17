@@ -33,10 +33,9 @@ class PermutedEmbeddings(Task[Dict[ModelReference, torch.Tensor]]):
         tokenizer = tokenizer_info.tokenizer
         permutations = tokenizer_info.permutations
 
-        models = set(tensors.keys())
-        if self.base_model:
-            models.add(self.base_model)
-        models = list(models)
+        models = list(tensors.keys())
+        if not models:
+            return {}
 
         vocab = tokenizer.get_vocab()
         vocab_size = len(vocab)
@@ -134,7 +133,11 @@ class PermutedEmbeddings(Task[Dict[ModelReference, torch.Tensor]]):
                 logging.warning(f"Token {repr(token)} not found in any model")
                 continue
 
-            if num_present > 0 and self.base_model is not None:
+            if (
+                num_present > 0
+                and self.base_model is not None
+                and self.base_model in models
+            ):
                 if permutations[self.base_model][token_id] >= 0:
                     token_configs[token] = TokenEmbeddingConfig(source=self.base_model)
                     continue
@@ -151,16 +154,22 @@ class PermutedEmbeddings(Task[Dict[ModelReference, torch.Tensor]]):
         token_id: int,
         cfg: TokenEmbeddingConfig,
     ) -> torch.Tensor:
+        sample = next(iter(tensors.values()))
         if isinstance(cfg.source, ZeroEmbedding):
-            sample = next(iter(tensors.values()))
             embed = torch.zeros(
                 sample.shape[1], dtype=sample.dtype, device=sample.device
             )
         elif isinstance(cfg.source, ModelTokenEmbedding):
             model = cfg.source.model
-            assert (
-                model in permutations
-            ), f"Model {model} referenced but not part of merge"
+            if model not in permutations or model not in tensors:
+                logging.warning(
+                    "Model %s referenced for token %r but not available in gathered tensors; using zero embedding.",
+                    model,
+                    token,
+                )
+                return torch.zeros(
+                    sample.shape[1], dtype=sample.dtype, device=sample.device
+                )
             p = permutations[model]
             src_token_id = cfg.source.token_id
             if src_token_id is None:
@@ -175,6 +184,15 @@ class PermutedEmbeddings(Task[Dict[ModelReference, torch.Tensor]]):
             embed = tensors[model][src_token_id]
         elif isinstance(cfg.source, ModelReference):
             model = cfg.source
+            if model not in permutations or model not in tensors:
+                logging.warning(
+                    "Model %s referenced for token %r but not available in gathered tensors; using zero embedding.",
+                    model,
+                    token,
+                )
+                return torch.zeros(
+                    sample.shape[1], dtype=sample.dtype, device=sample.device
+                )
             p = permutations[model]
             assert p[token_id] >= 0, f"Token {repr(token)} not found in model {model}"
             embed = tensors[model][p[token_id]]

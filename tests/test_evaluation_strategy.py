@@ -3,11 +3,35 @@ from types import SimpleNamespace
 import numpy as np
 
 from mergekit.evo.strategy import (
+    EvaluationStrategyBase,
     SerialEvaluationStrategy,
     _evaluate_genotype_serial_cpu_impl,
     _gpu_worker_capacity,
     _gpus_per_evaluation,
 )
+
+
+class DummyConfig(SimpleNamespace):
+    def model_copy(self, update):
+        data = dict(self.__dict__)
+        data.update(update)
+        return DummyConfig(**data)
+
+
+class DummyTwoStageStrategy(EvaluationStrategyBase):
+    def _evaluate_genotypes_once(self, genotypes, eval_config):
+        results = []
+        for genotype in genotypes:
+            limit = float(eval_config.limit or 0)
+            results.append(
+                {
+                    "score": float(genotype[0]) + (limit / 100.0),
+                    "results": {
+                        eval_config.tasks[0].name: {"acc,none": float(genotype[0])}
+                    },
+                }
+            )
+        return results
 
 
 def test_serial_strategy_cpu_evaluates_genotypes_sequentially(monkeypatch):
@@ -36,6 +60,33 @@ def test_serial_strategy_cpu_evaluates_genotypes_sequentially(monkeypatch):
 
     assert seen == [3, 1, 2]
     assert [result["score"] for result in results] == [3.0, 1.0, 2.0]
+
+
+def test_evaluation_strategy_two_stage_promotes_top_k():
+    strategy = DummyTwoStageStrategy.__new__(DummyTwoStageStrategy)
+    strategy.config = DummyConfig(
+        two_stage=True,
+        tasks=[SimpleNamespace(name="stage2-task")],
+        stage1_tasks=[SimpleNamespace(name="stage1-task")],
+        num_fewshot=0,
+        limit=10,
+        stage1_limit=2,
+        stage2_limit=10,
+        stage2_top_k=2,
+    )
+
+    results = strategy.evaluate_genotypes([np.array([1]), np.array([3]), np.array([2])])
+
+    assert results[0]["score"] == 1.02
+    assert results[0]["stage2_skipped"] is True
+    assert results[0]["score_source"] == "stage1"
+    assert results[1]["score"] == 3.10
+    assert results[1]["stage2_skipped"] is False
+    assert results[1]["score_source"] == "stage2"
+    assert results[1]["stage1_limit"] == 2
+    assert results[1]["stage2_limit"] == 10
+    assert results[1]["stage1_tasks"] == ["stage1-task"]
+    assert results[1]["stage2_tasks"] == ["stage2-task"]
 
 
 def test_gpu_worker_capacity_scales_with_tensor_parallel():

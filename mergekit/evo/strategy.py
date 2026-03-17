@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import math
 import os
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Union
@@ -109,12 +110,112 @@ class EvaluationStrategyBase(ABC):
         if self.model_storage_path:
             os.makedirs(self.model_storage_path, exist_ok=True)
 
-    @abstractmethod
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
-        pass
+        if not genotypes:
+            return []
+        if not getattr(self.config, "two_stage", False) or len(genotypes) == 1:
+            return self._evaluate_genotypes_once(genotypes, self.config)
+
+        stage1_config = self._stage_config(stage=1)
+        stage2_config = self._stage_config(stage=2)
+        stage1_results = self._evaluate_genotypes_once(genotypes, stage1_config)
+
+        combined_results: List[dict] = []
+        successful_indices: List[int] = []
+        for idx, stage1_result in enumerate(stage1_results):
+            result = dict(stage1_result)
+            result["stage1_score"] = stage1_result.get("score")
+            result["stage1_results"] = stage1_result.get("results")
+            result["stage1_limit"] = stage1_config.limit
+            result["stage1_tasks"] = [task.name for task in stage1_config.tasks]
+            result["evaluation_stage"] = "stage1"
+            if stage1_result.get("score") is not None:
+                successful_indices.append(idx)
+            combined_results.append(result)
+
+        if not successful_indices:
+            return combined_results
+
+        stage2_top_k = min(
+            self._stage2_top_k(len(genotypes), len(successful_indices)),
+            len(successful_indices),
+        )
+        ranked_indices = sorted(
+            successful_indices,
+            key=lambda idx: float(stage1_results[idx]["score"]),
+            reverse=True,
+        )
+        shortlisted_indices = ranked_indices[:stage2_top_k]
+        shortlisted_genotypes = [genotypes[idx] for idx in shortlisted_indices]
+        stage2_results = self._evaluate_genotypes_once(
+            shortlisted_genotypes, stage2_config
+        )
+
+        for idx in successful_indices:
+            if idx not in shortlisted_indices:
+                combined_results[idx]["stage2_skipped"] = True
+                combined_results[idx]["score_source"] = "stage1"
+
+        for idx, stage2_result in zip(shortlisted_indices, stage2_results):
+            result = combined_results[idx]
+            result["stage2_score"] = stage2_result.get("score")
+            result["stage2_results"] = stage2_result.get("results")
+            result["stage2_limit"] = stage2_config.limit
+            result["stage2_tasks"] = [task.name for task in stage2_config.tasks]
+            result["stage2_skipped"] = False
+            result["evaluation_stage"] = "stage2"
+            result["score_source"] = "stage2"
+            if stage2_result.get("score") is None:
+                result["score"] = None
+                result["results"] = stage2_result.get("results")
+                result["error_stage"] = stage2_result.get("error_stage")
+                result["error_type"] = stage2_result.get("error_type")
+                result["error_message"] = stage2_result.get("error_message")
+            else:
+                result["score"] = stage2_result.get("score")
+                result["results"] = stage2_result.get("results")
+
+        return combined_results
+
+    def evaluate_genotype(self, genotype: np.ndarray) -> dict:
+        return self.evaluate_genotypes([genotype])[0]
+
+    def _stage_config(self, stage: int) -> EvolMergeConfiguration:
+        if stage == 1:
+            return self.config.model_copy(
+                update={
+                    "tasks": getattr(self.config, "stage1_tasks", None)
+                    or self.config.tasks,
+                    "limit": (
+                        getattr(self.config, "stage1_limit", None)
+                        if getattr(self.config, "stage1_limit", None) is not None
+                        else self.config.limit
+                    ),
+                    "two_stage": False,
+                }
+            )
+        if stage == 2:
+            return self.config.model_copy(
+                update={
+                    "limit": (
+                        getattr(self.config, "stage2_limit", None)
+                        if getattr(self.config, "stage2_limit", None) is not None
+                        else self.config.limit
+                    ),
+                    "two_stage": False,
+                }
+            )
+        raise ValueError(f"Unknown stage {stage}")
+
+    def _stage2_top_k(self, population_size: int, successful_count: int) -> int:
+        if getattr(self.config, "stage2_top_k", None) is not None:
+            return int(self.config.stage2_top_k)
+        return max(1, int(math.ceil(successful_count / 2.0)))
 
     @abstractmethod
-    def evaluate_genotype(self, genotype: np.ndarray) -> dict:
+    def _evaluate_genotypes_once(
+        self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
+    ) -> List[dict]:
         pass
 
 
@@ -180,16 +281,15 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
             ]
         )
 
-    def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
+    def _evaluate_genotypes_once(
+        self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
+    ) -> List[dict]:
         return list(
             self.actor_pool.map(
-                lambda a, x: a.evaluate_genotype.remote(x),
+                lambda a, x: a.evaluate_genotype.remote(x, eval_config),
                 genotypes,
             )
         )
-
-    def evaluate_genotype(self, genotype: np.ndarray) -> dict:
-        return self.evaluate_genotypes([genotype])[0]
 
 
 @ray.remote
@@ -231,9 +331,13 @@ class BufferedRayEvaluationStrategyActor:
         self.quantization_config = quantization_config
         self._shutdown = False
 
-    async def evaluate_genotype(self, genotype: np.ndarray):
+    async def evaluate_genotype(
+        self,
+        genotype: np.ndarray,
+        eval_config: Optional[EvolMergeConfiguration] = None,
+    ):
         future_result = asyncio.Future()
-        self.input_queue.append((genotype, future_result))
+        self.input_queue.append((genotype, future_result, eval_config))
         return await future_result
 
     async def process_queue(self):
@@ -256,7 +360,7 @@ class BufferedRayEvaluationStrategyActor:
                 while self.input_queue and (
                     len(merging) + len(merged) < merge_capacity
                 ):
-                    genotype, future_result = self.input_queue.pop(0)
+                    genotype, future_result, eval_config = self.input_queue.pop(0)
                     if self.num_gpus > 0:
                         merging[
                             merge_model_ray.remote(
@@ -265,7 +369,7 @@ class BufferedRayEvaluationStrategyActor:
                                 self.model_storage_path,
                                 self.merge_options,
                             )
-                        ] = future_result
+                        ] = (future_result, eval_config)
                     else:
                         merging[
                             merge_model_ray_cpu.remote(
@@ -274,10 +378,11 @@ class BufferedRayEvaluationStrategyActor:
                                 self.model_storage_path,
                                 self.merge_options,
                             )
-                        ] = future_result
+                        ] = (future_result, eval_config)
 
                 while merged and len(evaluating) < eval_capacity:
-                    future_result, merged_path = merged.pop()
+                    future_result, merged_path, eval_config = merged.pop()
+                    config = eval_config or self.config
                     kwargs = {}
                     if self.quantization_config is not None:
                         kwargs["quantization_config"] = self.quantization_config
@@ -287,15 +392,15 @@ class BufferedRayEvaluationStrategyActor:
                                 num_gpus=self.eval_gpus_per_task
                             ).remote(
                                 merged_path,
-                                self.config.tasks,
-                                num_fewshot=self.config.num_fewshot,
-                                limit=self.config.limit,
+                                config.tasks,
+                                num_fewshot=config.num_fewshot,
+                                limit=config.limit,
                                 vllm=self.vllm,
                                 tensor_parallel_size=self.tensor_parallel_size,
                                 batch_size=self.batch_size,
                                 task_manager=self.task_manager,
-                                apply_chat_template=self.config.apply_chat_template,
-                                fewshot_as_multiturn=self.config.fewshot_as_multiturn,
+                                apply_chat_template=config.apply_chat_template,
+                                fewshot_as_multiturn=config.fewshot_as_multiturn,
                                 **kwargs,
                             )
                         ] = future_result
@@ -303,11 +408,13 @@ class BufferedRayEvaluationStrategyActor:
                         evaluating[
                             evaluate_model_ray_cpu.remote(
                                 merged_path,
-                                self.config.tasks,
-                                num_fewshot=self.config.num_fewshot,
-                                limit=self.config.limit,
+                                config.tasks,
+                                num_fewshot=config.num_fewshot,
+                                limit=config.limit,
                                 batch_size=self.batch_size,
                                 task_manager=self.task_manager,
+                                apply_chat_template=config.apply_chat_template,
+                                fewshot_as_multiturn=config.fewshot_as_multiturn,
                             )
                         ] = future_result
 
@@ -319,8 +426,8 @@ class BufferedRayEvaluationStrategyActor:
                 )
                 for r in ready:
                     if r in merging:
-                        future_result = merging.pop(r)
-                        merged.append((future_result, r))
+                        future_result, eval_config = merging.pop(r)
+                        merged.append((future_result, r, eval_config))
                     elif r in evaluating:
                         future_result = evaluating.pop(r)
                         future_result.set_result(await r)
@@ -369,11 +476,12 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
         )
         self.actor.process_queue.remote()
 
-    def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
-        return ray.get([self.actor.evaluate_genotype.remote(x) for x in genotypes])
-
-    def evaluate_genotype(self, genotype: np.ndarray) -> dict:
-        return ray.get(self.actor.evaluate_genotype.remote(genotype))
+    def _evaluate_genotypes_once(
+        self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
+    ) -> List[dict]:
+        return ray.get(
+            [self.actor.evaluate_genotype.remote(x, eval_config) for x in genotypes]
+        )
 
 
 @ray.remote
@@ -416,21 +524,22 @@ def evaluate_genotype_serial(
     kwargs = {}
     if quantization_config is not None:
         kwargs["quantization_config"] = quantization_config
+    eval_config = config
     res = ray.get(
         evaluate_model_ray.options(
             scheduling_strategy=strat,
             num_gpus=gpus_per_eval,
         ).remote(
             merged_path,
-            config.tasks,
-            num_fewshot=config.num_fewshot,
-            limit=config.limit,
+            eval_config.tasks,
+            num_fewshot=eval_config.num_fewshot,
+            limit=eval_config.limit,
             vllm=vllm,
             tensor_parallel_size=tensor_parallel_size,
             batch_size=batch_size,
             task_manager=task_manager,
-            apply_chat_template=config.apply_chat_template,
-            fewshot_as_multiturn=config.fewshot_as_multiturn,
+            apply_chat_template=eval_config.apply_chat_template,
+            fewshot_as_multiturn=eval_config.fewshot_as_multiturn,
             **kwargs,
         )
     )
@@ -500,6 +609,19 @@ def _evaluate_genotype_serial_cpu_impl(
         limit=config.limit,
         batch_size=batch_size,
         task_manager=task_manager,
+        fitness_mode=getattr(config, "fitness_mode", "weighted_sum"),
+        task_mix_profile=getattr(config, "task_mix_profile", None),
+        behavior_prompts=getattr(config, "behavior_prompts", None),
+        behavior_probe_max_new_tokens=getattr(
+            config, "behavior_probe_max_new_tokens", 24
+        ),
+        behavior_repetition_ngram_size=getattr(
+            config, "behavior_repetition_ngram_size", 4
+        ),
+        behavior_min_distinct_ratio=getattr(config, "behavior_min_distinct_ratio", 0.2),
+        behavior_reject_on_degenerate=getattr(
+            config, "behavior_reject_on_degenerate", False
+        ),
     )
     eval_seconds = time.perf_counter() - eval_start
     if res.get("score") is None:
@@ -551,7 +673,9 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
             raise ValueError("In-memory evaluation is not supported for serial mode")
         super().__init__(*args, **kwargs)
 
-    def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
+    def _evaluate_genotypes_once(
+        self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
+    ) -> List[dict]:
         import sys
 
         print(
@@ -567,7 +691,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                 [
                     evaluate_genotype_serial.remote(
                         x,
-                        self.config,
+                        eval_config,
                         self.genome,
                         self.merge_options,
                         model_storage_path=self.model_storage_path,
@@ -595,7 +719,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                 results.append(
                     _evaluate_genotype_serial_cpu_impl(
                         genotype,
-                        self.config,
+                        eval_config,
                         self.genome,
                         self.merge_options,
                         model_storage_path=self.model_storage_path,
@@ -606,6 +730,3 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
             print(f"[SERIAL] All {len(genotypes)} evaluations completed!", flush=True)
             sys.stdout.flush()
             return results
-
-    def evaluate_genotype(self, genotype: np.ndarray) -> dict:
-        return self.evaluate_genotypes([genotype])[0]

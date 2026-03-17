@@ -102,6 +102,19 @@ def _evaluate_merged_path_accelerated(
         task_manager=task_manager,
         apply_chat_template=config.apply_chat_template,
         fewshot_as_multiturn=config.fewshot_as_multiturn,
+        fitness_mode=getattr(config, "fitness_mode", "weighted_sum"),
+        task_mix_profile=getattr(config, "task_mix_profile", None),
+        behavior_prompts=getattr(config, "behavior_prompts", None),
+        behavior_probe_max_new_tokens=getattr(
+            config, "behavior_probe_max_new_tokens", 24
+        ),
+        behavior_repetition_ngram_size=getattr(
+            config, "behavior_repetition_ngram_size", 4
+        ),
+        behavior_min_distinct_ratio=getattr(config, "behavior_min_distinct_ratio", 0.2),
+        behavior_reject_on_degenerate=getattr(
+            config, "behavior_reject_on_degenerate", False
+        ),
         model_kwargs=_accelerated_eval_model_kwargs(
             vllm=vllm,
             quantization_config=quantization_config,
@@ -155,6 +168,7 @@ class OnDiskMergeEvaluator(MergeActorBase):
     def evaluate_genotype(
         self,
         genotype: torch.Tensor,
+        eval_config: Optional[EvolMergeConfiguration] = None,
     ) -> dict:
         gc.collect()
         try:
@@ -191,7 +205,7 @@ class OnDiskMergeEvaluator(MergeActorBase):
         LOG.info(f"Model merged to {merged_path}")
         return _evaluate_merged_path_accelerated(
             merged_path,
-            self.config,
+            eval_config or self.config,
             vllm=self.vllm,
             tensor_parallel_size=self.tensor_parallel_size,
             batch_size=self.batch_size,
@@ -209,7 +223,11 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def evaluate_genotype(self, genotype: torch.Tensor) -> dict:
+    def evaluate_genotype(
+        self,
+        genotype: torch.Tensor,
+        eval_config: Optional[EvolMergeConfiguration] = None,
+    ) -> dict:
         gc.collect()
         os.environ.setdefault("TRANSFORMERS_NO_CUDA", "1")
         LOG.info("Merging model (CPU)")
@@ -242,15 +260,31 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
         if self.quantization_config is not None:
             model_kwargs["quantization_config"] = self.quantization_config
         LOG.info(f"Model merged to {merged_path}")
+        config = eval_config or self.config
         return evaluate_model_cpu(
             merged_path,
-            self.config.tasks,
-            num_fewshot=self.config.num_fewshot,
-            limit=self.config.limit,
+            config.tasks,
+            num_fewshot=config.num_fewshot,
+            limit=config.limit,
             batch_size=self.batch_size,
             task_manager=self.task_manager,
-            apply_chat_template=self.config.apply_chat_template,
-            fewshot_as_multiturn=self.config.fewshot_as_multiturn,
+            apply_chat_template=config.apply_chat_template,
+            fewshot_as_multiturn=config.fewshot_as_multiturn,
+            fitness_mode=getattr(config, "fitness_mode", "weighted_sum"),
+            task_mix_profile=getattr(config, "task_mix_profile", None),
+            behavior_prompts=getattr(config, "behavior_prompts", None),
+            behavior_probe_max_new_tokens=getattr(
+                config, "behavior_probe_max_new_tokens", 24
+            ),
+            behavior_repetition_ngram_size=getattr(
+                config, "behavior_repetition_ngram_size", 4
+            ),
+            behavior_min_distinct_ratio=getattr(
+                config, "behavior_min_distinct_ratio", 0.2
+            ),
+            behavior_reject_on_degenerate=getattr(
+                config, "behavior_reject_on_degenerate", False
+            ),
             model_kwargs=model_kwargs,
         )
 
@@ -398,9 +432,23 @@ class InMemoryMergeEvaluator(MergeActorBase):
         )
         LOG.info("Model initialized")
 
-    def evaluate(self, genotype: torch.Tensor) -> dict:
+    def evaluate(
+        self,
+        genotype: torch.Tensor,
+        eval_config: Optional[EvolMergeConfiguration] = None,
+    ) -> dict:
         try:
-            config = self.genome.genotype_merge_config(genotype)
+            if hasattr(self.genome, "genotype_to_merge_plan"):
+                plan = self.genome.genotype_to_merge_plan(genotype)
+                if plan["kind"] != "config":
+                    raise InvalidGenotypeError(
+                        "In-memory evaluation does not support layered mixed-method plans"
+                    )
+                config = plan["config"]
+            elif hasattr(self.genome, "genotype_to_merge_config"):
+                config = self.genome.genotype_to_merge_config(genotype)
+            else:
+                config = self.genome.genotype_merge_config(genotype)
         except InvalidGenotypeError as e:
             LOG.error("Invalid genotype", exc_info=e)
             return {
@@ -484,19 +532,21 @@ class InMemoryMergeEvaluator(MergeActorBase):
 
             del value
 
+        config = eval_config or self.config
         return _eval_model(
             self.model,
-            self.config.tasks,
-            num_fewshot=self.config.num_fewshot,
-            limit=self.config.limit,
+            config.tasks,
+            num_fewshot=config.num_fewshot,
+            limit=config.limit,
             task_manager=self.task_manager,
             batch_size=self.batch_size,
-            apply_chat_template=self.config.apply_chat_template,
-            fewshot_as_multiturn=self.config.fewshot_as_multiturn,
+            apply_chat_template=config.apply_chat_template,
+            fewshot_as_multiturn=config.fewshot_as_multiturn,
         )
 
     def evaluate_genotype(
         self,
         genotype: torch.Tensor,
+        eval_config: Optional[EvolMergeConfiguration] = None,
     ) -> dict:
-        return self.evaluate(genotype)
+        return self.evaluate(genotype, eval_config=eval_config)

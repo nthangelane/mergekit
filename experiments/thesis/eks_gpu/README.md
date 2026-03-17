@@ -9,6 +9,7 @@ This group contains the cloud GPU experiments. The target cluster profile for th
 - `exp03_qwen25_3b_multilingual_merge`
 - `exp04_mistral7b_general_code`
 - `exp05_llama3_8b_same_family`
+- `exp06_pythia160m_phase2_ties_starter`
 
 ## Target Cluster Profile
 

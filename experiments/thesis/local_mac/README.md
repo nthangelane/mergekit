@@ -8,6 +8,7 @@ This group is for the small validation run that should execute on the developmen
 - `exp02_pythia70m_linear_passthrough_validation`
 - `exp03_pythia70m_linear_weight_sweep`
 - `exp04_pythia70m_slerp_base_validation`
+- `exp05_pythia70m_phase2_adaptive_probe`
 
 ## Suggested Run
 
@@ -42,6 +43,11 @@ replaces the GA entirely with a deterministic linear interpolation sweep plus
 staged reevaluation so the one-dimensional landscape can be mapped directly.
 `exp04` then reintroduces the GA with an explicit `base_model` and `slerp` so
 the next operator is tested without losing baseline preservation.
+
+`exp05` is the first local phase-2 preset. It keeps the tiny-model safety
+constraints but adds adaptive operator sampling, explorer slots,
+diversity-aware parent selection, candidate-level history, and behavior probes
+that can reject obviously broken children before the full evaluation pass.
 
 For this machine, the safe operating rule is still the same: local runs only
 use tiny models. Anything materially larger than Pythia-70M belongs on the EKS
@@ -90,6 +96,23 @@ python -m mergekit.scripts.evolve_ga \
   --population-size 12 \
   --max-fevals 360 \
   --limit 32 \
+  --batch-size 1 \
+  --baseline \
+  --no-reshard \
+  --random-seed 42
+```
+
+## Suggested Phase-2 Probe Run
+
+```bash
+python -m mergekit.scripts.evolve_ga \
+  experiments/thesis/local_mac/exp05_pythia70m_phase2_adaptive_probe/config.yml \
+  --storage-path /tmp/mergekit-ga-runs/pythia70m-phase2-adaptive-probe \
+  --strategy serial \
+  --num-gpus 0 \
+  --no-merge-cuda \
+  --population-size 8 \
+  --max-fevals 96 \
   --batch-size 1 \
   --baseline \
   --no-reshard \
