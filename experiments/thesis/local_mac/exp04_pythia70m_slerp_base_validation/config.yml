@@ -1,0 +1,50 @@
+# Experiment 4: local Pythia-70M validation with an explicit base model.
+# This keeps baseline preservation but swaps global linear blends for slerp.
+
+genome:
+  type: multi_method
+
+  models:
+    - lomahony/pythia-70m-helpful-sft
+    - EleutherAI/pythia-70m-deduped
+
+  base_model: EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+
+  allowed_methods:
+    - slerp
+    - passthrough
+
+  layer_granularity: 0
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: wikitext
+    weight: 0.2
+    metric: byte_perplexity,none
+  - name: sciq
+    weight: 0.8
+    metric: acc,none
+
+random_init: false
+
+ga:
+  population_size: 12
+  elite_fraction: 0.25
+  mutation_rate: 0.25
+  mutation_sigma: 0.04
+  crossover: semantic
+  semantic_crossover_prob: 0.75
+  method_mutation_rate: 0.25
+  model_mutation_rate: 0.15
+  parameter_mutation_rate: 0.15
+  tournament_size: 3
+
+limit: 64
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

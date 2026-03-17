@@ -5,6 +5,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -57,6 +58,10 @@ class ExperimentTracker(ABC):
         """Clean up and finish tracking."""
         pass
 
+    def get_run_metadata(self) -> Dict[str, Any]:
+        """Return backend-specific run metadata when available."""
+        return {}
+
 
 class WandBTracker(ExperimentTracker):
     """Weights & Biases experiment tracker."""
@@ -108,9 +113,9 @@ class WandBTracker(ExperimentTracker):
                 for task in results[0]["results"]:
                     for metric in results[0]["results"][task]:
                         values = [
-                            r["results"][task][metric]
+                            (r.get("results") or {})[task][metric]
                             for r in results
-                            if r.get("results", {}).get(task, {}).get(metric)
+                            if (r.get("results") or {}).get(task, {}).get(metric)
                             is not None
                         ]
                         if not values or all(isinstance(v, str) for v in values):
@@ -176,6 +181,8 @@ class MLflowTracker(ExperimentTracker):
     def __init__(self):
         self.run_id = None
         self.experiment_id = None
+        self.tracking_uri = None
+        self.experiment_name = None
 
     def initialize(
         self,
@@ -197,9 +204,11 @@ class MLflowTracker(ExperimentTracker):
         # Set tracking URI with environment variable fallback
         uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI") or "file://./mlruns"
         mlflow.set_tracking_uri(uri)
+        self.tracking_uri = uri
 
         # Use environment variable for experiment name if not provided
         experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", project_name)
+        self.experiment_name = experiment_name
 
         # Create or get experiment
         try:
@@ -255,9 +264,9 @@ class MLflowTracker(ExperimentTracker):
                 for task in results[0]["results"]:
                     for metric in results[0]["results"][task]:
                         values = [
-                            r["results"][task][metric]
+                            (r.get("results") or {})[task][metric]
                             for r in results
-                            if r.get("results", {}).get(task, {}).get(metric)
+                            if (r.get("results") or {}).get(task, {}).get(metric)
                             is not None
                         ]
                         if not values or all(isinstance(v, str) for v in values):
@@ -319,6 +328,46 @@ class MLflowTracker(ExperimentTracker):
         if self.run_id:
             mlflow.end_run()
             self.run_id = None
+
+    def get_run_metadata(self) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "tracker_type": "mlflow",
+            "tracking_uri": self.tracking_uri,
+            "experiment_name": self.experiment_name,
+            "experiment_id": self.experiment_id,
+            "run_id": self.run_id,
+        }
+        if not self.run_id or not self.experiment_id or not self.tracking_uri:
+            return metadata
+
+        tracking_uri = str(self.tracking_uri)
+        ui_base_url = os.getenv("MLFLOW_UI_URL")
+        if ui_base_url:
+            metadata["ui_base_url"] = ui_base_url.rstrip("/")
+            metadata["run_url"] = (
+                f"{ui_base_url.rstrip('/')}/#/experiments/{self.experiment_id}/runs/{self.run_id}"
+            )
+        if tracking_uri.startswith(("http://", "https://")):
+            metadata.setdefault("ui_base_url", tracking_uri.rstrip("/"))
+            metadata.setdefault(
+                "run_url",
+                f"{tracking_uri.rstrip('/')}/#/experiments/{self.experiment_id}/runs/{self.run_id}",
+            )
+            return metadata
+
+        local_path = tracking_uri
+        if tracking_uri.startswith("file://"):
+            local_path = tracking_uri[len("file://") :]
+        elif urlparse(tracking_uri).scheme:
+            return metadata
+
+        metadata["local_store_path"] = os.path.abspath(os.path.expanduser(local_path))
+        metadata.setdefault("ui_base_url", "http://127.0.0.1:5000")
+        metadata.setdefault(
+            "run_url",
+            f"http://127.0.0.1:5000/#/experiments/{self.experiment_id}/runs/{self.run_id}",
+        )
+        return metadata
 
 
 def create_tracker(tracker_type: str) -> ExperimentTracker:

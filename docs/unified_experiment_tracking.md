@@ -58,9 +58,17 @@ Both tracking backends capture:
    - Population size
    - Mean fitness
    - Best fitness
+   - Merge-method counts, failure counts, and success rates for multi-method runs
 3. **Best Individual**: Details of the best-performing merge configuration
 4. **Metrics**: All evaluation metrics from lm-eval tasks
 5. **Artifacts**: Best merge configuration YAML files
+
+For GA runs, mergekit now also writes:
+
+- `ga_history.csv`: generation summary table
+- `ga_method_history.csv`: per-generation merge-method counts, successes, failures, and success rates
+- `ga_summary.txt`: compact human-readable history summary
+- `mlflow_run_info.md`: tracking URI, run ID, local store path, and MLflow review URL
 
 ## Installation Requirements
 
@@ -172,6 +180,7 @@ export WANDB_API_KEY="your-api-key"
 ```bash
 export MLFLOW_TRACKING_URI="http://your-server:5000"
 export MLFLOW_EXPERIMENT_NAME="my-experiment"
+export MLFLOW_UI_URL="http://127.0.0.1:5001"  # Optional local UI base URL override
 # For S3 artifact storage
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -206,6 +215,13 @@ python -m mergekit.scripts.evolve_ga config.yml output --mlflow
 # View results
 mlflow ui
 ```
+
+Each tracked run also drops an `mlflow_run_info.md` file into its storage path.
+When local file-backed MLflow is used, that file includes:
+
+- the workspace `mlruns` path
+- the suggested `mlflow ui --backend-store-uri ...` command
+- a direct review URL such as `http://127.0.0.1:5000/#/experiments/<id>/runs/<run_id>`
 
 ### Scenario 2: Team Collaboration with Remote MLflow
 ```bash

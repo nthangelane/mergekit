@@ -22,10 +22,11 @@ import os
 import re
 import shutil
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import click
 import numpy as np
@@ -124,6 +125,224 @@ def _reusable_baseline_csv_path(
         return None
 
     return baseline_csv_path
+
+
+def _unique_model_refs(model_refs: List[ModelReference]) -> List[ModelReference]:
+    unique: List[ModelReference] = []
+    seen: set[str] = set()
+    for model_ref in model_refs:
+        model_name = str(model_ref)
+        if model_name in seen:
+            continue
+        seen.add(model_name)
+        unique.append(model_ref)
+    return unique
+
+
+def _sanitize_metric_key_fragment(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
+    return cleaned or "unknown"
+
+
+def _configured_merge_methods(config: EvolMergeConfiguration) -> List[str]:
+    genome_cfg = config.genome
+    if hasattr(genome_cfg, "allowed_methods"):
+        return [str(method) for method in getattr(genome_cfg, "allowed_methods")]
+    merge_method = getattr(genome_cfg, "merge_method", None)
+    return [str(merge_method)] if merge_method else []
+
+
+def _collect_merge_method_outcomes(
+    genotype_iterable: List[np.ndarray],
+    results: List[dict],
+    genome: Union[ModelGenome, MultiMethodGenome],
+    configured_methods: List[str],
+) -> Dict[str, Any]:
+    method_counter: Counter[str] = Counter()
+    method_success_counter: Counter[str] = Counter()
+    method_failure_counter: Counter[str] = Counter()
+    method_score_values: Dict[str, List[float]] = defaultdict(list)
+    all_methods = set(str(method) for method in configured_methods)
+
+    for genotype_candidate, result in zip(genotype_iterable, results):
+        try:
+            cfg = (
+                genome.genotype_to_merge_config(genotype_candidate)
+                if hasattr(genome, "genotype_to_merge_config")
+                else genome.genotype_merge_config(genotype_candidate)
+            )
+            method_name = str(getattr(cfg, "merge_method", None) or "unknown")
+        except Exception:  # pragma: no cover - diagnostic path only
+            logging.debug(
+                "Unable to decode genotype for merge-method outcome stats",
+                exc_info=True,
+            )
+            method_name = "decode_error"
+
+        all_methods.add(method_name)
+        method_counter[method_name] += 1
+        score = result.get("score")
+        if score is None:
+            method_failure_counter[method_name] += 1
+            continue
+
+        score_value = float(score)
+        method_success_counter[method_name] += 1
+        method_score_values[method_name].append(score_value)
+
+    metrics: Dict[str, float] = {}
+    history_rows: List[Dict[str, Union[str, float, int]]] = []
+    for method_name in sorted(all_methods):
+        total = int(method_counter.get(method_name, 0))
+        successes = int(method_success_counter.get(method_name, 0))
+        failures = int(method_failure_counter.get(method_name, 0))
+        success_rate = float(successes / total) if total else 0.0
+        metric_key = _sanitize_metric_key_fragment(method_name)
+        metrics[f"merge_method/{metric_key}/count"] = float(total)
+        metrics[f"merge_method/{metric_key}/success_count"] = float(successes)
+        metrics[f"merge_method/{metric_key}/failure_count"] = float(failures)
+        metrics[f"merge_method/{metric_key}/success_rate"] = success_rate
+
+        score_values = method_score_values.get(method_name, [])
+        mean_score = None
+        best_score = None
+        if score_values:
+            mean_score = float(sum(score_values) / len(score_values))
+            best_score = float(max(score_values))
+            metrics[f"merge_method/{metric_key}/mean_score"] = mean_score
+            metrics[f"merge_method/{metric_key}/best_score"] = best_score
+
+        history_rows.append(
+            {
+                "merge_method": method_name,
+                "count": total,
+                "success_count": successes,
+                "failure_count": failures,
+                "success_rate": success_rate,
+                "mean_score": mean_score,
+                "best_score": best_score,
+            }
+        )
+
+    return {
+        "method_counts": method_counter,
+        "method_success_counts": method_success_counter,
+        "method_failure_counts": method_failure_counter,
+        "metrics": metrics,
+        "history_rows": history_rows,
+    }
+
+
+def _write_merge_method_history(
+    storage_path: str,
+    generation: int,
+    fevals: int,
+    rows: List[Dict[str, Union[str, float, int]]],
+) -> None:
+    history_path = os.path.join(storage_path, "ga_method_history.csv")
+    file_exists = os.path.exists(history_path)
+    with open(history_path, "a", encoding="utf-8", newline="") as history_file:
+        fieldnames = [
+            "generation",
+            "fevals",
+            "merge_method",
+            "count",
+            "success_count",
+            "failure_count",
+            "success_rate",
+            "mean_score",
+            "best_score",
+        ]
+        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "generation": generation,
+                    "fevals": fevals,
+                    **row,
+                }
+            )
+
+
+def _write_mlflow_run_info(
+    storage_path: str,
+    tracker,
+    project_name: Optional[str] = None,
+) -> Optional[str]:
+    metadata = getattr(tracker, "get_run_metadata", lambda: {})()
+    if not metadata or metadata.get("tracker_type") != "mlflow":
+        return None
+
+    info_path = os.path.join(storage_path, "mlflow_run_info.md")
+    lines = [
+        "# MLflow Run Info",
+        "",
+    ]
+    if project_name:
+        lines.append(f"- Experiment Name: {project_name}")
+    experiment_id = metadata.get("experiment_id")
+    run_id = metadata.get("run_id")
+    tracking_uri = metadata.get("tracking_uri")
+    local_store_path = metadata.get("local_store_path")
+    run_url = metadata.get("run_url")
+    ui_base_url = metadata.get("ui_base_url")
+
+    if experiment_id:
+        lines.append(f"- Experiment ID: `{experiment_id}`")
+    if run_id:
+        lines.append(f"- Run ID: `{run_id}`")
+    if tracking_uri:
+        lines.append(f"- Tracking URI: `{tracking_uri}`")
+    if local_store_path:
+        lines.append(f"- Local Store Path: `{local_store_path}`")
+    if ui_base_url:
+        lines.append(f"- MLflow UI Base URL: `{ui_base_url}`")
+    if run_url:
+        lines.append(f"- MLflow Review URL: {run_url}")
+    if local_store_path:
+        ui_port = "5000"
+        if ui_base_url:
+            parsed = urlparse(str(ui_base_url))
+            if parsed.port is not None:
+                ui_port = str(parsed.port)
+        lines.extend(
+            [
+                "",
+                "## Local UI",
+                "",
+                "Start the UI with:",
+                "",
+                "```bash",
+                f"mlflow ui --backend-store-uri '{local_store_path}' --port {ui_port}",
+                "```",
+            ]
+        )
+
+    with open(info_path, "w", encoding="utf-8") as info_file:
+        info_file.write("\n".join(lines) + "\n")
+
+    return info_path
+
+
+def _log_run_artifacts(tracker, storage_path: str) -> None:
+    artifacts = {
+        "ga_history": "ga_history.csv",
+        "ga_method_history": "ga_method_history.csv",
+        "ga_summary": "ga_summary.txt",
+        "ga_history_plot": "ga_history_plot.png",
+        "baseline_results": "baseline_results.csv",
+        "failed_genotypes": "failed_genotypes.csv",
+        "failed_genotype_blacklist": FAILED_BLACKLIST_FILENAME,
+        "final_comparison": "ga_final_comparison.csv",
+        "final_comparison_plot": "ga_final_comparison.png",
+        "mlflow_run_info": "mlflow_run_info.md",
+    }
+    for artifact_name, file_name in artifacts.items():
+        file_path = os.path.join(storage_path, file_name)
+        if os.path.exists(file_path):
+            tracker.log_artifact(file_path, artifact_name)
 
 
 def _score_improvement(
@@ -620,6 +839,17 @@ def main(
         tracker = create_tracker("none")
         tracker.initialize(project_name="no-tracking", config={})
 
+    mlflow_info_path = _write_mlflow_run_info(
+        storage_path,
+        tracker,
+        project_name=mlflow_experiment or "mergekit-evolve-ga",
+    )
+    if mlflow_info_path:
+        stage_log("Stage-Tracking", f"MLflow run info written to {mlflow_info_path}")
+        metadata = getattr(tracker, "get_run_metadata", lambda: {})()
+        if metadata.get("run_url"):
+            stage_log("Stage-Tracking", f"MLflow review URL: {metadata['run_url']}")
+
     # convert models to single-shard safetensors
     if reshard:
         stage_log(
@@ -786,6 +1016,7 @@ def main(
     total_generations = max(
         1, math.ceil(max_fevals / max(ga_params.population_size, 1))
     )
+    configured_methods = _configured_merge_methods(config)
 
     def _format_time(seconds: Optional[float]) -> str:
         if seconds is None or not math.isfinite(seconds) or seconds <= 0:
@@ -829,7 +1060,6 @@ def main(
         log_population(res_list, step)
 
         base_model_counter: Counter[str] = Counter()
-        method_counter: Counter[str] = Counter()
 
         def _record_base_model(model_ref) -> None:
             if model_ref:
@@ -851,10 +1081,6 @@ def main(
                 )
                 return
 
-            method = getattr(cfg, "merge_method", None)
-            if method:
-                method_counter[str(method)] += 1
-
             _record_base_model(getattr(cfg, "base_model", None))
 
             if cfg.slices:
@@ -875,6 +1101,16 @@ def main(
         else:
             genotype_iterable = list(pop_arr)
 
+        merge_method_outcomes = _collect_merge_method_outcomes(
+            genotype_iterable,
+            res_list,
+            genome,
+            configured_methods,
+        )
+        method_counter = merge_method_outcomes["method_counts"]
+        method_success_counter = merge_method_outcomes["method_success_counts"]
+        method_failure_counter = merge_method_outcomes["method_failure_counts"]
+
         for genotype_candidate in genotype_iterable:
             _tally_config(genotype_candidate)
 
@@ -886,6 +1122,8 @@ def main(
 
         base_model_counts_str = _format_counter(base_model_counter)
         merge_method_counts_str = _format_counter(method_counter)
+        merge_method_success_counts_str = _format_counter(method_success_counter)
+        merge_method_failure_counts_str = _format_counter(method_failure_counter)
 
         # Compute CSV row values
         generation = int(
@@ -935,6 +1173,12 @@ def main(
             f"global_best={global_best_str} Δbest={delta_str} "
             f"evaluated={evaluations} cache_hits={cache_hits} failed={failed_evals} "
             f"crossover_children={crossover_children} type={crossover_type} immigrants={immigrants}"
+            + (f" methods={merge_method_counts_str}" if merge_method_counts_str else "")
+            + (
+                f" method_success={merge_method_success_counts_str}"
+                if merge_method_success_counts_str
+                else ""
+            )
             + (f" failure_reasons={failure_reasons}" if failure_reasons else "")
         )
 
@@ -977,6 +1221,16 @@ def main(
                     f.write(line)
         except Exception as e:
             logging.warning("Failed to write ga_history.csv", exc_info=e)
+
+        try:
+            _write_merge_method_history(
+                storage_path,
+                generation,
+                step,
+                merge_method_outcomes["history_rows"],
+            )
+        except Exception as e:
+            logging.warning("Failed to write ga_method_history.csv", exc_info=e)
 
         new_failed_rows = []
         for genotype_candidate, result in zip(genotype_iterable, res_list):
@@ -1086,6 +1340,7 @@ def main(
             },
             step=step,
         )
+        tracker.log_metrics(merge_method_outcomes["metrics"], step=step)
 
         # Log top-5 scores
         scores = [r["score"] for r in res_list if r["score"] is not None]
@@ -1386,6 +1641,9 @@ def main(
         stage_log("Stage-GA", "- Insufficient population size or evaluations")
         prune_stale_merged_artifacts(storage_path)
 
+    _log_run_artifacts(tracker, storage_path)
+    tracker.finish()
+
 
 def run_baseline_evaluations(
     config: EvolMergeConfiguration,
@@ -1405,6 +1663,7 @@ def run_baseline_evaluations(
     models: List[ModelReference] = list(config.genome.models)
     if getattr(config.genome, "base_model", None) is not None:
         models.append(config.genome.base_model)
+    models = _unique_model_refs(models)
 
     if not models:
         stage_log(

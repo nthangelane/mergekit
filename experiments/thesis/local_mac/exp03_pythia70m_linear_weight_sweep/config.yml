@@ -1,0 +1,25 @@
+# Experiment 3: deterministic local weight sweep on the same two Pythia-70M parents.
+# This config is consumed by mergekit.scripts.linear_sweep rather than evolve_ga.
+
+genome:
+  merge_method: linear
+  models:
+    - lomahony/pythia-70m-helpful-sft
+    - EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+  layer_granularity: 0
+  normalize: true
+  allow_negative_weights: false
+
+tasks:
+  - name: wikitext
+    weight: 0.2
+    metric: byte_perplexity,none
+  - name: sciq
+    weight: 0.8
+    metric: acc,none
+
+limit: 64
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

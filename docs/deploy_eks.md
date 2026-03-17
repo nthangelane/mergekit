@@ -92,7 +92,10 @@ MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks submit \
   --no-save-final-model
 
 # Open the Ray dashboard
-mergekit-eks dashboard --region us-east-1
+mergekit-eks --namespace mergekit dashboard \
+  --ray-cluster-name mergekit-ga \
+  --local-port 18265 \
+  --ray-client-port 11001
 
 # Materialize the finalist later on a GPU worker
 MERGEKIT_IMAGE=$MERGEKIT_IMAGE mergekit-eks submit-finalist \
@@ -115,6 +118,24 @@ When GPU workers are part of the EKS shape, bootstrap also:
 - Keeps those changes scoped to the EKS path only; local `mergekit-evolve-ga` runs are unchanged
 
 The `dashboard` command standardises Ray UI access for every run by port-forwarding `svc/<ray-cluster-name>-head-svc` and printing the local dashboard URL.
+
+Use a dedicated local port pair for EKS so it does not collide with local Ray runs:
+
+- Local Ray UI: `8265`
+- EKS Ray UI: `18265`
+- Local Ray client: `10001`
+- EKS Ray client: `11001`
+
+Recommended command:
+
+```sh
+mergekit-eks --namespace mergekit dashboard \
+  --ray-cluster-name mergekit-ga \
+  --local-port 18265 \
+  --ray-client-port 11001
+```
+
+Then open [http://127.0.0.1:18265](http://127.0.0.1:18265).
 
 ### Option B — Manual commands
 

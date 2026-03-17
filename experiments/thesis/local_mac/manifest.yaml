@@ -18,3 +18,45 @@ experiments:
     recommended_num_gpus: 0
     recommended_num_workers: 4
     recommended_tensor_parallel_size: 1
+  - id: exp02
+    name: Pythia-70M Linear + Passthrough Validation
+    family: pythia
+    reason: Local CPU-only validation run to confirm that baseline preservation, passthrough seeding, and tokenizer reuse stay stable before moving larger same-family experiments to EKS.
+    config_path: experiments/thesis/local_mac/exp02_pythia70m_linear_passthrough_validation/config.yml
+    storage_path: /tmp/mergekit-ga-runs/pythia70m-linear-passthrough-base-pop12-g50
+    storage_subpath: thesis/local_mac/exp02_pythia70m_linear_passthrough_validation
+    recommended_population: 12
+    recommended_generations: 50
+    recommended_max_fevals: 600
+    recommended_strategy: serial
+    recommended_num_gpus: 0
+    recommended_num_workers: 1
+    recommended_tensor_parallel_size: 1
+  - id: exp03
+    name: Pythia-70M Deterministic Linear Weight Sweep
+    family: pythia
+    reason: Replace stochastic search with a direct interpolation map on the same two local parents, then rerank the best alphas with a higher evaluation limit.
+    config_path: experiments/thesis/local_mac/exp03_pythia70m_linear_weight_sweep/config.yml
+    storage_path: /tmp/mergekit-linear-sweep/pythia70m-alpha-grid
+    storage_subpath: thesis/local_mac/exp03_pythia70m_linear_weight_sweep
+    recommended_population: 21
+    recommended_generations: 1
+    recommended_max_fevals: 21
+    recommended_strategy: serial
+    recommended_num_gpus: 0
+    recommended_num_workers: 1
+    recommended_tensor_parallel_size: 1
+  - id: exp04
+    name: Pythia-70M SLERP Base-Model Validation
+    family: pythia
+    reason: Test whether an explicit base model and slerp interpolation behave better locally than plain linear blends while still allowing passthrough preservation.
+    config_path: experiments/thesis/local_mac/exp04_pythia70m_slerp_base_validation/config.yml
+    storage_path: /tmp/mergekit-ga-runs/pythia70m-slerp-base-pop12-g30
+    storage_subpath: thesis/local_mac/exp04_pythia70m_slerp_base_validation
+    recommended_population: 12
+    recommended_generations: 30
+    recommended_max_fevals: 360
+    recommended_strategy: serial
+    recommended_num_gpus: 0
+    recommended_num_workers: 1
+    recommended_tensor_parallel_size: 1

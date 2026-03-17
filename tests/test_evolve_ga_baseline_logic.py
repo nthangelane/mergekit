@@ -1,15 +1,20 @@
 import math
 import os
+from types import SimpleNamespace
 
 import pandas
 import pytest
 
+from mergekit.evo.tracking import MLflowTracker
 from mergekit.scripts.evolve_ga import (
     _best_weighted_score_from_frame,
+    _collect_merge_method_outcomes,
     _init_ray_for_baselines,
     _meets_improvement_thresholds,
     _reusable_baseline_csv_path,
     _score_improvement,
+    _unique_model_refs,
+    _write_mlflow_run_info,
 )
 
 
@@ -102,3 +107,70 @@ def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
     assert len(init_calls) == 2
     assert init_calls[0]["address"] == "auto"
     assert "address" not in init_calls[1]
+
+
+def test_unique_model_refs_preserves_order_while_deduping():
+    unique = _unique_model_refs(["model-a", "model-b", "model-a", "model-c"])
+
+    assert unique == ["model-a", "model-b", "model-c"]
+
+
+class _DummyGenome:
+    def genotype_to_merge_config(self, genotype):
+        return SimpleNamespace(merge_method=str(genotype))
+
+
+def test_collect_merge_method_outcomes_computes_success_rates():
+    outcomes = _collect_merge_method_outcomes(
+        ["linear", "linear", "passthrough"],
+        [
+            {"score": 0.2},
+            {"score": None},
+            {"score": 0.5},
+        ],
+        _DummyGenome(),
+        ["linear", "passthrough"],
+    )
+
+    assert outcomes["method_counts"]["linear"] == 2
+    assert outcomes["method_success_counts"]["linear"] == 1
+    assert outcomes["method_failure_counts"]["linear"] == 1
+    assert math.isclose(outcomes["metrics"]["merge_method/linear/success_rate"], 0.5)
+    assert math.isclose(
+        outcomes["metrics"]["merge_method/passthrough/success_rate"], 1.0
+    )
+
+
+def test_write_mlflow_run_info_writes_review_url(tmp_path):
+    tracker = SimpleNamespace(
+        get_run_metadata=lambda: {
+            "tracker_type": "mlflow",
+            "experiment_id": "123",
+            "run_id": "abc",
+            "tracking_uri": "file://./mlruns",
+            "local_store_path": str(tmp_path / "mlruns"),
+            "run_url": "http://127.0.0.1:5000/#/experiments/123/runs/abc",
+        }
+    )
+
+    info_path = _write_mlflow_run_info(
+        str(tmp_path), tracker, project_name="mergekit-evolve-ga"
+    )
+
+    assert info_path is not None
+    content = (tmp_path / "mlflow_run_info.md").read_text(encoding="utf-8")
+    assert "MLflow Review URL" in content
+    assert "http://127.0.0.1:5000/#/experiments/123/runs/abc" in content
+
+
+def test_mlflow_tracker_prefers_ui_url_env(monkeypatch):
+    tracker = MLflowTracker()
+    tracker.tracking_uri = "file:///tmp/mlruns"
+    tracker.experiment_name = "demo"
+    tracker.experiment_id = "42"
+    tracker.run_id = "run-123"
+
+    monkeypatch.setenv("MLFLOW_UI_URL", "http://127.0.0.1:5001")
+    metadata = tracker.get_run_metadata()
+
+    assert metadata["run_url"] == "http://127.0.0.1:5001/#/experiments/42/runs/run-123"
