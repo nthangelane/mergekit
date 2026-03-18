@@ -74,6 +74,28 @@ class ConstantScoreStrategy:
         return [{"score": self.score, "results": {}} for _ in genotypes]
 
 
+class ObjectiveStrategy:
+    def evaluate_genotypes(self, genotypes):
+        results = []
+        for genotype in genotypes:
+            flat = np.array(genotype).ravel().astype(np.float32)
+            raw_score = float(flat[0])
+            task_score = float(flat[1])
+            results.append(
+                {
+                    "score": raw_score,
+                    "results": {},
+                    "fitness_components": {
+                        "raw_weighted_score": raw_score,
+                        "task_score": task_score,
+                        "language_quality": task_score,
+                        "stability_score": 1.0,
+                    },
+                }
+            )
+        return results
+
+
 def _build_multi_method_genome(monkeypatch, allowed_methods):
     class DummyConfig:
         def __init__(self):
@@ -223,6 +245,27 @@ def test_enhanced_ga_seeds_passthrough_individuals(monkeypatch):
     )
 
 
+def test_enhanced_ga_respects_passthrough_seed_cap(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["passthrough", "linear", "slerp"])
+
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=4,
+            passthrough_max_fraction=0.25,
+        ),
+        random_init=False,
+        seed=0,
+    )
+
+    pop = opt._init_population()
+    methods = [opt._method_name_for_genotype(individual) for individual in pop]
+
+    assert methods.count("passthrough") <= 1
+    assert methods.count("linear") >= 2
+
+
 def test_enhanced_ga_applies_passthrough_penalty(monkeypatch):
     genome = _build_multi_method_genome(monkeypatch, ["linear", "passthrough"])
     strategy = ConstantScoreStrategy(score=1.0)
@@ -357,6 +400,109 @@ def test_enhanced_ga_role_separation_records_explorer_children(monkeypatch):
 
     assert opt._prev_generation_breeding["role_counts"]["explorer"] >= 1
     assert opt._prev_generation_breeding["role_counts"]["elite"] >= 1
+
+
+def test_explorer_sampling_prefers_less_common_non_passthrough_method(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["passthrough", "linear", "slerp"])
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=4,
+            adaptive_method_sampling=True,
+            initial_method_probs={
+                "passthrough": 0.30,
+                "linear": 0.60,
+                "slerp": 0.10,
+            },
+        ),
+        seed=0,
+    )
+
+    sampled = opt._sample_target_method(Counter(), target_children=3, exploration=True)
+
+    assert sampled == "slerp"
+
+
+def test_enhanced_ga_resamples_duplicate_children(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["linear", "passthrough"])
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(population_size=4, duplicate_retry_limit=2),
+        seed=0,
+    )
+
+    child = genome.initial_genotype(random=False).view(-1).numpy()
+    existing = {opt._hash(child)}
+
+    calls = {"count": 0}
+
+    def fake_mutate(x):
+        calls["count"] += 1
+        updated = np.array(x, dtype=np.float32).copy()
+        updated[1] += 0.25
+        return updated
+
+    monkeypatch.setattr(opt, "_enhanced_mutate", fake_mutate)
+
+    unique_child, retries = opt._make_child_unique(child, existing_hashes=existing)
+
+    assert retries == 1
+    assert calls["count"] == 1
+    assert opt._hash(unique_child) not in existing
+
+
+def test_enhanced_ga_weighted_rank_can_override_raw_score():
+    genome = FakeGenome(dim=2)
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=ObjectiveStrategy(),
+        params=EnhancedGAParams(
+            population_size=2,
+            fitness_mode="weighted_rank",
+            rank_objective_weights={
+                "raw_weighted_score": 0.1,
+                "task_score": 0.7,
+                "language_quality": 0.1,
+                "stability_score": 0.1,
+            },
+        ),
+        seed=0,
+    )
+
+    pop = np.array([[0.9, 0.1], [0.8, 0.9]], dtype=np.float32)
+    fitness, results = opt._evaluate_population(pop)
+
+    assert fitness[1] > fitness[0]
+    assert results[0]["raw_score"] == pytest.approx(0.9)
+    assert results[1]["fitness_proxy"] == "weighted_rank"
+
+
+def test_enhanced_ga_archive_novelty_bonus_rewards_new_regions():
+    genome = FakeGenome(dim=2)
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=ConstantScoreStrategy(score=1.0),
+        params=EnhancedGAParams(
+            population_size=2,
+            archive_novelty_bonus_weight=0.5,
+            novelty_archive_size=8,
+        ),
+        seed=0,
+    )
+    opt._novelty_archive = [np.array([0.0, 0.0], dtype=np.float32)]
+
+    baseline = opt._adjust_result_score(
+        {"score": 1.0, "results": {}}, np.array([0.0, 0.0], dtype=np.float32)
+    )
+    novel = opt._adjust_result_score(
+        {"score": 1.0, "results": {}}, np.array([1.0, 1.0], dtype=np.float32)
+    )
+
+    assert baseline["fitness_components"]["archive_novelty_score"] == pytest.approx(0.0)
+    assert novel["fitness_components"]["archive_novelty_score"] > 0.0
+    assert novel["score"] > baseline["score"]
 
 
 def test_enhanced_ga_adds_gene_and_behavior_diversity_bonus(monkeypatch):

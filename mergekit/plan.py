@@ -177,7 +177,7 @@ class MergePlanner:
                 logging.info(f"Skipping optional weight {weight.name}")
                 return
 
-        tensor_merge_method = self._method
+        tensor_merge_method = merge_methods.get(cfg_reader.merge_method)
         cfg_g = cfg_reader.for_tensor(weight.name)
         global_params = {}
         for p in tensor_merge_method.parameters():

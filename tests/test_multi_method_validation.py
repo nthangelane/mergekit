@@ -161,6 +161,50 @@ def test_passthrough_config_selects_one_model(monkeypatch):
     assert str(config.slices[0].sources[0].model) == "author/model-a"
 
 
+def test_default_genotype_prefers_linear_even_if_passthrough_is_listed_first(
+    monkeypatch,
+):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    definition = MultiMethodGenomeDefinition.model_validate(
+        {
+            "models": [
+                "author/model-a",
+                "author/model-b",
+            ],
+            "base_model": "author/model-a",
+            "allowed_methods": ["passthrough", "linear", "slerp"],
+            "layer_granularity": 0,
+            "enable_method_evolution": True,
+            "enable_model_selection": True,
+            "max_models_per_layer": 2,
+        }
+    )
+
+    genome = MultiMethodGenome(definition)
+    genotype = genome.initial_genotype(random=False)
+    config = genome.genotype_to_merge_config(genotype)
+
+    assert config.merge_method == "linear"
+
+
 def test_m1_micro_example_uses_layer_blocks(monkeypatch):
     class DummyConfig:
         def __init__(self):
@@ -277,6 +321,43 @@ def test_phase1_profile_rejects_large_mutation():
         )
 
 
+def test_phase3_profile_allows_expanded_method_family():
+    config = EvolMergeConfiguration.model_validate(
+        {
+            "genome": {
+                "type": "multi_method",
+                "models": ["author/model-a", "author/model-b"],
+                "base_model": "author/model-a",
+                "allowed_methods": [
+                    "linear",
+                    "slerp",
+                    "ties",
+                    "dare_linear",
+                    "dare_ties",
+                    "passthrough",
+                ],
+                "max_models_per_layer": 2,
+            },
+            "tasks": ["sciq"],
+            "fitness_mode": "weighted_rank",
+            "task_mix_profile": "pythia70m_phase3",
+            "ga": {
+                "mutation_rate": 0.1,
+                "mutation_sigma": 0.01,
+                "rank_objective_weights": {
+                    "task_score": 0.4,
+                    "language_quality": 0.3,
+                    "stability_score": 0.2,
+                    "archive_novelty_score": 0.1,
+                },
+            },
+        }
+    )
+
+    assert config.fitness_mode == "weighted_rank"
+    assert config.task_mix_profile == "pythia70m_phase3"
+
+
 def test_layered_single_method_config_emits_real_slices(monkeypatch):
     class DummyConfig:
         def __init__(self):
@@ -317,7 +398,7 @@ def test_layered_single_method_config_emits_real_slices(monkeypatch):
     assert config.slices[1].sources[0].layer_range == (2, 4)
 
 
-def test_layered_mixed_method_plan_builds_component_configs(monkeypatch):
+def test_layered_mixed_method_plan_builds_real_slice_config(monkeypatch):
     class DummyConfig:
         def __init__(self):
             self.num_hidden_layers = 4
@@ -361,18 +442,16 @@ def test_layered_mixed_method_plan_builds_component_configs(monkeypatch):
 
     plan = genome.genotype_to_merge_plan(genotype)
 
-    assert plan["kind"] == "layered"
-    assert [component["name"] for component in plan["components"]] == [
-        "linear",
-        "passthrough",
-    ]
-    assert plan["final_slices"] == [
-        {"component": "linear", "layer_range": [0, 2]},
-        {"component": "passthrough", "layer_range": [2, 4]},
-    ]
+    assert plan["kind"] == "config"
+    config = plan["config"]
+    assert config.slices is not None
+    assert config.slices[0].merge_method == "linear"
+    assert config.slices[1].merge_method == "passthrough"
+    assert config.slices[0].sources[0].layer_range == (0, 2)
+    assert config.slices[1].sources[0].layer_range == (2, 4)
 
 
-def test_merge_model_with_details_executes_layered_plan(monkeypatch, tmp_path):
+def test_merge_model_with_details_executes_native_layered_config(monkeypatch, tmp_path):
     class DummyConfig:
         def __init__(self):
             self.num_hidden_layers = 4
@@ -413,10 +492,10 @@ def test_merge_model_with_details_executes_layered_plan(monkeypatch, tmp_path):
     ] = 0.0
     genotype[second_group_offset + genome.method_dim] = 1.0
 
-    merge_methods = []
+    seen_configs = []
 
     def fake_run_merge(cfg, out_path, options, **kwargs):
-        merge_methods.append(cfg.merge_method)
+        seen_configs.append(cfg)
         Path(out_path).mkdir(parents=True, exist_ok=True)
         (Path(out_path) / "config.json").write_text("{}", encoding="utf-8")
 
@@ -434,4 +513,10 @@ def test_merge_model_with_details_executes_layered_plan(monkeypatch, tmp_path):
     )
 
     assert result["merged_path"] is not None
-    assert merge_methods == ["linear", "passthrough", "passthrough"]
+    assert len(seen_configs) == 1
+    assert seen_configs[0].slices is not None
+    assert [slice_def.merge_method for slice_def in seen_configs[0].slices] == [
+        "linear",
+        "passthrough",
+    ]
+    assert "resolved_merge_config" in result

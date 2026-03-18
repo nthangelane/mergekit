@@ -67,12 +67,14 @@ class OutputSliceDefinition(BaseModel):
     sources: List[InputSliceDefinition]
     base_model: Optional[ModelReference] = None
     residual_weight: Optional[float] = None
+    merge_method: Optional[str] = None
     parameters: Optional[Dict[str, ParameterSetting]] = None
 
 
 class OutputModuleDefinition(BaseModel):
     slices: Optional[List[OutputSliceDefinition]] = None
     models: Optional[List[InputModelDefinition]] = None
+    merge_method: Optional[str] = None
     parameters: Optional[Dict[str, ParameterSetting]] = None
 
     @model_validator(mode="after")
@@ -164,6 +166,14 @@ class ConfigReader(BaseModel):
             res = self.config.base_model
 
         return res
+
+    @property
+    def merge_method(self) -> str:
+        if self.slice_out and self.slice_out.merge_method:
+            return self.slice_out.merge_method
+        if self.module and self.module.merge_method:
+            return self.module.merge_method
+        return self.config.merge_method
 
     def for_out_slice(self, slice: OutputSliceDefinition) -> "ConfigReader":
         return ConfigReader(

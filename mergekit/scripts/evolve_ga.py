@@ -1086,6 +1086,18 @@ def main(
                 is not None
                 else None
             ),
+            "ga/archive_novelty_bonus_weight": (
+                float(getattr(yaml_ga, "archive_novelty_bonus_weight"))
+                if yaml_ga
+                and getattr(yaml_ga, "archive_novelty_bonus_weight", None) is not None
+                else None
+            ),
+            "ga/novelty_archive_size": (
+                float(getattr(yaml_ga, "novelty_archive_size"))
+                if yaml_ga
+                and getattr(yaml_ga, "novelty_archive_size", None) is not None
+                else None
+            ),
         }
     )
 
@@ -1213,6 +1225,7 @@ def main(
         candidate_rows: List[Dict[str, Any]] = []
         gene_diversity_values: List[float] = []
         behavior_diversity_values: List[float] = []
+        archive_novelty_values: List[float] = []
         stability_values: List[float] = []
 
         for genotype_candidate in genotype_iterable:
@@ -1248,6 +1261,7 @@ def main(
                 "behavior_diversity_score",
                 behavior_probe.get("behavior_diversity_score"),
             )
+            archive_novelty = fitness_components.get("archive_novelty_score")
             stability_score = fitness_components.get(
                 "stability_score", behavior_probe.get("stability_score")
             )
@@ -1255,6 +1269,8 @@ def main(
                 gene_diversity_values.append(float(gene_diversity))
             if behavior_diversity is not None:
                 behavior_diversity_values.append(float(behavior_diversity))
+            if archive_novelty is not None:
+                archive_novelty_values.append(float(archive_novelty))
             if stability_score is not None:
                 stability_values.append(float(stability_score))
 
@@ -1275,6 +1291,7 @@ def main(
                     "stability_score": stability_score,
                     "gene_diversity_score": gene_diversity,
                     "behavior_diversity_score": behavior_diversity,
+                    "archive_novelty_score": archive_novelty,
                     "passthrough_penalty": fitness_components.get(
                         "passthrough_penalty"
                     ),
@@ -1284,6 +1301,10 @@ def main(
                     "behavior_diversity_bonus": fitness_components.get(
                         "behavior_diversity_bonus"
                     ),
+                    "archive_novelty_bonus": fitness_components.get(
+                        "archive_novelty_bonus"
+                    ),
+                    "fitness_proxy": result.get("fitness_proxy"),
                     "error_stage": result.get("error_stage"),
                     "error_type": result.get("error_type"),
                     "error_message": result.get("error_message"),
@@ -1329,6 +1350,9 @@ def main(
             float(np.mean(behavior_diversity_values))
             if behavior_diversity_values
             else None
+        )
+        archive_novelty_mean = (
+            float(np.mean(archive_novelty_values)) if archive_novelty_values else None
         )
         stability_mean = float(np.mean(stability_values)) if stability_values else None
 
@@ -1559,6 +1583,7 @@ def main(
                 "population/passthrough_fraction": passthrough_fraction,
                 "population/gene_diversity_mean": gene_diversity_mean,
                 "population/behavior_diversity_mean": behavior_diversity_mean,
+                "population/archive_novelty_mean": archive_novelty_mean,
                 "population/stability_mean": stability_mean,
                 "ga/adaptive_method_sampling": float(
                     info.get("adaptive_method_sampling", 0.0)
@@ -1620,6 +1645,9 @@ def main(
         or getattr(config.ga, "diversity_parent_weight", None) is not None
         or getattr(config.ga, "gene_diversity_bonus_weight", None) is not None
         or getattr(config.ga, "behavior_diversity_bonus_weight", None) is not None
+        or getattr(config.ga, "archive_novelty_bonus_weight", None) is not None
+        or getattr(config.ga, "rank_objective_weights", None) is not None
+        or config.fitness_mode == "weighted_rank"
     )
 
     if use_enhanced:
@@ -1738,6 +1766,26 @@ def main(
             enhanced_params.behavior_diversity_bonus_weight = (
                 config.ga.behavior_diversity_bonus_weight
             )
+        if (
+            hasattr(config.ga, "archive_novelty_bonus_weight")
+            and config.ga.archive_novelty_bonus_weight is not None
+        ):
+            enhanced_params.archive_novelty_bonus_weight = (
+                config.ga.archive_novelty_bonus_weight
+            )
+        if (
+            hasattr(config.ga, "novelty_archive_size")
+            and config.ga.novelty_archive_size is not None
+        ):
+            enhanced_params.novelty_archive_size = config.ga.novelty_archive_size
+        if (
+            hasattr(config.ga, "rank_objective_weights")
+            and config.ga.rank_objective_weights is not None
+        ):
+            enhanced_params.rank_objective_weights = dict(
+                config.ga.rank_objective_weights
+            )
+        enhanced_params.fitness_mode = config.fitness_mode
 
         optimizer = EnhancedGAOptimizer(
             genome=genome,

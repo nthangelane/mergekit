@@ -352,24 +352,47 @@ class MultiMethodGenome:
     def _default_genotype(self) -> torch.Tensor:
         """Create a sensible default genotype."""
         genotype = torch.zeros(self.total_dim)
+        default_method_name = (
+            "linear"
+            if "linear" in self.definition.allowed_methods
+            else self.definition.allowed_methods[0]
+        )
+        default_method = self.method_enum_from_name(default_method_name)
+        default_param_count = METHOD_PARAM_COUNTS[default_method]
 
         for layer_idx in range(self.num_layer_groups):
             offset = layer_idx * self.layer_group_dim
 
-            # Default method (linear = 0)
+            # Default to a smooth merge method when available, independent of
+            # the configured allowed-method ordering.
             if self.method_dim > 0:
-                genotype[offset] = 0  # MergeMethod.LINEAR
+                genotype[offset] = self.method_gene_value(default_method_name)
 
             # Equal model weights
             model_start = offset + self.method_dim
             model_end = model_start + self.model_selection_dim
-            genotype[model_start:model_end] = 1.0 / self.model_selection_dim
+            projected_weights = self.project_model_selection_for_method(
+                np.ones(self.model_selection_dim, dtype=np.float32), default_method_name
+            )
+            genotype[model_start:model_end] = torch.from_numpy(projected_weights)
 
-            # Default parameters (equal weights, full density)
+            # Default parameters stay within the configured method's safe shape.
             param_start = model_end
-            genotype[param_start] = 1.0 / self.model_selection_dim  # weight
-            if self.param_dim > 1:
-                genotype[param_start + 1] = 1.0  # density
+            if default_method in {MergeMethod.LINEAR, MergeMethod.SLERP}:
+                genotype[param_start] = 0.5
+            elif default_method in {
+                MergeMethod.TIES,
+                MergeMethod.DARE_TIES,
+                MergeMethod.TASK_ARITHMETIC,
+                MergeMethod.DARE_LINEAR,
+            }:
+                genotype[param_start] = 0.5
+                if default_param_count > 1:
+                    genotype[param_start + 1] = 1.0
+            elif default_method == MergeMethod.NUSLERP:
+                genotype[param_start] = 1.0
+            else:
+                genotype[param_start] = 1.0 / max(1, self.model_selection_dim)
 
         return genotype
 
@@ -669,7 +692,7 @@ class MultiMethodGenome:
         method_name = METHOD_NAMES[method]
         selected_models = self._select_models_for_layer_group(group_for_slice)
         start, end = self._layer_range_for_index(layer_idx)
-        slice_entry: Dict[str, Any] = {"sources": []}
+        slice_entry: Dict[str, Any] = {"sources": [], "merge_method": method_name}
 
         if method_name in ["linear", "task_arithmetic", "karcher", "model_stock"]:
             for model_ref, weight in selected_models:
@@ -683,6 +706,7 @@ class MultiMethodGenome:
                         },
                     }
                 )
+            slice_entry["parameters"] = {"normalize": True, "int8_mask": True}
         elif method_name in ["ties", "dare_ties", "dare_linear", "della_linear"]:
             density_value = (
                 float(np.clip(group_for_slice.parameters[1], 0.0, 1.0))
@@ -709,6 +733,8 @@ class MultiMethodGenome:
                         "parameters": params,
                     }
                 )
+            slice_entry.setdefault("parameters", {})
+            slice_entry["parameters"].update({"normalize": True, "int8_mask": True})
         elif method_name in ["breadcrumbs", "breadcrumbs_ties", "della"]:
             density_value = (
                 float(np.clip(group_for_slice.parameters[1], 0.0, 1.0))
@@ -757,6 +783,7 @@ class MultiMethodGenome:
                         "parameters": {"weight": float(weight2)},
                     },
                 ],
+                "merge_method": method_name,
                 "parameters": {
                     "t": float(np.clip(group_for_slice.parameters[0], 0, 1))
                 },
@@ -785,6 +812,10 @@ class MultiMethodGenome:
                 }
                 for model_ref, weight in ordered
             ]
+            slice_entry["parameters"] = {
+                "nuslerp_row_wise": False,
+                "nuslerp_flatten": False,
+            }
         elif method_name == "passthrough":
             model_ref = selected_models[0][0]
             slice_entry["sources"] = [{"model": model_ref, "layer_range": [start, end]}]
@@ -931,7 +962,14 @@ class MultiMethodGenome:
                 ),
                 "methods": [METHOD_NAMES[layer_groups[0].method]],
             }
-        return self._mixed_method_plan(layer_groups)
+        config = self._complex_config(layer_groups)
+        return {
+            "kind": "config",
+            "config": config,
+            "methods": [
+                METHOD_NAMES[layer_group.method] for layer_group in layer_groups
+            ],
+        }
 
     def method_label_for_genotype(
         self, genotype: Union[torch.Tensor, np.ndarray]
@@ -1106,9 +1144,17 @@ class MultiMethodGenome:
         self, layer_groups: List[LayerGroupGenome]
     ) -> MergeConfiguration:
         """Create a complex slice-based config for different methods per layer."""
-        # This would implement slice-based configuration
-        # For now, fall back to the first layer group's method
-        return self._simple_config(layer_groups[0])
+        slices = [
+            self._slice_entry_for_layer_group(layer_group, layer_idx)
+            for layer_idx, layer_group in enumerate(layer_groups)
+        ]
+        first_method_name = METHOD_NAMES[layer_groups[0].method]
+        config_dict: Dict[str, Any] = {
+            "merge_method": first_method_name,
+            "slices": slices,
+            **self._config_common_fields(),
+        }
+        return MergeConfiguration.model_validate(config_dict)
 
     def _slerp_config(
         self,

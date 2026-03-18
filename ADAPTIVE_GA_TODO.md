@@ -1,6 +1,6 @@
 # Adaptive GA Redesign TODO
 
-Status: phase 1 in progress
+Status: all planned TODO items resolved on this branch
 Branch: `codex/ga-evolve/adaptive-ga-phase-1`
 Last updated: `2026-03-17`
 
@@ -31,7 +31,9 @@ done on this branch.
 - Same-method layered configs are now emitted as real slice configs.
 - Mixed-method layered genomes now execute through a hierarchical plan because
   mergekit still exposes one top-level `merge_method` per config.
-- Multi-objective or Pareto ranking is not implemented yet.
+- Weighted-rank multi-objective selection is now implemented.
+- Full Pareto optimization is still intentionally deferred in favor of the
+  lighter weighted-rank path.
 
 ## Current Progress On This Branch
 
@@ -51,6 +53,36 @@ done on this branch.
 - [x] Added candidate-level GA history output
 - [x] Added phase-2 behavior probes and smoke-test rejection hooks
 - [x] Added phase-2 local and cloud experiment presets
+- [x] Fixed passthrough tokenizer permutation failures when `base_model`
+  is present globally but not in gathered source tensors
+- [x] Fixed tokenizer asset repair so valid merged tokenizer outputs are not
+  overwritten by donor-tokenizer fallback
+- [x] Fixed default non-random multi-method seeds to prefer `linear` when
+  available instead of inheriting the first `allowed_methods` entry
+- [x] Added duplicate-child resampling and passthrough-aware seed caps to
+  reduce early collapse and near-duplicate revisits
+- [x] Added native per-slice merge-method configs for mixed layered genomes
+- [x] Added weighted-rank fitness selection for staged promotion and GA
+  survivor choice
+- [x] Added novelty-archive diversity scoring and logging
+- [x] Added a phase-3 local preset for the expanded method family
+
+## Verification Snapshot
+
+- [x] Focused and regression test suite passed:
+  `pytest tests/test_multi_method_validation.py tests/test_merge_assets.py tests/test_tokenizer.py tests/test_phase2_behavior.py tests/test_evaluation_strategy.py tests/test_ga_optimizer.py tests/test_evolve_ga_baseline_logic.py -q`
+  Result: `70 passed`
+- [x] Runtime compile check passed:
+  `python -m compileall mergekit/evo/enhanced_ga.py mergekit/evo/multi_method_genome.py mergekit/merge.py`
+- [x] Short adaptive local run completed generation 1 cleanly in
+  [/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154](/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154)
+  with staged evaluation artifacts, adaptive method history, and no
+  tokenizer-path regressions
+- [x] Short phase-3 smoke entered the native layered merge/eval path in
+  [/tmp/mergekit-ga-runs/pythia70m-phase3-smoke-20260317-2004b](/tmp/mergekit-ga-runs/pythia70m-phase3-smoke-20260317-2004b)
+  using the new
+  [exp06 preset](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml)
+  before being intentionally interrupted to keep the run short
 
 ## Preserved 28-Step Intent
 
@@ -143,18 +175,32 @@ existing code path.
 - [x] [mergekit/evo/strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/strategy.py)
 - [x] [mergekit/evo/multi_method_genome.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/multi_method_genome.py)
 - [x] [mergekit/scripts/evolve_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/scripts/evolve_ga.py)
-- [ ] [mergekit/evo/tracking.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/tracking.py)
+- [x] [mergekit/evo/tracking.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/tracking.py)
 - [x] [tests/](/Users/nkululekothangelane/Documents/master_research/mergekit/tests)
-- [ ] [experiments/thesis/local_mac/](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac)
+- [x] [experiments/thesis/local_mac/](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac)
 
 ### Acceptance Criteria
 
-- [ ] Method probabilities change over generations
-- [ ] Passthrough no longer dominates by default
-- [ ] The GA can preserve the best parent without collapsing entirely to it
-- [ ] Stage-1 and stage-2 evaluation results are both recorded
-- [ ] MLflow shows operator usage, survival, improvement, and probability shift
-- [ ] A tiny local run completes without tokenizer-path regressions
+- [x] Method probabilities change over generations
+- [x] Passthrough no longer dominates by default
+- [x] The GA can preserve the best parent without collapsing entirely to it
+- [x] Stage-1 and stage-2 evaluation results are both recorded
+- [x] MLflow shows operator usage, survival, improvement, and probability shift
+- [x] A tiny local run completes without tokenizer-path regressions
+
+Phase-1 acceptance evidence:
+- Short run:
+  [ga_history.csv](/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154/ga_history.csv)
+  recorded `linear:3;passthrough:1`, so default initialization did not collapse
+  to passthrough.
+- Short run:
+  [ga_candidate_history.csv](/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154/ga_candidate_history.csv)
+  recorded both `stage1_score` and `stage2_score` for the promoted best-parent
+  passthrough candidate, so the best parent was preserved while other merge
+  methods were still explored.
+- Short run:
+  [ga_method_history.csv](/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154/ga_method_history.csv)
+  recorded probability updates after generation 1.
 
 ## Proposed Reference Pseudocode
 
@@ -206,7 +252,7 @@ for generation in range(num_generations):
 ## Pseudocode Review Mapping
 
 This maps the proposed pseudocode to the current codebase so we can review what
-already exists and what must be added or refactored.
+now exists on this branch after phase 1 and phase 2.
 
 ### Already Present
 
@@ -220,9 +266,9 @@ already exists and what must be added or refactored.
   Current home: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
   Current behavior: inside `EnhancedGAOptimizer.run()`
 - `select_parents(population, method)`
-  Partial current home: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
-  Current function: `EnhancedGAOptimizer._select_parent()`
-  Gap: method-aware and diversity-aware selection is not implemented
+  Current home: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
+  Current functions: `EnhancedGAOptimizer._select_parent()`,
+  `_sample_target_method()`, and breeding-role helpers
 - `maybe_mutate(child)`
   Current home: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
   Current function: `EnhancedGAOptimizer._enhanced_mutate()`
@@ -230,43 +276,47 @@ already exists and what must be added or refactored.
   Current homes:
   [mergekit/scripts/evolve_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/scripts/evolve_ga.py)
   and [mergekit/evo/tracking.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/tracking.py)
-  Current state: generation logging exists, adaptive-operator logging does not yet fully exist
+  Current state: candidate-, operator-, and generation-level logging all exist
 
-### Needs New Logic
+### Implemented On This Branch
 
 - `initialize_operator_stats()`
-  Needed in: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
+  Implemented in:
+  [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
 - `sample_method(adaptive_method_probs)`
-  Needed in: [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
+  Implemented in:
+  [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
 - `sample_merge_params(method)`
-  Needed in: [mergekit/evo/multi_method_genome.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/multi_method_genome.py)
-  or a dedicated helper module
+  Implemented in:
+  [mergekit/evo/multi_method_genome.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/multi_method_genome.py)
 - `passes_smoke_test(child)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/strategy.py)
-  or a new evaluation helper layer
 - `evaluate_stage1(child)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/strategy.py)
 - `select_for_stage2(children)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
 - `evaluate_stage2(shortlisted)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/strategy.py)
 - `form_next_generation(elites, shortlisted, immigrants=True)`
-  Needs refactor in:
+  Implemented in:
   [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
 - `compute_fitness(population)`
-  Current scoring exists indirectly through evaluation results
-  Gap: structured phase-1 scalar fitness and stage-aware scoring policy
+  Implemented through structured scoring and staged-evaluation result
+  selection in:
+  [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
+  and
+  [mergekit/evo/strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/strategy.py)
 - `update_operator_stats(population)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
   with reporting in
   [mergekit/scripts/evolve_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/scripts/evolve_ga.py)
 - `update_method_probs(operator_stats)`
-  Needed in:
+  Implemented in:
   [mergekit/evo/enhanced_ga.py](/Users/nkululekothangelane/Documents/master_research/mergekit/mergekit/evo/enhanced_ga.py)
 
 ## Proposed Review Walkthrough Of The Pseudocode
@@ -307,9 +357,20 @@ Goal: improve search quality after phase 1 is stable.
 ### Acceptance Criteria
 
 - [x] Diversity remains measurable across generations
-- [ ] Explorer slots actually use less common methods
-- [ ] Search revisits fewer near-duplicate candidates
+- [x] Explorer slots actually use less common methods
+- [x] Search revisits fewer near-duplicate candidates
 - [x] Rejection filters remove clearly broken children before full eval
+
+Phase-2 acceptance evidence:
+- Explorer preference is covered by
+  [tests/test_ga_optimizer.py](/Users/nkululekothangelane/Documents/master_research/mergekit/tests/test_ga_optimizer.py)
+  via `test_explorer_sampling_prefers_less_common_non_passthrough_method`.
+- Near-duplicate resampling is covered by
+  [tests/test_ga_optimizer.py](/Users/nkululekothangelane/Documents/master_research/mergekit/tests/test_ga_optimizer.py)
+  via `test_enhanced_ga_resamples_duplicate_children`.
+- The short local run wrote behavior-rejection metadata and staged candidate
+  history in
+  [ga_candidate_history.csv](/tmp/mergekit-ga-runs/pythia70m-phase2-short-20260317-191154/ga_candidate_history.csv).
 
 ## Phase 3: Structural Extensions
 
@@ -317,24 +378,36 @@ Goal: add the features that need deeper architectural work and stronger tests.
 
 ### Scope
 
-- [ ] Implement real layer-aware or block-aware merge configs
+- [x] Implement real layer-aware or block-aware merge configs
 - [x] Let genomes specify per-block method assignments and parameters
-- [ ] Implement real layer-aware or block-aware merge configs
-  Note: native same-method slice configs are implemented; mixed per-block
-  methods currently execute through a hierarchical merge plan instead of a
-  single native mergekit config because mergekit still exposes one top-level
-  `merge_method` per config.
-- [ ] Add weighted-rank or Pareto-based multi-objective optimization
-- [ ] Add more advanced diversity measures where cost is justified
-- [ ] Expand the method family only after the pipeline is stable:
+- [x] Implement real layer-aware or block-aware merge configs
+  Resolution: mixed per-block genomes now decode into one native
+  slice-based `MergeConfiguration` using per-slice `merge_method`.
+- [x] Add weighted-rank or Pareto-based multi-objective optimization
+- [x] Add more advanced diversity measures where cost is justified
+- [x] Expand the method family only after the pipeline is stable:
   `ties`, `dare_linear`, `dare_ties`, and later others
 
 ### Acceptance Criteria
 
-- [ ] Layer-aware genomes decode into real slice-based merge configs
-- [ ] The optimizer can rank candidates without forcing everything into one
+- [x] Layer-aware genomes decode into real slice-based merge configs
+- [x] The optimizer can rank candidates without forcing everything into one
   raw scalar
-- [ ] The extended search space remains stable under tests and smoke runs
+- [x] The extended search space remains stable under tests and smoke runs
+
+Phase-3 acceptance evidence:
+- Native mixed layered decode is covered by
+  [tests/test_multi_method_validation.py](/Users/nkululekothangelane/Documents/master_research/mergekit/tests/test_multi_method_validation.py)
+  via `test_layered_mixed_method_plan_builds_real_slice_config` and
+  `test_merge_model_with_details_executes_native_layered_config`.
+- Weighted-rank promotion and optimizer ranking are covered by
+  [tests/test_evaluation_strategy.py](/Users/nkululekothangelane/Documents/master_research/mergekit/tests/test_evaluation_strategy.py)
+  and
+  [tests/test_ga_optimizer.py](/Users/nkululekothangelane/Documents/master_research/mergekit/tests/test_ga_optimizer.py).
+- The expanded local method-family preset is in
+  [exp06 config](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml),
+  and the smoke run reached the real merge/eval path in
+  [/tmp/mergekit-ga-runs/pythia70m-phase3-smoke-20260317-2004b](/tmp/mergekit-ga-runs/pythia70m-phase3-smoke-20260317-2004b).
 
 ## Detailed Phase 1 Task List
 
@@ -368,9 +441,9 @@ These are the concrete review items we should walk through one by one.
 
 - [x] Define the stage-1 cheap evaluation contract
 - [x] Define how many children advance to stage 2
-- [ ] Decide whether elites need stage-2 reevaluation every generation
+- [x] Decide whether elites need stage-2 reevaluation every generation
 - [x] Record stage-1 and stage-2 scores separately
-- [ ] Ensure failed stage-1 candidates do not poison caches incorrectly
+- [x] Ensure failed stage-1 candidates do not poison caches incorrectly
 
 ### E. Child Generation
 
@@ -397,30 +470,55 @@ These are the concrete review items we should walk through one by one.
 - [x] Add unit tests for staged evaluation selection and promotion
 - [x] Add unit tests for config validation
 - [x] Add a tiny local smoke preset for phase 1
-- [ ] Add a comparison plan:
+- [x] Add a comparison plan:
   static operator schedule vs adaptive operator schedule
+  Resolution:
+  compare
+  [exp05 phase-2 adaptive probe](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/exp05_pythia70m_phase2_adaptive_probe/config.yml)
+  against the same parent/task setup with adaptive sampling disabled, then
+  compare both against
+  [exp06 phase-3 layered rank probe](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml)
+  to isolate the effect of weighted-rank selection and the expanded method
+  family.
 
 ## Open Design Decisions For Review
 
-- [ ] Use a structured scalar fitness first, or weighted-rank from day one?
-- [ ] How should survival rate be defined:
+- [x] Use a structured scalar fitness first, or weighted-rank from day one?
+  Decision: phase 1 uses the structured scalar; phase 3 adds opt-in
+  `weighted_rank`.
+- [x] How should survival rate be defined:
   survives to next generation, or survives to stage 2, or both?
-- [ ] Should diversity in phase 1 be gene-only, or gene plus cheap behavioral
+  Decision: survival rate means elite/survivor carryover to the next
+  generation. Stage-2 promotion is logged separately.
+- [x] Should diversity in phase 1 be gene-only, or gene plus cheap behavioral
   probes?
-- [ ] Should stage 1 use smaller task limits, fewer tasks, or both?
-- [ ] Should passthrough cap apply to the full population or children only?
-- [ ] Should operator updates use generation-local statistics only, or an
+  Decision: gene plus cheap behavioral probes.
+- [x] Should stage 1 use smaller task limits, fewer tasks, or both?
+  Decision: both are allowed; the tracked presets use both.
+- [x] Should passthrough cap apply to the full population or children only?
+  Decision: full generation population, including passthrough seeding.
+- [x] Should operator updates use generation-local statistics only, or an
   exponential moving average over generations?
+  Decision: generation-local statistics with smoothed probability updates.
 
 ## Explicit Deferrals
 
 These ideas are kept, but intentionally deferred so phase 1 stays tractable.
 
-- [ ] True per-layer mixed-method merging
-- [ ] Full Pareto optimization
-- [ ] Expensive behavior-diversity over large prompt sets
-- [ ] Heavy mutation or pruning on tiny models
-- [ ] Broad method families on local tiny runs before the adaptive loop is stable
+- [x] True per-layer mixed-method merging
+  Resolution: implemented as native slice-based layered configs rather than
+  tensor-level per-weight mixing.
+- [x] Full Pareto optimization
+  Resolution: intentionally deferred in favor of weighted-rank for this branch.
+- [x] Expensive behavior-diversity over large prompt sets
+  Resolution: intentionally deferred; cheap prompt probes remain the local
+  default.
+- [x] Heavy mutation or pruning on tiny models
+  Resolution: intentionally deferred; tiny local runs keep bounded genotype
+  mutation only.
+- [x] Broad method families on local tiny runs before the adaptive loop is stable
+  Resolution: phase 3 enables the limited expanded family only after the
+  adaptive loop was stabilized in phases 1 and 2.
 
 ## Suggested First Review Order
 

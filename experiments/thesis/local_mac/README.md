@@ -9,6 +9,7 @@ This group is for the small validation run that should execute on the developmen
 - `exp03_pythia70m_linear_weight_sweep`
 - `exp04_pythia70m_slerp_base_validation`
 - `exp05_pythia70m_phase2_adaptive_probe`
+- `exp06_pythia70m_phase3_layered_rank_probe`
 
 ## Suggested Run
 
@@ -48,6 +49,11 @@ the next operator is tested without losing baseline preservation.
 constraints but adds adaptive operator sampling, explorer slots,
 diversity-aware parent selection, candidate-level history, and behavior probes
 that can reject obviously broken children before the full evaluation pass.
+
+`exp06` is the local phase-3 preset. It keeps the same tiny Pythia-70M pair,
+but switches to nonzero layer granularity, weighted-rank fitness, a novelty
+archive bonus, and the expanded method family so the structural path can be
+smoke-tested without leaving the local machine.
 
 For this machine, the safe operating rule is still the same: local runs only
 use tiny models. Anything materially larger than Pythia-70M belongs on the EKS
@@ -113,6 +119,23 @@ python -m mergekit.scripts.evolve_ga \
   --no-merge-cuda \
   --population-size 8 \
   --max-fevals 96 \
+  --batch-size 1 \
+  --baseline \
+  --no-reshard \
+  --random-seed 42
+```
+
+## Suggested Phase-3 Probe Run
+
+```bash
+python -m mergekit.scripts.evolve_ga \
+  experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml \
+  --storage-path /tmp/mergekit-ga-runs/pythia70m-phase3-layered-rank-probe \
+  --strategy serial \
+  --num-gpus 0 \
+  --no-merge-cuda \
+  --population-size 6 \
+  --max-fevals 12 \
   --batch-size 1 \
   --baseline \
   --no-reshard \

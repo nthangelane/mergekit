@@ -33,6 +33,7 @@ from mergekit.evo.helpers import (
     merge_model_with_details,
     merge_model_with_details_ray,
 )
+from mergekit.evo.ranking import weighted_rank_scores
 from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
 
@@ -140,11 +141,7 @@ class EvaluationStrategyBase(ABC):
             self._stage2_top_k(len(genotypes), len(successful_indices)),
             len(successful_indices),
         )
-        ranked_indices = sorted(
-            successful_indices,
-            key=lambda idx: float(stage1_results[idx]["score"]),
-            reverse=True,
-        )
+        ranked_indices = self._rank_stage_results(stage1_results, successful_indices)
         shortlisted_indices = ranked_indices[:stage2_top_k]
         shortlisted_genotypes = [genotypes[idx] for idx in shortlisted_indices]
         stage2_results = self._evaluate_genotypes_once(
@@ -176,6 +173,30 @@ class EvaluationStrategyBase(ABC):
                 result["results"] = stage2_result.get("results")
 
         return combined_results
+
+    def _rank_stage_results(
+        self, stage_results: List[dict], candidate_indices: List[int]
+    ) -> List[int]:
+        if getattr(self.config, "fitness_mode", "weighted_sum") == "weighted_rank":
+            objective_weights = None
+            if getattr(self.config, "ga", None) is not None:
+                objective_weights = getattr(
+                    self.config.ga, "rank_objective_weights", None
+                )
+            rank_scores, _details = weighted_rank_scores(
+                stage_results,
+                objective_weights=objective_weights,
+            )
+            return sorted(
+                candidate_indices,
+                key=lambda idx: float(rank_scores[idx]),
+                reverse=True,
+            )
+        return sorted(
+            candidate_indices,
+            key=lambda idx: float(stage_results[idx]["score"]),
+            reverse=True,
+        )
 
     def evaluate_genotype(self, genotype: np.ndarray) -> dict:
         return self.evaluate_genotypes([genotype])[0]

@@ -89,6 +89,57 @@ def test_evaluation_strategy_two_stage_promotes_top_k():
     assert results[1]["stage2_tasks"] == ["stage2-task"]
 
 
+def test_two_stage_weighted_rank_uses_objective_ranking():
+    class DummyWeightedRankStrategy(EvaluationStrategyBase):
+        def _evaluate_genotypes_once(self, genotypes, eval_config):
+            results = []
+            for genotype in genotypes:
+                raw_score = float(genotype[0])
+                task_score = float(genotype[1])
+                results.append(
+                    {
+                        "score": raw_score,
+                        "results": {eval_config.tasks[0].name: {"acc,none": raw_score}},
+                        "fitness_components": {
+                            "raw_weighted_score": raw_score,
+                            "task_score": task_score,
+                            "language_quality": task_score,
+                            "stability_score": 1.0,
+                        },
+                    }
+                )
+            return results
+
+    strategy = DummyWeightedRankStrategy.__new__(DummyWeightedRankStrategy)
+    strategy.config = DummyConfig(
+        two_stage=True,
+        tasks=[SimpleNamespace(name="stage2-task")],
+        stage1_tasks=[SimpleNamespace(name="stage1-task")],
+        num_fewshot=0,
+        limit=10,
+        stage1_limit=2,
+        stage2_limit=10,
+        stage2_top_k=1,
+        fitness_mode="weighted_rank",
+        ga=SimpleNamespace(
+            rank_objective_weights={
+                "raw_weighted_score": 0.1,
+                "task_score": 0.6,
+                "language_quality": 0.2,
+                "stability_score": 0.1,
+            }
+        ),
+    )
+
+    results = strategy.evaluate_genotypes(
+        [np.array([0.9, 0.1]), np.array([0.8, 0.9]), np.array([0.7, 0.3])]
+    )
+
+    assert results[0]["stage2_skipped"] is True
+    assert results[1]["stage2_skipped"] is False
+    assert results[1]["score_source"] == "stage2"
+
+
 def test_gpu_worker_capacity_scales_with_tensor_parallel():
     assert _gpus_per_evaluation(total_gpus=10, vllm=True, tensor_parallel_size=2) == 2
     assert _gpu_worker_capacity(total_gpus=10, vllm=True, tensor_parallel_size=2) == 5

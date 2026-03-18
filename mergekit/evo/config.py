@@ -28,6 +28,22 @@ PHASE1_TASK_MIX_PROFILES: Dict[str, Dict[str, Union[float, Tuple[str, ...]]]] = 
         "stability_weight": 0.10,
         "diversity_bonus_weight": 0.05,
     },
+    "pythia70m_phase3": {
+        "allowed_methods": (
+            "passthrough",
+            "linear",
+            "slerp",
+            "ties",
+            "dare_linear",
+            "dare_ties",
+        ),
+        "max_mutation_rate": 0.15,
+        "max_mutation_sigma": 0.02,
+        "task_score_weight": 0.45,
+        "language_quality_weight": 0.25,
+        "stability_weight": 0.15,
+        "diversity_bonus_weight": 0.15,
+    },
 }
 
 
@@ -60,6 +76,9 @@ class GAOptimizerConfiguration(BaseModel, frozen=True):
     diversity_parent_weight: Optional[float] = None
     gene_diversity_bonus_weight: Optional[float] = None
     behavior_diversity_bonus_weight: Optional[float] = None
+    archive_novelty_bonus_weight: Optional[float] = None
+    novelty_archive_size: Optional[int] = None
+    rank_objective_weights: Optional[Dict[str, float]] = None
 
     @model_validator(mode="after")
     def validate_adaptive_settings(self):
@@ -107,6 +126,20 @@ class GAOptimizerConfiguration(BaseModel, frozen=True):
             and self.behavior_diversity_bonus_weight < 0
         ):
             raise ValueError("behavior_diversity_bonus_weight must be >= 0")
+        if (
+            self.archive_novelty_bonus_weight is not None
+            and self.archive_novelty_bonus_weight < 0
+        ):
+            raise ValueError("archive_novelty_bonus_weight must be >= 0")
+        if self.novelty_archive_size is not None and self.novelty_archive_size <= 0:
+            raise ValueError("novelty_archive_size must be > 0")
+        if self.rank_objective_weights is not None:
+            if not self.rank_objective_weights:
+                raise ValueError("rank_objective_weights must not be empty")
+            if any(value < 0 for value in self.rank_objective_weights.values()):
+                raise ValueError("rank_objective_weights values must be non-negative")
+            if sum(float(value) for value in self.rank_objective_weights.values()) <= 0:
+                raise ValueError("rank_objective_weights must contain a positive mass")
 
         weights = [
             self.operator_avg_child_weight,
@@ -142,7 +175,9 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     stage1_limit: Optional[int] = None
     stage2_limit: Optional[int] = None
     stage2_top_k: Optional[int] = None
-    fitness_mode: Literal["weighted_sum", "structured_phase1_tiny"] = "weighted_sum"
+    fitness_mode: Literal["weighted_sum", "structured_phase1_tiny", "weighted_rank"] = (
+        "weighted_sum"
+    )
     task_mix_profile: Optional[str] = None
     behavior_prompts: Optional[List[str]] = None
     behavior_probe_max_new_tokens: int = 24
@@ -178,6 +213,14 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
             raise ValueError(
                 "structured_phase1_tiny requires task_mix_profile to be set"
             )
+        if self.fitness_mode == "weighted_rank" and self.ga is not None:
+            if (
+                self.ga.rank_objective_weights is not None
+                and not self.ga.rank_objective_weights
+            ):
+                raise ValueError(
+                    "weighted_rank requires rank_objective_weights to be non-empty"
+                )
         if self.task_mix_profile is not None:
             profile = PHASE1_TASK_MIX_PROFILES.get(self.task_mix_profile)
             if profile is None:

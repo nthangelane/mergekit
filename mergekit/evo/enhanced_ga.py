@@ -12,6 +12,7 @@ import torch
 from mergekit.evo.cache_utils import genotype_cache_key, persisted_failure_result
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import MultiMethodGenome
+from mergekit.evo.ranking import weighted_rank_scores
 from mergekit.evo.strategy import EvaluationStrategyBase
 
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
@@ -65,6 +66,11 @@ class EnhancedGAParams:
     diversity_parent_weight: float = 0.0
     gene_diversity_bonus_weight: float = 0.0
     behavior_diversity_bonus_weight: float = 0.0
+    archive_novelty_bonus_weight: float = 0.0
+    novelty_archive_size: int = 64
+    fitness_mode: str = "weighted_sum"
+    rank_objective_weights: Optional[Dict[str, float]] = None
+    duplicate_retry_limit: int = 3
 
     # Original parameters
     cache_round: float = 1e-4
@@ -112,6 +118,8 @@ class EnhancedGAOptimizer:
             "crossover_type": getattr(self.params, "crossover", "arithmetic"),
             "immigrants": 0,
         }
+        self._novelty_archive: List[np.ndarray] = []
+        self._fitness_cache: Dict[Tuple[int, ...], Tuple[float, dict]] = {}
 
         x0 = self.genome.initial_genotype(random=self.random_init)
         if isinstance(x0, torch.Tensor):
@@ -393,6 +401,15 @@ class EnhancedGAOptimizer:
             adjusted_score += behavior_bonus
             fitness_components["behavior_diversity_bonus"] = behavior_bonus
 
+        archive_novelty_score = self._archive_novelty_score(genotype)
+        fitness_components["archive_novelty_score"] = archive_novelty_score
+        if float(getattr(self.params, "archive_novelty_bonus_weight", 0.0)) > 0.0:
+            novelty_bonus = (
+                float(self.params.archive_novelty_bonus_weight) * archive_novelty_score
+            )
+            adjusted_score += novelty_bonus
+            fitness_components["archive_novelty_bonus"] = novelty_bonus
+
         method_name = self._method_name_for_genotype(genotype)
         if (
             method_name == "passthrough"
@@ -410,6 +427,15 @@ class EnhancedGAOptimizer:
         updated["score"] = adjusted_score
         if fitness_components:
             updated["fitness_components"] = fitness_components
+            objectives = dict(result.get("fitness_objectives") or {})
+            objectives.update(
+                {
+                    key: value
+                    for key, value in fitness_components.items()
+                    if key.endswith("_score")
+                }
+            )
+            updated["fitness_objectives"] = objectives
         return updated
 
     def _intrinsic_gene_diversity_score(self, genotype: np.ndarray) -> float:
@@ -454,6 +480,71 @@ class EnhancedGAOptimizer:
             max_unique = max(len(set(self._configured_methods)), 1)
             method_diversity = float(unique_methods - 1) / float(max(max_unique - 1, 1))
         return float(min(1.0, (0.7 * mean_entropy) + (0.3 * method_diversity)))
+
+    def _archive_novelty_score(self, genotype: np.ndarray) -> float:
+        if not self._novelty_archive:
+            return 0.0
+        flat = np.asarray(genotype, dtype=np.float32).reshape(-1)
+        flat_norm = float(np.linalg.norm(flat))
+        distances = []
+        for archived in self._novelty_archive:
+            denom = max(flat_norm, float(np.linalg.norm(archived)), 1e-8)
+            distance = float(np.linalg.norm(flat - archived) / denom)
+            distances.append(distance)
+        if not distances:
+            return 0.0
+        return float(min(1.0, max(0.0, min(distances))))
+
+    def _update_novelty_archive(
+        self,
+        pop: np.ndarray,
+        results: List[dict],
+        elite_indices: Optional[np.ndarray] = None,
+    ) -> None:
+        max_archive = max(1, int(getattr(self.params, "novelty_archive_size", 64)))
+        survivor_set = (
+            {int(idx) for idx in elite_indices.tolist()}
+            if elite_indices is not None
+            else None
+        )
+        additions: List[np.ndarray] = []
+        for idx, (genotype, result) in enumerate(zip(pop, results)):
+            if result.get("score") is None:
+                continue
+            if survivor_set is not None and idx not in survivor_set:
+                continue
+            additions.append(np.asarray(genotype, dtype=np.float32).reshape(-1).copy())
+        if not additions:
+            return
+        self._novelty_archive.extend(additions)
+        if len(self._novelty_archive) > max_archive:
+            self._novelty_archive = self._novelty_archive[-max_archive:]
+
+    def _rank_population_fitness(
+        self, results: List[dict]
+    ) -> Tuple[np.ndarray, List[dict]]:
+        objective_weights = getattr(self.params, "rank_objective_weights", None)
+        ranked_fitness, rank_details = weighted_rank_scores(
+            results,
+            objective_weights=objective_weights,
+        )
+        enriched_results: List[dict] = []
+        for result, detail in zip(results, rank_details):
+            if not detail:
+                enriched_results.append(result)
+                continue
+            updated = dict(result)
+            updated["raw_score"] = float(result.get("score"))
+            updated["score"] = float(detail["weighted_rank_score"])
+            updated["fitness_proxy"] = detail["fitness_proxy"]
+            updated["rank_details"] = {
+                "objective_values": dict(detail.get("objective_values") or {}),
+                "objective_rank_scores": dict(
+                    detail.get("objective_rank_scores") or {}
+                ),
+            }
+            enriched_results.append(updated)
+        return ranked_fitness, enriched_results
 
     def _update_operator_state(
         self,
@@ -744,6 +835,8 @@ class EnhancedGAOptimizer:
             sampled_method_counts: Counter[str] = Counter()
             role_counts: Counter[str] = Counter()
             role_counts["elite"] = len(next_pop)
+            duplicate_resamples = 0
+            generation_hashes = {self._hash(ind) for ind in next_pop}
             target_children = max(self.pop_size - len(next_pop), 0)
             exploiter_target = max(target_children - n_imm - n_explorer, 0)
             while len(next_pop) < self.pop_size:
@@ -765,7 +858,14 @@ class EnhancedGAOptimizer:
                 child = self._enhanced_crossover(p1, p2)
                 child = self._enhanced_mutate(child)
                 child = self._apply_sampled_method(child, sampled_method)
+                child, retry_count = self._make_child_unique(
+                    child,
+                    existing_hashes=generation_hashes,
+                    sampled_method=sampled_method,
+                )
+                duplicate_resamples += retry_count
                 next_pop.append(child.astype(np.float32))
+                generation_hashes.add(self._hash(child))
                 actual_method = (
                     self._method_name_for_genotype(child)
                     if self.is_multi_method
@@ -809,6 +909,7 @@ class EnhancedGAOptimizer:
                         else None
                     ),
                 }
+                generation_hashes.add(self._hash(next_pop[-1 - i]))
                 role_counts["immigrant"] += 1
                 immigrants_added += 1
 
@@ -820,6 +921,7 @@ class EnhancedGAOptimizer:
                 "immigrants": float(immigrants_added),
                 "sampled_method_counts": dict(sampled_method_counts),
                 "role_counts": dict(role_counts),
+                "duplicate_resamples": float(duplicate_resamples),
             }
 
         return best_x, best_score
@@ -888,6 +990,25 @@ class EnhancedGAOptimizer:
         x[mask] += noise[mask]
         return x
 
+    def _make_child_unique(
+        self,
+        child: np.ndarray,
+        *,
+        existing_hashes: set[Tuple[int, ...]],
+        sampled_method: Optional[str] = None,
+    ) -> Tuple[np.ndarray, int]:
+        candidate = np.asarray(child, dtype=np.float32).copy()
+        retries = 0
+        max_retries = max(0, int(getattr(self.params, "duplicate_retry_limit", 0)))
+
+        while retries < max_retries and self._hash(candidate) in existing_hashes:
+            candidate = self._enhanced_mutate(candidate)
+            if sampled_method:
+                candidate = self._apply_sampled_method(candidate, sampled_method)
+            retries += 1
+
+        return candidate.astype(np.float32), retries
+
     # --- Population initialization ---
 
     def _init_population(self) -> np.ndarray:
@@ -917,6 +1038,22 @@ class EnhancedGAOptimizer:
                 len(self.genome.definition.models),
                 self.pop_size - len(pop),
             )
+            passthrough_fraction = float(
+                getattr(self.params, "passthrough_max_fraction", 1.0)
+            )
+            if passthrough_fraction < 1.0:
+                allowed_passthrough = int(
+                    np.floor(passthrough_fraction * float(self.pop_size))
+                )
+                if passthrough_fraction > 0.0 and allowed_passthrough == 0:
+                    allowed_passthrough = 1
+                existing_passthrough = (
+                    1 if self._method_name_for_genotype(x0) == "passthrough" else 0
+                )
+                max_passthrough_seeds = min(
+                    max_passthrough_seeds,
+                    max(0, allowed_passthrough - existing_passthrough),
+                )
 
             for model_idx in range(max_passthrough_seeds):
                 seed = x0.copy()
@@ -950,6 +1087,10 @@ class EnhancedGAOptimizer:
             else:
                 # Add noise to baseline
                 noisy = x0 + self.rs.randn(self.dim).astype(np.float32) * 0.05
+                if self.is_multi_method and getattr(self.genome, "method_dim", 0) > 0:
+                    for layer_idx in range(getattr(self.genome, "num_layer_groups", 1)):
+                        offset = layer_idx * self.genome.layer_group_dim
+                        noisy[offset] = x0[offset]
                 pop.append(noisy.astype(np.float32))
 
         return np.stack(pop[: self.pop_size], axis=0)
@@ -990,9 +1131,14 @@ class EnhancedGAOptimizer:
 
         results_final: List[dict] = [r for r in results]
         fitness = np.array(
-            [r["score"] if r["score"] is not None else -np.inf for r in results_final]
+            [r["score"] if r["score"] is not None else -np.inf for r in results_final],
+            dtype=np.float32,
         )
+        if getattr(self.params, "fitness_mode", "weighted_sum") == "weighted_rank":
+            fitness, results_final = self._rank_population_fitness(results_final)
         failures = sum(1 for r in results_final if r.get("score") is None)
+        successful_indices = np.where(np.isfinite(fitness))[0]
+        self._update_novelty_archive(pop, results_final, successful_indices)
         self._last_eval_stats = {
             "evaluations": float(len(to_eval)),
             "cache_hits": float(len(pop) - len(to_eval)),

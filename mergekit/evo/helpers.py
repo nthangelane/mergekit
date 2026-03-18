@@ -263,28 +263,6 @@ def score_evaluation_payload(
                 (float(task.weight), _normalize_lower_is_better_metric(metric_value))
             )
 
-    if fitness_mode != "structured_phase1_tiny":
-        return {
-            "score": weighted_sum_score,
-            "results": task_results_map,
-            "fitness_components": {
-                "raw_weighted_score": weighted_sum_score,
-                "behavior_diversity_score": (
-                    float(behavior_probe.get("behavior_diversity_score", 0.0))
-                    if behavior_probe
-                    else 0.0
-                ),
-            },
-        }
-
-    profile = PHASE1_TASK_MIX_PROFILES.get(task_mix_profile or "tiny_local_default")
-    if not profile:
-        return {
-            "score": weighted_sum_score,
-            "results": task_results_map,
-            "fitness_components": {"raw_weighted_score": weighted_sum_score},
-        }
-
     task_score = _weighted_average(task_pairs)
     language_quality = _weighted_average(language_pairs)
     metric_coverage = float(valid_metrics / len(tasks)) if tasks else 0.0
@@ -292,6 +270,35 @@ def score_evaluation_payload(
         float(behavior_probe.get("stability_score", 1.0)) if behavior_probe else 1.0
     )
     stability_score = (metric_coverage + behavior_stability) / 2.0
+    objective_payload = {
+        "raw_weighted_score": weighted_sum_score,
+        "task_score": task_score,
+        "language_quality": language_quality,
+        "stability_score": stability_score,
+        "behavior_diversity_score": (
+            float(behavior_probe.get("behavior_diversity_score", 0.0))
+            if behavior_probe
+            else 0.0
+        ),
+    }
+
+    if fitness_mode != "structured_phase1_tiny":
+        return {
+            "score": weighted_sum_score,
+            "results": task_results_map,
+            "fitness_components": dict(objective_payload),
+            "fitness_objectives": dict(objective_payload),
+        }
+
+    profile = PHASE1_TASK_MIX_PROFILES.get(task_mix_profile or "tiny_local_default")
+    if not profile:
+        return {
+            "score": weighted_sum_score,
+            "results": task_results_map,
+            "fitness_components": dict(objective_payload),
+            "fitness_objectives": dict(objective_payload),
+        }
+
     structured_score = (
         float(profile["task_score_weight"]) * task_score
         + float(profile["language_quality_weight"]) * language_quality
@@ -301,17 +308,10 @@ def score_evaluation_payload(
         "score": structured_score,
         "results": task_results_map,
         "fitness_components": {
-            "raw_weighted_score": weighted_sum_score,
-            "task_score": task_score,
-            "language_quality": language_quality,
-            "stability_score": stability_score,
-            "behavior_diversity_score": (
-                float(behavior_probe.get("behavior_diversity_score", 0.0))
-                if behavior_probe
-                else 0.0
-            ),
+            **objective_payload,
             "diversity_bonus": 0.0,
         },
+        "fitness_objectives": dict(objective_payload),
     }
 
 

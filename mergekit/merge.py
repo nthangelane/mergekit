@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 from collections import Counter
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import tqdm
 import transformers
@@ -30,6 +30,7 @@ from mergekit.plan import MergePlanner
 from mergekit.tokenizer import TokenizerInfo
 
 LOG = logging.getLogger(__name__)
+TokenizerAssetName = Union[str, Tuple[str, ...]]
 
 
 def _link_or_copy_file(src_path: str, dst_path: str) -> None:
@@ -45,8 +46,19 @@ def _link_or_copy_file(src_path: str, dst_path: str) -> None:
         shutil.copy2(real_src_path, dst_path)
 
 
-def _materialize_symlinked_output_files(out_path: str, file_names: List[str]) -> None:
+def _iter_asset_names(file_names: List[TokenizerAssetName]):
     for file_name in file_names:
+        if isinstance(file_name, tuple):
+            for alt_name in file_name:
+                yield alt_name
+        else:
+            yield file_name
+
+
+def _materialize_symlinked_output_files(
+    out_path: str, file_names: List[TokenizerAssetName]
+) -> None:
+    for file_name in _iter_asset_names(file_names):
         path = os.path.join(out_path, file_name)
         if not os.path.islink(path):
             continue
@@ -64,14 +76,26 @@ def _materialize_symlinked_output_files(out_path: str, file_names: List[str]) ->
         _link_or_copy_file(real_src_path, path)
 
 
-def _has_missing_or_broken_output_files(out_path: str, file_names: List[str]) -> bool:
+def _is_missing_or_broken(path: str) -> bool:
+    if os.path.islink(path):
+        return not os.path.exists(os.path.realpath(path))
+    return not os.path.exists(path)
+
+
+def _has_missing_or_broken_output_files(
+    out_path: str, file_names: List[TokenizerAssetName]
+) -> bool:
     for file_name in file_names:
-        path = os.path.join(out_path, file_name)
-        if os.path.islink(path):
-            if not os.path.exists(os.path.realpath(path)):
+        if isinstance(file_name, tuple):
+            if all(
+                _is_missing_or_broken(os.path.join(out_path, alt_name))
+                for alt_name in file_name
+            ):
                 return True
             continue
-        if not os.path.exists(path):
+
+        path = os.path.join(out_path, file_name)
+        if _is_missing_or_broken(path):
             return True
     return False
 
@@ -80,7 +104,7 @@ def _ensure_tokenizer_assets(
     merge_config: MergeConfiguration,
     out_path: str,
     options: MergeOptions,
-    file_names: List[str],
+    file_names: List[TokenizerAssetName],
 ) -> None:
     _materialize_symlinked_output_files(out_path, file_names)
     if options.copy_tokenizer and _has_missing_or_broken_output_files(
@@ -180,13 +204,10 @@ def run_merge(
         ) as fp:
             fp.write(config_source)
 
-    tokenizer_asset_files = [
+    tokenizer_asset_files: List[TokenizerAssetName] = [
         "tokenizer_config.json",
         "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer.model",
-        "added_tokens.json",
-        "merges.txt",
+        ("tokenizer.json", "tokenizer.model"),
     ]
 
     if tokenizer is not None:

@@ -134,3 +134,34 @@ def test_ensure_tokenizer_assets_repairs_broken_links(monkeypatch, tmp_path):
         assert path.exists()
         assert not path.is_symlink()
         assert path.read_text(encoding="utf-8") == f"{name}-real"
+
+
+def test_ensure_tokenizer_assets_accepts_alternative_primary_tokenizer_file(
+    monkeypatch, tmp_path
+):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "tokenizer_config.json").write_text("cfg", encoding="utf-8")
+    (out_dir / "special_tokens_map.json").write_text("map", encoding="utf-8")
+    (out_dir / "tokenizer.json").write_text("merged", encoding="utf-8")
+
+    copied = {"called": False}
+
+    def fake_copy_tokenizer(_merge_config, _out_path, options):
+        copied["called"] = True
+
+    monkeypatch.setattr("mergekit.merge._copy_tokenizer", fake_copy_tokenizer)
+
+    _ensure_tokenizer_assets(
+        merge_config=object(),
+        out_path=str(out_dir),
+        options=SimpleNamespace(copy_tokenizer=True),
+        file_names=[
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            ("tokenizer.json", "tokenizer.model"),
+        ],
+    )
+
+    assert copied["called"] is False
+    assert (out_dir / "tokenizer.json").read_text(encoding="utf-8") == "merged"

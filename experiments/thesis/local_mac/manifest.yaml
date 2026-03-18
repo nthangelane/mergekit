@@ -74,3 +74,17 @@ experiments:
     recommended_num_gpus: 0
     recommended_num_workers: 1
     recommended_tensor_parallel_size: 1
+  - id: exp06
+    name: Pythia-70M Phase-3 Layered Rank Probe
+    family: pythia
+    reason: Local phase-3 validation run for native layer-aware mixed-method configs, weighted-rank fitness, novelty-archive diversity, and the expanded tiny-model method family.
+    config_path: experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml
+    storage_path: /tmp/mergekit-ga-runs/pythia70m-phase3-layered-rank-probe
+    storage_subpath: thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe
+    recommended_population: 6
+    recommended_generations: 2
+    recommended_max_fevals: 12
+    recommended_strategy: serial
+    recommended_num_gpus: 0
+    recommended_num_workers: 1
+    recommended_tensor_parallel_size: 1
