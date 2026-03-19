@@ -7,6 +7,7 @@ from mergekit.common import ModelReference
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.helpers import merge_model_with_details
 from mergekit.evo.multi_method_genome import (
+    MergeMethod,
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
 )
@@ -203,6 +204,47 @@ def test_default_genotype_prefers_linear_even_if_passthrough_is_listed_first(
     config = genome.genotype_to_merge_config(genotype)
 
     assert config.merge_method == "linear"
+
+
+def test_decode_genotype_without_method_evolution_uses_allowed_method(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    definition = MultiMethodGenomeDefinition.model_validate(
+        {
+            "models": [
+                "author/model-a",
+                "author/model-b",
+            ],
+            "allowed_methods": ["passthrough"],
+            "layer_granularity": 0,
+            "enable_method_evolution": False,
+            "enable_model_selection": True,
+            "max_models_per_layer": 2,
+        }
+    )
+
+    genome = MultiMethodGenome(definition)
+    genotype = genome.initial_genotype(random=False)
+    decoded = genome.decode_genotype(genotype)
+
+    assert decoded[0].method == MergeMethod.PASSTHROUGH
 
 
 def test_m1_micro_example_uses_layer_blocks(monkeypatch):

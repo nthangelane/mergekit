@@ -12,6 +12,13 @@ features that phase 3 is supposed to prove:
 - the expanded local method family: `passthrough`, `linear`, `slerp`, `ties`,
   `dare_linear`, and `dare_ties`
 
+Current SLERP note:
+When a genotype uses `slerp` with multiple layer groups enabled, the generated
+config currently expands SLERP across the full model layer range instead of
+restricting it to one narrow block. That keeps the emitted config compatible
+with the base architecture while the narrower per-block SLERP path remains a
+future refinement.
+
 This is still a smoke/validation preset, not a thesis-scale performance run.
 The intent is to prove that the structural path works locally before spending
 more resources on larger cloud experiments.

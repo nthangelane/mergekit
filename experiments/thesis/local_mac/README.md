@@ -8,8 +8,17 @@ This group is for the small validation run that should execute on the developmen
 - `exp02_pythia70m_linear_passthrough_validation`
 - `exp03_pythia70m_linear_weight_sweep`
 - `exp04_pythia70m_slerp_base_validation`
-- `exp05_pythia70m_phase2_adaptive_probe`
-- `exp06_pythia70m_phase3_layered_rank_probe`
+- `main_adaptive_pythia70m.yml`
+- `phase3_ablation_pythia70m.yml`
+
+## Current Local Defaults
+
+- Main local adaptive preset:
+  [`main_adaptive_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/main_adaptive_pythia70m.yml)
+- Phase-3 structural ablation:
+  [`phase3_ablation_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/phase3_ablation_pythia70m.yml)
+- Results write-up:
+  [`RESULTS_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260319.md)
 
 ## Suggested Run
 
@@ -45,15 +54,16 @@ staged reevaluation so the one-dimensional landscape can be mapped directly.
 `exp04` then reintroduces the GA with an explicit `base_model` and `slerp` so
 the next operator is tested without losing baseline preservation.
 
-`exp05` is the first local phase-2 preset. It keeps the tiny-model safety
-constraints but adds adaptive operator sampling, explorer slots,
-diversity-aware parent selection, candidate-level history, and behavior probes
-that can reject obviously broken children before the full evaluation pass.
+The main local adaptive preset is now
+[`main_adaptive_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/main_adaptive_pythia70m.yml).
+It is the recommended default because the short validation run beat both parent
+baselines while keeping the search space narrow and stable.
 
-`exp06` is the local phase-3 preset. It keeps the same tiny Pythia-70M pair,
-but switches to nonzero layer granularity, weighted-rank fitness, a novelty
-archive bonus, and the expanded method family so the structural path can be
-smoke-tested without leaving the local machine.
+The richer structural path is now kept as the explicit ablation preset
+[`phase3_ablation_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/phase3_ablation_pythia70m.yml).
+It is useful for research comparison, but not yet the default local run,
+because the first short validation run failed all sampled children in
+generation 1.
 
 For this machine, the safe operating rule is still the same: local runs only
 use tiny models. Anything materially larger than Pythia-70M belongs on the EKS
@@ -108,12 +118,12 @@ python -m mergekit.scripts.evolve_ga \
   --random-seed 42
 ```
 
-## Suggested Phase-2 Probe Run
+## Suggested Main Adaptive Run
 
 ```bash
 python -m mergekit.scripts.evolve_ga \
-  experiments/thesis/local_mac/exp05_pythia70m_phase2_adaptive_probe/config.yml \
-  --storage-path /tmp/mergekit-ga-runs/pythia70m-phase2-adaptive-probe \
+  experiments/thesis/local_mac/main_adaptive_pythia70m.yml \
+  --storage-path workspace/thesis/local_mac/main_adaptive_pythia70m \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \
@@ -125,12 +135,12 @@ python -m mergekit.scripts.evolve_ga \
   --random-seed 42
 ```
 
-## Suggested Phase-3 Probe Run
+## Suggested Phase-3 Ablation Run
 
 ```bash
 python -m mergekit.scripts.evolve_ga \
-  experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml \
-  --storage-path /tmp/mergekit-ga-runs/pythia70m-phase3-layered-rank-probe \
+  experiments/thesis/local_mac/phase3_ablation_pythia70m.yml \
+  --storage-path workspace/thesis/local_mac/phase3_ablation_pythia70m \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \

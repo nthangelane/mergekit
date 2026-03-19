@@ -431,7 +431,12 @@ class MultiMethodGenome:
                 method_name = self.method_name_from_gene_value(float(method_val))
                 method = MergeMethod[method_name.upper()]
             else:
-                method = MergeMethod.LINEAR  # Default
+                default_method_name = (
+                    "linear"
+                    if "linear" in self.definition.allowed_methods
+                    else self.definition.allowed_methods[0]
+                )
+                method = self.method_enum_from_name(default_method_name)
 
             # Decode model selection
             model_start = offset + self.method_dim

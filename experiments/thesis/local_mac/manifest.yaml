@@ -61,12 +61,12 @@ experiments:
     recommended_num_workers: 1
     recommended_tensor_parallel_size: 1
   - id: exp05
-    name: Pythia-70M Phase-2 Adaptive Probe
+    name: Pythia-70M Main Adaptive Local Preset
     family: pythia
-    reason: Local phase-2 validation run for staged evaluation, adaptive operator learning, behavior-probe rejection, and diversity-aware search control on a tiny same-family pair.
-    config_path: experiments/thesis/local_mac/exp05_pythia70m_phase2_adaptive_probe/config.yml
-    storage_path: /tmp/mergekit-ga-runs/pythia70m-phase2-adaptive-probe
-    storage_subpath: thesis/local_mac/exp05_pythia70m_phase2_adaptive_probe
+    reason: Primary local adaptive GA preset for the tiny Pythia-70M pair, using staged evaluation, adaptive operator sampling, and the stable narrow method family.
+    config_path: experiments/thesis/local_mac/main_adaptive_pythia70m.yml
+    storage_path: workspace/thesis/local_mac/main_adaptive_pythia70m
+    storage_subpath: thesis/local_mac/main_adaptive_pythia70m
     recommended_population: 8
     recommended_generations: 12
     recommended_max_fevals: 96
@@ -75,12 +75,12 @@ experiments:
     recommended_num_workers: 1
     recommended_tensor_parallel_size: 1
   - id: exp06
-    name: Pythia-70M Phase-3 Layered Rank Probe
+    name: Pythia-70M Phase-3 Structural Ablation
     family: pythia
-    reason: Local phase-3 validation run for native layer-aware mixed-method configs, weighted-rank fitness, novelty-archive diversity, and the expanded tiny-model method family.
-    config_path: experiments/thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe/config.yml
-    storage_path: /tmp/mergekit-ga-runs/pythia70m-phase3-layered-rank-probe
-    storage_subpath: thesis/local_mac/exp06_pythia70m_phase3_layered_rank_probe
+    reason: Structural ablation preset that turns on layered mixed-method configs, weighted-rank scoring, novelty archives, and the expanded tiny-model method family to measure phase-3 behavior against the main preset.
+    config_path: experiments/thesis/local_mac/phase3_ablation_pythia70m.yml
+    storage_path: workspace/thesis/local_mac/phase3_ablation_pythia70m
+    storage_subpath: thesis/local_mac/phase3_ablation_pythia70m
     recommended_population: 6
     recommended_generations: 2
     recommended_max_fevals: 12

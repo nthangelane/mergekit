@@ -534,3 +534,65 @@ def test_enhanced_ga_adds_gene_and_behavior_diversity_bonus(monkeypatch):
     assert adjusted["fitness_components"]["behavior_diversity_bonus"] == pytest.approx(
         0.1
     )
+
+
+def test_enhanced_ga_semantic_crossover_uses_genome_operation(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["linear", "passthrough"])
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=4,
+            crossover="semantic",
+            semantic_crossover_prob=1.0,
+        ),
+        seed=0,
+    )
+
+    parent_a = genome.initial_genotype(random=False).view(-1).numpy()
+    parent_b = genome.initial_genotype(random=True).view(-1).numpy()
+    seen = {}
+
+    def fake_crossover_semantic(a_torch, b_torch):
+        seen["shapes"] = (tuple(a_torch.shape), tuple(b_torch.shape))
+        return torch.ones_like(a_torch)
+
+    monkeypatch.setattr(genome, "crossover_semantic", fake_crossover_semantic)
+
+    child = opt._enhanced_crossover(parent_a, parent_b)
+
+    assert seen["shapes"] == (parent_a.shape, parent_b.shape)
+    assert np.allclose(child, 1.0)
+
+
+def test_enhanced_ga_semantic_mutation_uses_genome_operation(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["linear", "passthrough"])
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=4,
+            crossover="semantic",
+            mutation_rate=0.23,
+            mutation_sigma=0.07,
+        ),
+        seed=0,
+    )
+
+    genotype = genome.initial_genotype(random=True).view(-1).numpy()
+    seen = {}
+
+    def fake_mutate_semantic(x_torch, mutation_rate, mutation_sigma):
+        seen["params"] = (
+            tuple(x_torch.shape),
+            float(mutation_rate),
+            float(mutation_sigma),
+        )
+        return torch.zeros_like(x_torch) + 0.25
+
+    monkeypatch.setattr(genome, "mutate_semantic", fake_mutate_semantic)
+
+    mutated = opt._enhanced_mutate(genotype)
+
+    assert seen["params"] == (genotype.shape, 0.23, 0.07)
+    assert np.allclose(mutated, 0.25)

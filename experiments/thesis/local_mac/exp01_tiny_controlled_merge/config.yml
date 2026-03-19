@@ -31,17 +31,24 @@ genome:
 
 tasks:
   - name: wikitext
-    weight: 0.35
-    metric: ppl,none
-  - name: lambada_openai
-    weight: 0.25
-    metric: acc,none
-  - name: sciq
-    weight: 0.20
-    metric: acc,none
+    weight: 0.40
+    metric: byte_perplexity,none
+
   - name: boolq
     weight: 0.20
     metric: acc,none
+
+  - name: piqa
+    weight: 0.20
+    metric: acc,none
+
+  - name: hellaswag_small
+    weight: 0.10
+    metric: acc,none
+
+  - name: stability_check
+    weight: 0.10
+    metric: custom
 
 random_init: false
 
