@@ -89,6 +89,50 @@ def test_evaluation_strategy_two_stage_promotes_top_k():
     assert results[1]["stage2_tasks"] == ["stage2-task"]
 
 
+def test_candidate_contexts_capture_generation_stage_and_method():
+    strategy = DummyTwoStageStrategy.__new__(DummyTwoStageStrategy)
+    strategy.config = DummyConfig(
+        two_stage=True,
+        tasks=[SimpleNamespace(name="stage2-task")],
+        stage1_tasks=[SimpleNamespace(name="stage1-task")],
+        num_fewshot=0,
+        limit=10,
+        stage1_limit=2,
+        stage2_limit=10,
+        stage2_top_k=2,
+    )
+    strategy.current_generation = 7
+    strategy.current_phase = "ga"
+
+    class DummyGenome:
+        def method_label_for_genotype(self, genotype):
+            return "linear" if int(genotype[0]) == 1 else "slerp"
+
+    strategy.genome = DummyGenome()
+
+    contexts = strategy._candidate_contexts(
+        [np.array([1]), np.array([2])],
+        strategy._stage_config(stage=1),
+    )
+
+    assert contexts == [
+        {
+            "generation": 7,
+            "candidate_index": 0,
+            "evaluation_stage": "stage1",
+            "phase": "ga",
+            "merge_method": "linear",
+        },
+        {
+            "generation": 7,
+            "candidate_index": 1,
+            "evaluation_stage": "stage1",
+            "phase": "ga",
+            "merge_method": "slerp",
+        },
+    ]
+
+
 def test_two_stage_weighted_rank_uses_objective_ranking():
     class DummyWeightedRankStrategy(EvaluationStrategyBase):
         def _evaluate_genotypes_once(self, genotypes, eval_config):

@@ -9,8 +9,8 @@ experiments:
     family: gpt_neo
     reason: Fast, cheap baseline to validate GA logic, chromosome design, mutation strategy, and fitness behavior before spending cloud GPU time on the larger families.
     config_path: experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml
-    storage_path: workspace/thesis/local_mac/exp01_tiny_controlled_merge
-    storage_subpath: thesis/local_mac/exp01_tiny_controlled_merge
+    storage_path: workspace/thesis/local_mac/results/exp01_tiny_controlled_merge
+    storage_subpath: thesis/local_mac/results/exp01_tiny_controlled_merge
     recommended_population: 24
     recommended_generations: 20
     recommended_max_fevals: 480
@@ -23,8 +23,8 @@ experiments:
     family: pythia
     reason: Local CPU-only validation run to confirm that baseline preservation, passthrough seeding, and tokenizer reuse stay stable before moving larger same-family experiments to EKS.
     config_path: experiments/thesis/local_mac/exp02_pythia70m_linear_passthrough_validation/config.yml
-    storage_path: /tmp/mergekit-ga-runs/pythia70m-linear-passthrough-base-pop12-g50
-    storage_subpath: thesis/local_mac/exp02_pythia70m_linear_passthrough_validation
+    storage_path: workspace/thesis/local_mac/results/exp02_pythia70m_linear_passthrough_validation
+    storage_subpath: thesis/local_mac/results/exp02_pythia70m_linear_passthrough_validation
     recommended_population: 12
     recommended_generations: 50
     recommended_max_fevals: 600
@@ -37,8 +37,8 @@ experiments:
     family: pythia
     reason: Replace stochastic search with a direct interpolation map on the same two local parents, then rerank the best alphas with a higher evaluation limit.
     config_path: experiments/thesis/local_mac/exp03_pythia70m_linear_weight_sweep/config.yml
-    storage_path: /tmp/mergekit-linear-sweep/pythia70m-alpha-grid
-    storage_subpath: thesis/local_mac/exp03_pythia70m_linear_weight_sweep
+    storage_path: workspace/thesis/local_mac/results/exp03_pythia70m_linear_weight_sweep
+    storage_subpath: thesis/local_mac/results/exp03_pythia70m_linear_weight_sweep
     recommended_population: 21
     recommended_generations: 1
     recommended_max_fevals: 21
@@ -51,8 +51,8 @@ experiments:
     family: pythia
     reason: Test whether an explicit base model and slerp interpolation behave better locally than plain linear blends while still allowing passthrough preservation.
     config_path: experiments/thesis/local_mac/exp04_pythia70m_slerp_base_validation/config.yml
-    storage_path: /tmp/mergekit-ga-runs/pythia70m-slerp-base-pop12-g30
-    storage_subpath: thesis/local_mac/exp04_pythia70m_slerp_base_validation
+    storage_path: workspace/thesis/local_mac/results/exp04_pythia70m_slerp_base_validation
+    storage_subpath: thesis/local_mac/results/exp04_pythia70m_slerp_base_validation
     recommended_population: 12
     recommended_generations: 30
     recommended_max_fevals: 360
@@ -65,8 +65,8 @@ experiments:
     family: pythia
     reason: Primary local adaptive GA preset for the tiny Pythia-70M pair, using staged evaluation, adaptive operator sampling, and the stable narrow method family.
     config_path: experiments/thesis/local_mac/main_adaptive_pythia70m.yml
-    storage_path: workspace/thesis/local_mac/main_adaptive_pythia70m
-    storage_subpath: thesis/local_mac/main_adaptive_pythia70m
+    storage_path: workspace/thesis/local_mac/results/main_adaptive_pythia70m
+    storage_subpath: thesis/local_mac/results/main_adaptive_pythia70m
     recommended_population: 8
     recommended_generations: 12
     recommended_max_fevals: 96
@@ -79,11 +79,25 @@ experiments:
     family: pythia
     reason: Structural ablation preset that turns on layered mixed-method configs, weighted-rank scoring, novelty archives, and the expanded tiny-model method family to measure phase-3 behavior against the main preset.
     config_path: experiments/thesis/local_mac/phase3_ablation_pythia70m.yml
-    storage_path: workspace/thesis/local_mac/phase3_ablation_pythia70m
-    storage_subpath: thesis/local_mac/phase3_ablation_pythia70m
+    storage_path: workspace/thesis/local_mac/results/phase3_ablation_pythia70m
+    storage_subpath: thesis/local_mac/results/phase3_ablation_pythia70m
     recommended_population: 6
     recommended_generations: 2
     recommended_max_fevals: 12
+    recommended_strategy: serial
+    recommended_num_gpus: 0
+    recommended_num_workers: 1
+    recommended_tensor_parallel_size: 1
+  - id: exp07
+    name: Pythia-70M Thesis Local Adaptive Run
+    family: pythia
+    reason: Longer local adaptive run for thesis reporting, using the stable tiny-model method family with explicit stop conditions, higher evaluation fidelity, and a three-seed search plan.
+    config_path: experiments/thesis/local_mac/thesis_run_pythia70m.yml
+    storage_path: workspace/thesis/local_mac/results/20260319-thesis-run
+    storage_subpath: thesis/local_mac/results/20260319-thesis-run
+    recommended_population: 8
+    recommended_generations: 24
+    recommended_max_fevals: 192
     recommended_strategy: serial
     recommended_num_gpus: 0
     recommended_num_workers: 1

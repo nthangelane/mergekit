@@ -74,6 +74,14 @@ class ConstantScoreStrategy:
         return [{"score": self.score, "results": {}} for _ in genotypes]
 
 
+class Stage1ConstantScoreStrategy(ConstantScoreStrategy):
+    def evaluate_genotypes(self, genotypes):
+        return [
+            {"score": self.score, "results": {}, "score_source": "stage1"}
+            for _ in genotypes
+        ]
+
+
 class ObjectiveStrategy:
     def evaluate_genotypes(self, genotypes):
         results = []
@@ -596,3 +604,71 @@ def test_enhanced_ga_semantic_mutation_uses_genome_operation(monkeypatch):
 
     assert seen["params"] == (genotype.shape, 0.23, 0.07)
     assert np.allclose(mutated, 0.25)
+
+
+def test_ga_optimizer_stops_on_target_improvement():
+    genome = FakeGenome(dim=4)
+    opt = GAOptimizer(
+        genome=genome,
+        strategy=ConstantScoreStrategy(score=1.0),  # type: ignore[arg-type]
+        params=GAParams(
+            population_size=2,
+            target_improvement_abs=0.4,
+            target_reference_score=0.5,
+            min_generations_before_target_stop=1,
+        ),
+        seed=0,
+    )
+
+    _best_x, best_score = opt.run(max_fevals=10)
+
+    assert best_score == pytest.approx(1.0)
+    assert opt.last_stop_details is not None
+    assert opt.last_stop_details["reason"] == "target_improvement"
+    assert opt.last_stop_details["generation"] == 1
+    assert opt.last_stop_details["fevals"] == 2
+    assert opt.last_stop_details["best_improvement_abs"] == pytest.approx(0.5)
+
+
+def test_ga_optimizer_stops_on_stagnation():
+    genome = FakeGenome(dim=4)
+    opt = GAOptimizer(
+        genome=genome,
+        strategy=ConstantScoreStrategy(score=1.0),  # type: ignore[arg-type]
+        params=GAParams(
+            population_size=2,
+            stagnation_patience_generations=2,
+            stagnation_min_delta=0.05,
+        ),
+        seed=0,
+    )
+
+    _best_x, best_score = opt.run(max_fevals=20)
+
+    assert best_score == pytest.approx(1.0)
+    assert opt.last_stop_details is not None
+    assert opt.last_stop_details["reason"] == "stagnation"
+    assert opt.last_stop_details["generation"] == 3
+    assert opt.last_stop_details["fevals"] == 6
+    assert opt.last_stop_details["stagnation_generations"] == 2
+
+
+def test_enhanced_ga_target_stop_can_require_stage2(monkeypatch):
+    genome = _build_multi_method_genome(monkeypatch, ["linear", "passthrough"])
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=Stage1ConstantScoreStrategy(score=1.0),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=2,
+            target_improvement_abs=0.1,
+            target_reference_score=0.5,
+            require_stage2_for_target=True,
+        ),
+        seed=0,
+    )
+
+    _best_x, best_score = opt.run(max_fevals=4)
+
+    assert best_score == pytest.approx(1.0)
+    assert opt.last_stop_details is not None
+    assert opt.last_stop_details["reason"] == "max_fevals"

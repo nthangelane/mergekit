@@ -2,7 +2,7 @@
 # Suggested run:
 #   python -m mergekit.scripts.evolve_ga \
 #     experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml \
-#     --storage-path workspace/thesis/local_mac/exp01_tiny_controlled_merge \
+#     --storage-path workspace/thesis/local_mac/results/exp01_tiny_controlled_merge \
 #     --max-fevals 480
 
 genome:

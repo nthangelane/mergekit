@@ -10,22 +10,28 @@ This group is for the small validation run that should execute on the developmen
 - `exp04_pythia70m_slerp_base_validation`
 - `main_adaptive_pythia70m.yml`
 - `phase3_ablation_pythia70m.yml`
+- `thesis_run_pythia70m.yml`
+- `BENCHMARK_PLAN_20260319.md`
 
 ## Current Local Defaults
 
 - Main local adaptive preset:
   [`main_adaptive_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/main_adaptive_pythia70m.yml)
+- Thesis local 70M preset:
+  [`thesis_run_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/thesis_run_pythia70m.yml)
 - Phase-3 structural ablation:
   [`phase3_ablation_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/phase3_ablation_pythia70m.yml)
 - Results write-up:
   [`RESULTS_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260319.md)
+- Thesis benchmark plan:
+  [`BENCHMARK_PLAN_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/BENCHMARK_PLAN_20260319.md)
 
 ## Suggested Run
 
 ```bash
 python -m mergekit.scripts.evolve_ga \
   experiments/thesis/local_mac/exp01_tiny_controlled_merge/config.yml \
-  --storage-path workspace/thesis/local_mac/exp01_tiny_controlled_merge \
+  --storage-path workspace/thesis/local_mac/results/exp01_tiny_controlled_merge \
   --max-fevals 480 \
   --strategy pool \
   --num-gpus 0 \
@@ -59,6 +65,12 @@ The main local adaptive preset is now
 It is the recommended default because the short validation run beat both parent
 baselines while keeping the search space narrow and stable.
 
+For thesis-worthy local evidence, the longer preset is now
+[`thesis_run_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/thesis_run_pythia70m.yml).
+It keeps the same stable search space, but raises evaluation fidelity, adds the
+new stop-policy controls, and is intended to be run across multiple seeds for
+reportable tables and narrative.
+
 The richer structural path is now kept as the explicit ablation preset
 [`phase3_ablation_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/phase3_ablation_pythia70m.yml).
 It is useful for research comparison, but not yet the default local run,
@@ -74,7 +86,7 @@ track.
 ```bash
 python -m mergekit.scripts.evolve_ga \
   experiments/thesis/local_mac/exp02_pythia70m_linear_passthrough_validation/config.yml \
-  --storage-path /tmp/mergekit-ga-runs/pythia70m-linear-passthrough-base-pop12-g50 \
+  --storage-path workspace/thesis/local_mac/results/exp02_pythia70m_linear_passthrough_validation \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \
@@ -92,7 +104,7 @@ python -m mergekit.scripts.evolve_ga \
 ```bash
 python -m mergekit.scripts.linear_sweep \
   experiments/thesis/local_mac/exp03_pythia70m_linear_weight_sweep/config.yml \
-  --storage-path /tmp/mergekit-linear-sweep/pythia70m-alpha-grid \
+  --storage-path workspace/thesis/local_mac/results/exp03_pythia70m_linear_weight_sweep \
   --alpha-step 0.05 \
   --coarse-limit 4 \
   --refine-limit 32 \
@@ -105,7 +117,7 @@ python -m mergekit.scripts.linear_sweep \
 ```bash
 python -m mergekit.scripts.evolve_ga \
   experiments/thesis/local_mac/exp04_pythia70m_slerp_base_validation/config.yml \
-  --storage-path /tmp/mergekit-ga-runs/pythia70m-slerp-base-pop12-g30 \
+  --storage-path workspace/thesis/local_mac/results/exp04_pythia70m_slerp_base_validation \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \
@@ -123,7 +135,7 @@ python -m mergekit.scripts.evolve_ga \
 ```bash
 python -m mergekit.scripts.evolve_ga \
   experiments/thesis/local_mac/main_adaptive_pythia70m.yml \
-  --storage-path workspace/thesis/local_mac/main_adaptive_pythia70m \
+  --storage-path workspace/thesis/local_mac/results/main_adaptive_pythia70m \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \
@@ -135,12 +147,27 @@ python -m mergekit.scripts.evolve_ga \
   --random-seed 42
 ```
 
+## Suggested Thesis 70M Run
+
+```bash
+python -m mergekit.scripts.evolve_ga \
+  experiments/thesis/local_mac/thesis_run_pythia70m.yml \
+  --storage-path workspace/thesis/local_mac/results/20260319-thesis-run/seed11 \
+  --strategy serial \
+  --num-gpus 0 \
+  --no-merge-cuda \
+  --batch-size 1 \
+  --baseline \
+  --no-reshard \
+  --random-seed 11
+```
+
 ## Suggested Phase-3 Ablation Run
 
 ```bash
 python -m mergekit.scripts.evolve_ga \
   experiments/thesis/local_mac/phase3_ablation_pythia70m.yml \
-  --storage-path workspace/thesis/local_mac/phase3_ablation_pythia70m \
+  --storage-path workspace/thesis/local_mac/results/phase3_ablation_pythia70m \
   --strategy serial \
   --num-gpus 0 \
   --no-merge-cuda \

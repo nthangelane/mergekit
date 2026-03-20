@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.6
+FROM 214109453209.dkr.ecr.us-east-1.amazonaws.com/mergekit-ga:20260315-scale
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY mergekit ./mergekit
+COPY docs ./docs
+COPY examples ./examples
+COPY experiments ./experiments
+COPY tests ./tests
+COPY deploy ./deploy
+
+ENTRYPOINT ["python", "-m", "mergekit.scripts.evolve_ga"]

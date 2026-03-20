@@ -11,8 +11,10 @@ from mergekit.scripts.evolve_ga import (
     _collect_merge_method_outcomes,
     _init_ray_for_baselines,
     _meets_improvement_thresholds,
+    _mlflow_ui_responds,
     _reusable_baseline_csv_path,
     _score_improvement,
+    _start_mlflow_ui_if_needed,
     _unique_model_refs,
     _write_mlflow_run_info,
 )
@@ -161,6 +163,150 @@ def test_write_mlflow_run_info_writes_review_url(tmp_path):
     content = (tmp_path / "mlflow_run_info.md").read_text(encoding="utf-8")
     assert "MLflow Review URL" in content
     assert "http://127.0.0.1:5000/#/experiments/123/runs/abc" in content
+
+
+def test_write_mlflow_run_info_includes_ui_details(tmp_path):
+    tracker = SimpleNamespace(
+        get_run_metadata=lambda: {
+            "tracker_type": "mlflow",
+            "experiment_id": "123",
+            "run_id": "abc",
+            "tracking_uri": "file://./mlruns",
+            "local_store_path": str(tmp_path / "mlruns"),
+            "run_url": "http://127.0.0.1:5000/#/experiments/123/runs/abc",
+        }
+    )
+
+    _write_mlflow_run_info(
+        str(tmp_path),
+        tracker,
+        project_name="mergekit-evolve-ga",
+        mlflow_ui_info={
+            "ui_url": "http://127.0.0.1:5001",
+            "pid": 4321,
+            "log_path": str(tmp_path / "mlflow_ui.log"),
+        },
+    )
+
+    content = (tmp_path / "mlflow_run_info.md").read_text(encoding="utf-8")
+    assert "MLflow UI URL" in content
+    assert "http://127.0.0.1:5001" in content
+    assert "4321" in content
+    assert "mlflow_ui.log" in content
+
+
+def test_start_mlflow_ui_if_needed_reuses_existing_port(monkeypatch, tmp_path):
+    tracker = SimpleNamespace(
+        get_run_metadata=lambda: {
+            "tracker_type": "mlflow",
+            "local_store_path": str(tmp_path / "mlruns"),
+        }
+    )
+
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._is_local_port_open", lambda host, port: True
+    )
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._mlflow_ui_responds", lambda url: True
+    )
+
+    info = _start_mlflow_ui_if_needed(
+        str(tmp_path),
+        tracker,
+        enabled=True,
+        port=5007,
+    )
+
+    assert info == {"ui_url": "http://127.0.0.1:5007", "started": False}
+    assert os.environ["MLFLOW_UI_URL"] == "http://127.0.0.1:5007"
+    os.environ.pop("MLFLOW_UI_URL", None)
+
+
+def test_start_mlflow_ui_if_needed_starts_subprocess(monkeypatch, tmp_path):
+    tracker = SimpleNamespace(
+        get_run_metadata=lambda: {
+            "tracker_type": "mlflow",
+            "local_store_path": str(tmp_path / "mlruns"),
+        }
+    )
+    popen_calls = []
+
+    class DummyProcess:
+        pid = 24680
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return DummyProcess()
+
+    monkeypatch.delenv("MLFLOW_UI_URL", raising=False)
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._is_local_port_open", lambda host, port: False
+    )
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._mlflow_ui_responds", lambda url: False
+    )
+    monkeypatch.setattr("mergekit.scripts.evolve_ga.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga.stage_log", lambda *args, **kwargs: None
+    )
+
+    info = _start_mlflow_ui_if_needed(
+        str(tmp_path),
+        tracker,
+        enabled=True,
+        port=5011,
+    )
+
+    assert info is not None
+    assert info["ui_url"] == "http://127.0.0.1:5011"
+    assert info["pid"] == 24680
+    assert info["started"] is True
+    assert popen_calls
+    assert "--port" in popen_calls[0][0]
+    assert popen_calls[0][1]["env"]["GUNICORN_CMD_ARGS"] == "--workers=1 --timeout 120"
+    assert (tmp_path / "mlflow_ui.pid").read_text(encoding="utf-8").strip() == "24680"
+    os.environ.pop("MLFLOW_UI_URL", None)
+
+
+def test_start_mlflow_ui_if_needed_does_not_reuse_unhealthy_port(monkeypatch, tmp_path):
+    tracker = SimpleNamespace(
+        get_run_metadata=lambda: {
+            "tracker_type": "mlflow",
+            "local_store_path": str(tmp_path / "mlruns"),
+        }
+    )
+    messages = []
+
+    monkeypatch.delenv("MLFLOW_UI_URL", raising=False)
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._is_local_port_open", lambda host, port: True
+    )
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga._mlflow_ui_responds", lambda url: False
+    )
+    monkeypatch.setattr(
+        "mergekit.scripts.evolve_ga.stage_log",
+        lambda *args, **kwargs: messages.append((args, kwargs)),
+    )
+
+    info = _start_mlflow_ui_if_needed(
+        str(tmp_path),
+        tracker,
+        enabled=True,
+        port=5008,
+    )
+
+    assert info is None
+    assert messages
+
+
+def test_mlflow_ui_responds_returns_false_on_error(monkeypatch):
+    def fake_urlopen(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr("mergekit.scripts.evolve_ga.urlopen", fake_urlopen)
+
+    assert _mlflow_ui_responds("http://127.0.0.1:1") is False
 
 
 def test_mlflow_tracker_prefers_ui_url_env(monkeypatch):

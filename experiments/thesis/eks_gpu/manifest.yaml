@@ -148,3 +148,21 @@ experiments:
     recommended_gpu_worker_gpus: 1
     minimum_gpu_vram_gb: 24
     requires_gated_hf_access: false
+
+  - id: exp07
+    name: Pythia-160M Adaptive Thesis Run
+    family: pythia
+    reason: Thesis-grade adaptive GA run on a cloud-friendly checkpoint pair, using staged evaluation, adaptive operator selection, stop-policy controls, and pooled Ray execution.
+    config_path: experiments/thesis/eks_gpu/exp07_pythia160m_adaptive_thesis/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp07_pythia160m_adaptive_thesis
+    storage_subpath: thesis/eks_gpu/exp07_pythia160m_adaptive_thesis
+    job_name: thesis-exp07-pythia160m-adaptive
+    recommended_population: 16
+    recommended_generations: 20
+    recommended_max_fevals: 320
+    recommended_strategy: pool
+    recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false

@@ -6,7 +6,7 @@ import logging
 import math
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import lm_eval.tasks
 import numpy as np
@@ -34,6 +34,11 @@ from mergekit.evo.helpers import (
     merge_model_with_details_ray,
 )
 from mergekit.evo.ranking import weighted_rank_scores
+from mergekit.evo.ray_observability import (
+    RayRunObserver,
+    sanitize_observability_label,
+    worker_actor_name,
+)
 from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
 
@@ -93,6 +98,8 @@ class EvaluationStrategyBase(ABC):
         task_search_path: Union[str, List[str], None] = None,
         model_storage_path: Optional[str] = None,
         quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
+        run_label: Optional[str] = None,
+        run_observer: Optional[RayRunObserver] = None,
     ):
         self.config = config
         self.genome = genome
@@ -105,11 +112,91 @@ class EvaluationStrategyBase(ABC):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.tensor_parallel_size = tensor_parallel_size
-        self.task_manager = create_task_manager(task_search_path)
+        required_task_names: List[str] = []
+        for task in self.config.tasks:
+            if task.name not in required_task_names:
+                required_task_names.append(task.name)
+        for task in getattr(self.config, "stage1_tasks", None) or []:
+            if task.name not in required_task_names:
+                required_task_names.append(task.name)
+        self.task_manager = create_task_manager(
+            task_search_path,
+            required_tasks=required_task_names,
+        )
         self.model_storage_path = model_storage_path
         self.quantization_config = quantization_config
+        self.run_label = sanitize_observability_label(run_label or "mergekit")
+        self.run_observer = run_observer
+        self.current_generation: Optional[int] = None
+        self.current_phase: str = "init"
         if self.model_storage_path:
             os.makedirs(self.model_storage_path, exist_ok=True)
+
+    def set_runtime_context(
+        self,
+        *,
+        generation: Optional[int] = None,
+        phase: Optional[str] = None,
+    ) -> None:
+        if generation is not None:
+            self.current_generation = int(generation)
+        if phase is not None:
+            self.current_phase = str(phase)
+
+    def _stage_label_for_config(self, eval_config: EvolMergeConfiguration) -> str:
+        if getattr(self.config, "two_stage", False):
+            stage1_names = [
+                task.name for task in getattr(self.config, "stage1_tasks", [])
+            ]
+            stage2_names = [task.name for task in self.config.tasks]
+            eval_names = [task.name for task in eval_config.tasks]
+            if eval_names == stage1_names and eval_config.limit == (
+                self.config.stage1_limit
+                if self.config.stage1_limit is not None
+                else self.config.limit
+            ):
+                return "stage1"
+            if eval_names == stage2_names and eval_config.limit == (
+                self.config.stage2_limit
+                if self.config.stage2_limit is not None
+                else self.config.limit
+            ):
+                return "stage2"
+        return "full"
+
+    def _method_for_genotype(self, genotype: np.ndarray) -> str:
+        try:
+            if hasattr(self.genome, "method_label_for_genotype"):
+                return str(self.genome.method_label_for_genotype(genotype))
+            cfg = (
+                self.genome.genotype_to_merge_config(genotype)
+                if hasattr(self.genome, "genotype_to_merge_config")
+                else self.genome.genotype_merge_config(genotype)
+            )
+            return str(getattr(cfg, "merge_method", None) or "unknown")
+        except Exception:
+            return "unknown"
+
+    def _candidate_contexts(
+        self,
+        genotypes: List[np.ndarray],
+        eval_config: EvolMergeConfiguration,
+    ) -> List[Dict[str, Any]]:
+        stage_label = self._stage_label_for_config(eval_config)
+        current_generation = getattr(self, "current_generation", None)
+        current_phase = str(getattr(self, "current_phase", "ga"))
+        contexts: List[Dict[str, Any]] = []
+        for idx, genotype in enumerate(genotypes):
+            contexts.append(
+                {
+                    "generation": current_generation,
+                    "candidate_index": idx,
+                    "evaluation_stage": stage_label,
+                    "phase": current_phase,
+                    "merge_method": self._method_for_genotype(genotype),
+                }
+            )
+        return contexts
 
     def evaluate_genotypes(self, genotypes: List[np.ndarray]) -> List[dict]:
         if not genotypes:
@@ -284,9 +371,14 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
         self.actor_pool = ray.util.ActorPool(
             [
                 (
-                    self.actor_cls.options(num_gpus=actor_gpu_request).remote
+                    self.actor_cls.options(
+                        name=worker_actor_name(self.run_label, "pool", worker_idx),
+                        num_gpus=actor_gpu_request,
+                    ).remote
                     if actor_gpu_request > 0
-                    else self.actor_cls.remote
+                    else self.actor_cls.options(
+                        name=worker_actor_name(self.run_label, "pool", worker_idx)
+                    ).remote
                 )(
                     self.config,
                     self.genome,
@@ -297,18 +389,27 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
                     batch_size=self.batch_size,
                     task_manager=self.task_manager,
                     quantization_config=self.quantization_config,
+                    worker_name=worker_actor_name(self.run_label, "pool", worker_idx),
+                    observer_config=(
+                        self.run_observer.export_config(role="worker")
+                        if self.run_observer is not None
+                        else None
+                    ),
                 )
-                for _ in range(worker_count)
+                for worker_idx in range(worker_count)
             ]
         )
 
     def _evaluate_genotypes_once(
         self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
     ) -> List[dict]:
+        candidate_contexts = self._candidate_contexts(genotypes, eval_config)
         return list(
             self.actor_pool.map(
-                lambda a, x: a.evaluate_genotype.remote(x, eval_config),
-                genotypes,
+                lambda a, item: a.evaluate_genotype.remote(
+                    item[0], eval_config, item[1]
+                ),
+                list(zip(genotypes, candidate_contexts)),
             )
         )
 
@@ -328,6 +429,8 @@ class BufferedRayEvaluationStrategyActor:
         task_manager: Optional[lm_eval.tasks.TaskManager] = None,
         model_storage_path: Optional[str] = None,
         quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
+        worker_name: Optional[str] = None,
+        observer_config: Optional[Dict[str, Any]] = None,
     ):
         self.config = config
         self.genome = genome
@@ -351,14 +454,72 @@ class BufferedRayEvaluationStrategyActor:
         self.model_storage_path = model_storage_path
         self.quantization_config = quantization_config
         self._shutdown = False
+        self.worker_name = worker_name or "mergekit-buffered-worker"
+        self._observer = RayRunObserver.from_config(
+            observer_config,
+            actor_name=self.worker_name,
+            role="worker",
+        )
+        self._status: Dict[str, Any] = {
+            "worker_name": self.worker_name,
+            "active": False,
+            "stage": "idle",
+            "generation": None,
+            "candidate_index": None,
+            "merge_method": None,
+            "evaluation_stage": None,
+            "last_score": None,
+            "last_error_type": None,
+            "queued": 0,
+        }
+
+    def _set_status(
+        self,
+        *,
+        stage: str,
+        active: bool,
+        context: Optional[Dict[str, Any]] = None,
+        score: Optional[float] = None,
+        error_type: Optional[str] = None,
+    ) -> None:
+        ctx = dict(context or {})
+        self._status.update(
+            {
+                "active": bool(active),
+                "stage": stage,
+                "generation": ctx.get("generation"),
+                "candidate_index": ctx.get("candidate_index"),
+                "merge_method": ctx.get("merge_method"),
+                "evaluation_stage": ctx.get("evaluation_stage"),
+                "last_score": score,
+                "last_error_type": error_type,
+                "queued": len(self.input_queue),
+            }
+        )
+        if self._observer is not None:
+            self._observer.record_actor_status(
+                stage=str(ctx.get("evaluation_stage") or stage),
+                active=active,
+                generation=ctx.get("generation"),
+                candidate_index=ctx.get("candidate_index"),
+                score=score,
+                error_type=error_type,
+            )
+
+    def get_status(self) -> Dict[str, Any]:
+        status = dict(self._status)
+        status["queued"] = len(self.input_queue)
+        return status
 
     async def evaluate_genotype(
         self,
         genotype: np.ndarray,
         eval_config: Optional[EvolMergeConfiguration] = None,
+        context: Optional[Dict[str, Any]] = None,
     ):
         future_result = asyncio.Future()
-        self.input_queue.append((genotype, future_result, eval_config))
+        self.input_queue.append((genotype, future_result, eval_config, context))
+        self._set_status(stage="queued", active=False, context=context)
         return await future_result
 
     async def process_queue(self):
@@ -381,7 +542,10 @@ class BufferedRayEvaluationStrategyActor:
                 while self.input_queue and (
                     len(merging) + len(merged) < merge_capacity
                 ):
-                    genotype, future_result, eval_config = self.input_queue.pop(0)
+                    genotype, future_result, eval_config, context = (
+                        self.input_queue.pop(0)
+                    )
+                    self._set_status(stage="merge", active=True, context=context)
                     if self.num_gpus > 0:
                         merging[
                             merge_model_ray.remote(
@@ -390,7 +554,7 @@ class BufferedRayEvaluationStrategyActor:
                                 self.model_storage_path,
                                 self.merge_options,
                             )
-                        ] = (future_result, eval_config)
+                        ] = (future_result, eval_config, context)
                     else:
                         merging[
                             merge_model_ray_cpu.remote(
@@ -399,10 +563,11 @@ class BufferedRayEvaluationStrategyActor:
                                 self.model_storage_path,
                                 self.merge_options,
                             )
-                        ] = (future_result, eval_config)
+                        ] = (future_result, eval_config, context)
 
                 while merged and len(evaluating) < eval_capacity:
-                    future_result, merged_path, eval_config = merged.pop()
+                    future_result, merged_path, eval_config, context = merged.pop()
+                    self._set_status(stage="evaluate", active=True, context=context)
                     config = eval_config or self.config
                     kwargs = {}
                     if self.quantization_config is not None:
@@ -424,7 +589,7 @@ class BufferedRayEvaluationStrategyActor:
                                 fewshot_as_multiturn=config.fewshot_as_multiturn,
                                 **kwargs,
                             )
-                        ] = future_result
+                        ] = (future_result, context)
                     else:
                         evaluating[
                             evaluate_model_ray_cpu.remote(
@@ -437,7 +602,7 @@ class BufferedRayEvaluationStrategyActor:
                                 apply_chat_template=config.apply_chat_template,
                                 fewshot_as_multiturn=config.fewshot_as_multiturn,
                             )
-                        ] = future_result
+                        ] = (future_result, context)
 
                 ready, _ = ray.wait(
                     list(merging.keys()) + list(evaluating.keys()),
@@ -447,11 +612,19 @@ class BufferedRayEvaluationStrategyActor:
                 )
                 for r in ready:
                     if r in merging:
-                        future_result, eval_config = merging.pop(r)
-                        merged.append((future_result, r, eval_config))
+                        future_result, eval_config, context = merging.pop(r)
+                        merged.append((future_result, r, eval_config, context))
                     elif r in evaluating:
-                        future_result = evaluating.pop(r)
-                        future_result.set_result(await r)
+                        future_result, context = evaluating.pop(r)
+                        result = await r
+                        self._set_status(
+                            stage="idle",
+                            active=False,
+                            context=context,
+                            score=result.get("score"),
+                            error_type=result.get("error_type"),
+                        )
+                        future_result.set_result(result)
 
                 if (
                     not self.input_queue
@@ -459,6 +632,7 @@ class BufferedRayEvaluationStrategyActor:
                     and not merged
                     and not evaluating
                 ):
+                    self._set_status(stage="idle", active=False)
                     await asyncio.sleep(1)
         except Exception as e:
             logging.error("Error in processing loop", exc_info=e)
@@ -480,8 +654,10 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             raise ValueError("In-memory evaluation is not supported for buffered mode")
 
         super().__init__(*args, **kwargs)
+        actor_name = worker_actor_name(self.run_label, "buffered", 0)
         self.actor = BufferedRayEvaluationStrategyActor.options(
-            max_concurrency=1000
+            max_concurrency=1000,
+            name=actor_name,
         ).remote(
             self.config,
             self.genome,
@@ -494,14 +670,24 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             task_manager=self.task_manager,
             batch_size=self.batch_size,
             quantization_config=self.quantization_config,
+            worker_name=actor_name,
+            observer_config=(
+                self.run_observer.export_config(role="worker")
+                if self.run_observer is not None
+                else None
+            ),
         )
         self.actor.process_queue.remote()
 
     def _evaluate_genotypes_once(
         self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
     ) -> List[dict]:
+        candidate_contexts = self._candidate_contexts(genotypes, eval_config)
         return ray.get(
-            [self.actor.evaluate_genotype.remote(x, eval_config) for x in genotypes]
+            [
+                self.actor.evaluate_genotype.remote(x, eval_config, context)
+                for x, context in zip(genotypes, candidate_contexts)
+            ]
         )
 
 
@@ -517,6 +703,7 @@ def evaluate_genotype_serial(
     batch_size: Optional[int] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
+    context: Optional[Dict[str, Any]] = None,
 ):
     gpus_per_eval = _gpus_per_evaluation(
         total_gpus=tensor_parallel_size,
@@ -708,6 +895,7 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         if self.num_gpus and self.num_gpus > 0:
             print(f"[SERIAL] Using GPU path with {self.num_gpus} GPUs", flush=True)
             sys.stdout.flush()
+            candidate_contexts = self._candidate_contexts(genotypes, eval_config)
             return ray.get(
                 [
                     evaluate_genotype_serial.remote(
@@ -721,8 +909,9 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                         batch_size=self.batch_size,
                         task_manager=self.task_manager,
                         quantization_config=self.quantization_config,
+                        context=context,
                     )
-                    for x in genotypes
+                    for x, context in zip(genotypes, candidate_contexts)
                 ]
             )
         else:
@@ -731,23 +920,47 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
             sys.stdout.flush()
             results = []
             total = len(genotypes)
-            for idx, genotype in enumerate(genotypes, start=1):
+            candidate_contexts = self._candidate_contexts(genotypes, eval_config)
+            for idx, (genotype, context) in enumerate(
+                zip(genotypes, candidate_contexts), start=1
+            ):
+                if getattr(self, "run_observer", None) is not None:
+                    self.run_observer.record_candidate_start(
+                        phase=str(
+                            context.get("evaluation_stage")
+                            or getattr(self, "current_phase", "ga")
+                        ),
+                        candidate_index=idx - 1,
+                        generation=context.get("generation"),
+                        method=context.get("merge_method"),
+                    )
                 print(
                     f"[SERIAL] Evaluating genotype {idx}/{total} sequentially...",
                     flush=True,
                 )
                 sys.stdout.flush()
-                results.append(
-                    _evaluate_genotype_serial_cpu_impl(
-                        genotype,
-                        eval_config,
-                        self.genome,
-                        self.merge_options,
-                        model_storage_path=self.model_storage_path,
-                        batch_size=self.batch_size,
-                        task_manager=self.task_manager,
-                    )
+                result = _evaluate_genotype_serial_cpu_impl(
+                    genotype,
+                    eval_config,
+                    self.genome,
+                    self.merge_options,
+                    model_storage_path=self.model_storage_path,
+                    batch_size=self.batch_size,
+                    task_manager=self.task_manager,
                 )
+                results.append(result)
+                if getattr(self, "run_observer", None) is not None:
+                    self.run_observer.record_candidate_end(
+                        phase=str(
+                            context.get("evaluation_stage")
+                            or getattr(self, "current_phase", "ga")
+                        ),
+                        candidate_index=idx - 1,
+                        generation=context.get("generation"),
+                        method=context.get("merge_method"),
+                        score=result.get("score"),
+                        failed=result.get("score") is None,
+                    )
             print(f"[SERIAL] All {len(genotypes)} evaluations completed!", flush=True)
             sys.stdout.flush()
             return results

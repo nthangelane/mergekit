@@ -165,6 +165,39 @@ class TaskConfiguration(BaseModel, frozen=True):
         return value
 
 
+class StopConfiguration(BaseModel, frozen=True):
+    max_fevals: Optional[int] = None
+    max_time_seconds: Optional[float] = None
+    target_improvement_abs: Optional[float] = None
+    target_improvement_pct: Optional[float] = None
+    target_reference: Literal["best_baseline"] = "best_baseline"
+    min_generations_before_target_stop: int = 0
+    require_stage2_for_target: bool = False
+    stagnation_patience_generations: Optional[int] = None
+    stagnation_min_delta: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_stop_settings(self):
+        if self.max_fevals is not None and self.max_fevals <= 0:
+            raise ValueError("stop.max_fevals must be > 0")
+        if self.max_time_seconds is not None and self.max_time_seconds <= 0:
+            raise ValueError("stop.max_time_seconds must be > 0")
+        if self.target_improvement_abs is not None and self.target_improvement_abs < 0:
+            raise ValueError("stop.target_improvement_abs must be >= 0")
+        if self.target_improvement_pct is not None and self.target_improvement_pct < 0:
+            raise ValueError("stop.target_improvement_pct must be >= 0")
+        if self.min_generations_before_target_stop < 0:
+            raise ValueError("stop.min_generations_before_target_stop must be >= 0")
+        if (
+            self.stagnation_patience_generations is not None
+            and self.stagnation_patience_generations <= 0
+        ):
+            raise ValueError("stop.stagnation_patience_generations must be > 0")
+        if self.stagnation_min_delta < 0:
+            raise ValueError("stop.stagnation_min_delta must be >= 0")
+        return self
+
+
 class EvolMergeConfiguration(BaseModel, frozen=True):
     genome: Union[
         MultiMethodGenomeDefinition, ModelGenomeDefinition
@@ -189,6 +222,7 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     shuffle: bool = False
     random_init: bool = False
     ga: Optional[GAOptimizerConfiguration] = None
+    stop: Optional[StopConfiguration] = None
     apply_chat_template: bool = True
     fewshot_as_multiturn: bool = True
 

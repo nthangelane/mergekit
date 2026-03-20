@@ -10,6 +10,7 @@ This group contains the cloud GPU experiments. The target cluster profile for th
 - `exp04_mistral7b_general_code`
 - `exp05_llama3_8b_same_family`
 - `exp06_pythia160m_phase2_ties_starter`
+- `exp07_pythia160m_adaptive_thesis`
 
 ## Target Cluster Profile
 

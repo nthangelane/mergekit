@@ -13,6 +13,11 @@ from mergekit.evo.cache_utils import genotype_cache_key, persisted_failure_resul
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import MultiMethodGenome
 from mergekit.evo.ranking import weighted_rank_scores
+from mergekit.evo.stop_policy import (
+    StopDetails,
+    evaluate_stagnation_stop,
+    evaluate_target_stop,
+)
 from mergekit.evo.strategy import EvaluationStrategyBase
 
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
@@ -78,6 +83,14 @@ class EnhancedGAParams:
     patience: int = 0
     sigma_decay: float = 0.5
     min_mutation_sigma: float = 0.005
+    target_improvement_abs: Optional[float] = None
+    target_improvement_pct: Optional[float] = None
+    target_reference: str = "best_baseline"
+    target_reference_score: Optional[float] = None
+    min_generations_before_target_stop: int = 0
+    require_stage2_for_target: bool = False
+    stagnation_patience_generations: int = 0
+    stagnation_min_delta: float = 0.0
 
 
 class EnhancedGAOptimizer:
@@ -146,6 +159,7 @@ class EnhancedGAOptimizer:
         self._method_probs: Dict[str, float] = self._initialize_method_probs()
         self._population_metadata: List[Dict[str, Any]] = []
         self._last_operator_summary: Dict[str, Any] = {}
+        self.last_stop_details: Optional[Dict[str, Any]] = None
 
     def _initialize_method_probs(self) -> Dict[str, float]:
         if not self._configured_methods:
@@ -742,18 +756,48 @@ class EnhancedGAOptimizer:
         start_time = time.time()
         best_x = pop[0].copy()
         best_score = -np.inf
+        best_generation: Optional[int] = None
+        best_score_source: Optional[str] = None
         no_improve = 0
+        stagnation_generations = 0
         self._fitness_cache: Dict[Tuple[int, ...], Tuple[float, dict]] = {}
+        effective_max_fevals = max(1, int(max_fevals))
+        self.last_stop_details = None
 
-        while fevals < max_fevals and (
-            timeout is None or (time.time() - start_time) < timeout
-        ):
+        while True:
+            elapsed_seconds = time.time() - start_time
+            completed_generations = max(0, fevals // self.pop_size)
+            if fevals >= effective_max_fevals:
+                self.last_stop_details = StopDetails(
+                    reason="max_fevals",
+                    generation=completed_generations,
+                    fevals=int(fevals),
+                    elapsed_seconds=float(elapsed_seconds),
+                    best_score=(float(best_score) if np.isfinite(best_score) else None),
+                    best_generation=best_generation,
+                    best_score_source=best_score_source,
+                    max_fevals=effective_max_fevals,
+                ).to_dict()
+                break
+            if timeout is not None and elapsed_seconds >= timeout:
+                self.last_stop_details = StopDetails(
+                    reason="timeout",
+                    generation=completed_generations,
+                    fevals=int(fevals),
+                    elapsed_seconds=float(elapsed_seconds),
+                    best_score=(float(best_score) if np.isfinite(best_score) else None),
+                    best_generation=best_generation,
+                    best_score_source=best_score_source,
+                    timeout_seconds=float(timeout),
+                ).to_dict()
+                break
+
             generation_idx = fevals // self.pop_size + 1
             if self.on_generation_start:
                 self.on_generation_start(
                     generation_idx,
                     fevals,
-                    max_fevals,
+                    effective_max_fevals,
                     self.pop_size,
                     float(best_score),
                 )
@@ -798,20 +842,60 @@ class EnhancedGAOptimizer:
                 info.update(self._last_eval_stats)
                 info.update(self._prev_generation_breeding)
                 self.on_population_evaluated(res_list, pop, fevals, info)
+
+            previous_best = float(best_score)
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best_x = pop[gen_best_idx].copy()
+                best_generation = generation_idx
+                best_score_source = res_list[gen_best_idx].get("score_source")
                 if self.on_new_best:
                     self.on_new_best(best_x, best_score, fevals)
                 no_improve = 0
+                if np.isfinite(previous_best):
+                    improvement_delta = gen_best_score - previous_best
+                    if improvement_delta <= float(self.params.stagnation_min_delta):
+                        stagnation_generations += 1
+                    else:
+                        stagnation_generations = 0
+                else:
+                    stagnation_generations = 0
             else:
                 no_improve += 1
+                stagnation_generations += 1
                 if self.params.patience and no_improve >= self.params.patience:
                     self.params.mutation_sigma = max(
                         self.params.min_mutation_sigma,
                         self.params.mutation_sigma * float(self.params.sigma_decay),
                     )
                     no_improve = 0
+
+            target_stop = evaluate_target_stop(
+                best_score=float(best_score),
+                best_score_source=best_score_source,
+                generation=generation_idx,
+                fevals=fevals,
+                elapsed_seconds=time.time() - start_time,
+                best_generation=best_generation,
+                policy=self.params,
+            )
+            if target_stop is not None:
+                self.last_stop_details = target_stop.to_dict()
+                break
+
+            stagnation_stop = evaluate_stagnation_stop(
+                best_score=float(best_score),
+                best_score_source=best_score_source,
+                generation=generation_idx,
+                fevals=fevals,
+                elapsed_seconds=time.time() - start_time,
+                best_generation=best_generation,
+                stagnation_generations=stagnation_generations,
+                policy=self.params,
+            )
+            if stagnation_stop is not None:
+                self.last_stop_details = stagnation_stop.to_dict()
+                break
 
             # Elitism
             elites = pop[order[: self.n_elite]].copy()
@@ -923,6 +1007,19 @@ class EnhancedGAOptimizer:
                 "role_counts": dict(role_counts),
                 "duplicate_resamples": float(duplicate_resamples),
             }
+
+        if self.last_stop_details is None:
+            self.last_stop_details = StopDetails(
+                reason="completed",
+                generation=max(0, fevals // self.pop_size),
+                fevals=int(fevals),
+                elapsed_seconds=float(time.time() - start_time),
+                best_score=float(best_score) if np.isfinite(best_score) else None,
+                best_generation=best_generation,
+                best_score_source=best_score_source,
+                max_fevals=effective_max_fevals,
+                timeout_seconds=float(timeout) if timeout is not None else None,
+            ).to_dict()
 
         return best_x, best_score
 

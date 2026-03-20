@@ -431,7 +431,10 @@ def main(
     )
 
     validate_input_model_architecture(source_models, merge_options)
-    task_manager = create_task_manager([])
+    task_manager = create_task_manager(
+        [],
+        required_tasks=[task.name for task in config.tasks],
+    )
 
     model_a = str(source_models[0])
     model_b = str(source_models[1])

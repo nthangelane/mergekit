@@ -46,6 +46,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
         apply_chat_template,
         fewshot_as_multiturn,
         model_kwargs,
+        **kwargs,
     ):
         captured["merged_path"] = merged_path
         captured["tasks"] = tasks
@@ -58,6 +59,7 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
         captured["apply_chat_template"] = apply_chat_template
         captured["fewshot_as_multiturn"] = fewshot_as_multiturn
         captured["model_kwargs"] = model_kwargs
+        captured["extra_kwargs"] = kwargs
         return {"score": 0.5, "results": {}}
 
     monkeypatch.setattr("mergekit.evo.actors.evaluate_model", fake_evaluate_model)
@@ -86,5 +88,6 @@ def test_evaluate_merged_path_accelerated_uses_gpu_eval(monkeypatch):
     assert captured["vllm"] is False
     assert captured["tensor_parallel_size"] == 1
     assert captured["model_kwargs"]["device"] == "cuda"
+    assert "fitness_mode" in captured["extra_kwargs"]
     assert captured["apply_chat_template"] is True
     assert captured["fewshot_as_multiturn"] is False

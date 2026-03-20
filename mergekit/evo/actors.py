@@ -5,7 +5,7 @@ import gc
 import logging
 import os
 import tempfile
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import lm_eval
 import lm_eval.api.model
@@ -47,6 +47,7 @@ from mergekit.evo.monkeypatch import (
     monkeypatch_lmeval_shuffle,
     monkeypatch_lmeval_vllm,
 )
+from mergekit.evo.ray_observability import RayRunObserver
 from mergekit.graph import Executor
 from mergekit.io.tasks import LoaderCache, ReturnTensor
 from mergekit.merge import _model_out_config
@@ -134,6 +135,8 @@ class MergeActorBase:
         batch_size: Optional[int] = None,
         task_manager: Optional[lm_eval.tasks.TaskManager] = None,
         quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
+        worker_name: Optional[str] = None,
+        observer_config: Optional[Dict[str, Any]] = None,
     ):
         self.config = config
         self.genome = genome
@@ -146,12 +149,65 @@ class MergeActorBase:
         self.batch_size = batch_size
         self.task_manager = task_manager
         self.quantization_config = quantization_config
+        self.worker_name = worker_name or f"mergekit-worker-{os.getpid()}"
+        self._observer = RayRunObserver.from_config(
+            observer_config,
+            actor_name=self.worker_name,
+            role="worker",
+        )
+        self._status: Dict[str, Any] = {
+            "worker_name": self.worker_name,
+            "active": False,
+            "stage": "idle",
+            "generation": None,
+            "candidate_index": None,
+            "merge_method": None,
+            "evaluation_stage": None,
+            "last_score": None,
+            "last_error_type": None,
+        }
 
         if config.shuffle:
             monkeypatch_lmeval_shuffle()
 
         # monkeypatch_tqdm()
         monkeypatch_lmeval_vllm()
+        self._set_status(stage="idle", active=False)
+
+    def _set_status(
+        self,
+        *,
+        stage: str,
+        active: bool,
+        context: Optional[Dict[str, Any]] = None,
+        score: Optional[float] = None,
+        error_type: Optional[str] = None,
+    ) -> None:
+        ctx = dict(context or {})
+        self._status.update(
+            {
+                "active": bool(active),
+                "stage": stage,
+                "generation": ctx.get("generation"),
+                "candidate_index": ctx.get("candidate_index"),
+                "merge_method": ctx.get("merge_method"),
+                "evaluation_stage": ctx.get("evaluation_stage"),
+                "last_score": score,
+                "last_error_type": error_type,
+            }
+        )
+        if self._observer is not None:
+            self._observer.record_actor_status(
+                stage=str(ctx.get("evaluation_stage") or stage),
+                active=active,
+                generation=ctx.get("generation"),
+                candidate_index=ctx.get("candidate_index"),
+                score=score,
+                error_type=error_type,
+            )
+
+    def get_status(self) -> Dict[str, Any]:
+        return dict(self._status)
 
 
 @ray.remote(num_cpus=1, num_gpus=1.0)
@@ -169,7 +225,9 @@ class OnDiskMergeEvaluator(MergeActorBase):
         self,
         genotype: torch.Tensor,
         eval_config: Optional[EvolMergeConfiguration] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> dict:
+        self._set_status(stage="merge", active=True, context=context)
         gc.collect()
         try:
             torch_accelerator_module = get_torch_accelerator_module(
@@ -181,15 +239,22 @@ class OnDiskMergeEvaluator(MergeActorBase):
                 empty_cache()
         except Exception:
             pass
-        LOG.info("Merging model")
+        LOG.info("[%s] Merging model", self.worker_name)
         merge_info = merge_model_with_details(
             genotype, self.genome, self.model_storage_path, self.merge_options
         )
         merged_path = merge_info.get("merged_path")
         if not merged_path:
             LOG.error(
-                "Model merge failed: %s",
+                "[%s] Model merge failed: %s",
+                self.worker_name,
                 merge_info.get("error_message", "Unknown merge failure"),
+            )
+            self._set_status(
+                stage="merge",
+                active=False,
+                context=context,
+                error_type=merge_info.get("error_type", "merge_failed"),
             )
             return {
                 "score": None,
@@ -202,8 +267,9 @@ class OnDiskMergeEvaluator(MergeActorBase):
                 ),
             }
 
-        LOG.info(f"Model merged to {merged_path}")
-        return _evaluate_merged_path_accelerated(
+        LOG.info("[%s] Model merged to %s", self.worker_name, merged_path)
+        self._set_status(stage="evaluate", active=True, context=context)
+        result = _evaluate_merged_path_accelerated(
             merged_path,
             eval_config or self.config,
             vllm=self.vllm,
@@ -212,6 +278,14 @@ class OnDiskMergeEvaluator(MergeActorBase):
             task_manager=self.task_manager,
             quantization_config=self.quantization_config,
         )
+        self._set_status(
+            stage="idle",
+            active=False,
+            context=context,
+            score=result.get("score"),
+            error_type=result.get("error_type"),
+        )
+        return result
 
 
 @ray.remote(num_cpus=1)
@@ -227,18 +301,27 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
         self,
         genotype: torch.Tensor,
         eval_config: Optional[EvolMergeConfiguration] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> dict:
+        self._set_status(stage="merge", active=True, context=context)
         gc.collect()
         os.environ.setdefault("TRANSFORMERS_NO_CUDA", "1")
-        LOG.info("Merging model (CPU)")
+        LOG.info("[%s] Merging model (CPU)", self.worker_name)
         merge_info = merge_model_with_details(
             genotype, self.genome, self.model_storage_path, self.merge_options
         )
         merged_path = merge_info.get("merged_path")
         if not merged_path:
             LOG.error(
-                "Model merge failed: %s",
+                "[%s] Model merge failed: %s",
+                self.worker_name,
                 merge_info.get("error_message", "Unknown merge failure"),
+            )
+            self._set_status(
+                stage="merge",
+                active=False,
+                context=context,
+                error_type=merge_info.get("error_type", "merge_failed"),
             )
             return {
                 "score": None,
@@ -259,9 +342,10 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
         }
         if self.quantization_config is not None:
             model_kwargs["quantization_config"] = self.quantization_config
-        LOG.info(f"Model merged to {merged_path}")
+        LOG.info("[%s] Model merged to %s", self.worker_name, merged_path)
         config = eval_config or self.config
-        return evaluate_model_cpu(
+        self._set_status(stage="evaluate", active=True, context=context)
+        result = evaluate_model_cpu(
             merged_path,
             config.tasks,
             num_fewshot=config.num_fewshot,
@@ -287,6 +371,14 @@ class OnDiskMergeEvaluatorCPU(MergeActorBase):
             ),
             model_kwargs=model_kwargs,
         )
+        self._set_status(
+            stage="idle",
+            active=False,
+            context=context,
+            score=result.get("score"),
+            error_type=result.get("error_type"),
+        )
+        return result
 
 
 @ray.remote(num_cpus=1, num_gpus=1)

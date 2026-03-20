@@ -21,12 +21,15 @@ import math
 import os
 import re
 import shutil
+import socket
+import subprocess
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import click
 import numpy as np
@@ -67,6 +70,7 @@ from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
 )
+from mergekit.evo.ray_observability import RayRunObserver, default_run_label
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
     BufferedRayEvaluationStrategy,
@@ -155,6 +159,17 @@ def _configured_merge_methods(config: EvolMergeConfiguration) -> List[str]:
         return [str(method) for method in getattr(genome_cfg, "allowed_methods")]
     merge_method = getattr(genome_cfg, "merge_method", None)
     return [str(merge_method)] if merge_method else []
+
+
+def _configured_task_names(config: EvolMergeConfiguration) -> List[str]:
+    task_names: List[str] = []
+    for task in config.tasks:
+        if task.name not in task_names:
+            task_names.append(task.name)
+    for task in getattr(config, "stage1_tasks", None) or []:
+        if task.name not in task_names:
+            task_names.append(task.name)
+    return task_names
 
 
 def _collect_merge_method_outcomes(
@@ -303,6 +318,7 @@ def _write_mlflow_run_info(
     storage_path: str,
     tracker,
     project_name: Optional[str] = None,
+    mlflow_ui_info: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     metadata = getattr(tracker, "get_run_metadata", lambda: {})()
     if not metadata or metadata.get("tracker_type") != "mlflow":
@@ -334,6 +350,13 @@ def _write_mlflow_run_info(
         lines.append(f"- MLflow UI Base URL: `{ui_base_url}`")
     if run_url:
         lines.append(f"- MLflow Review URL: {run_url}")
+    if mlflow_ui_info:
+        if mlflow_ui_info.get("ui_url"):
+            lines.append(f"- MLflow UI URL: {mlflow_ui_info['ui_url']}")
+        if mlflow_ui_info.get("pid"):
+            lines.append(f"- MLflow UI PID: `{mlflow_ui_info['pid']}`")
+        if mlflow_ui_info.get("log_path"):
+            lines.append(f"- MLflow UI Log: `{mlflow_ui_info['log_path']}`")
     if local_store_path:
         ui_port = "5000"
         if ui_base_url:
@@ -359,11 +382,111 @@ def _write_mlflow_run_info(
     return info_path
 
 
+def _is_local_port_open(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, int(port))) == 0
+
+
+def _mlflow_ui_responds(ui_url: str, timeout: float = 1.0) -> bool:
+    try:
+        with urlopen(ui_url, timeout=timeout) as response:
+            return 200 <= int(getattr(response, "status", 200)) < 500
+    except Exception:
+        return False
+
+
+def _start_mlflow_ui_if_needed(
+    storage_path: str,
+    tracker,
+    *,
+    enabled: bool,
+    host: str = "127.0.0.1",
+    port: int = 5001,
+) -> Optional[Dict[str, Any]]:
+    if not enabled:
+        return None
+
+    metadata = getattr(tracker, "get_run_metadata", lambda: {})()
+    if not metadata or metadata.get("tracker_type") != "mlflow":
+        return None
+
+    local_store_path = metadata.get("local_store_path")
+    if not local_store_path:
+        return None
+
+    ui_url = os.getenv("MLFLOW_UI_URL")
+    if ui_url:
+        ui_url = ui_url.rstrip("/")
+        if _mlflow_ui_responds(ui_url):
+            return {"ui_url": ui_url, "started": False}
+        os.environ.pop("MLFLOW_UI_URL", None)
+
+    ui_url = f"http://{host}:{int(port)}"
+    if _is_local_port_open(host, port):
+        if _mlflow_ui_responds(ui_url):
+            os.environ["MLFLOW_UI_URL"] = ui_url
+            return {"ui_url": ui_url, "started": False}
+        stage_log(
+            "Stage-Tracking",
+            (
+                f"MLflow UI port {port} is open but not responding at {ui_url}; "
+                "manual restart may be required."
+            ),
+            level=logging.WARNING,
+        )
+        return None
+
+    log_path = os.path.join(storage_path, "mlflow_ui.log")
+    pid_path = os.path.join(storage_path, "mlflow_ui.pid")
+    cmd = [
+        os.environ.get("PYTHON", os.sys.executable),
+        "-m",
+        "mlflow",
+        "ui",
+        "--backend-store-uri",
+        str(local_store_path),
+        "--host",
+        host,
+        "--port",
+        str(int(port)),
+    ]
+    env = os.environ.copy()
+    env.setdefault("GUNICORN_CMD_ARGS", "--workers=1 --timeout 120")
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        with open(pid_path, "w", encoding="utf-8") as pid_file:
+            pid_file.write(f"{process.pid}\n")
+        os.environ["MLFLOW_UI_URL"] = ui_url
+        return {
+            "ui_url": ui_url,
+            "pid": process.pid,
+            "log_path": log_path,
+            "pid_path": pid_path,
+            "started": True,
+        }
+    except Exception as exc:  # pragma: no cover - runtime-only safety
+        stage_log(
+            "Stage-Tracking",
+            f"Failed to start MLflow UI automatically: {exc}",
+            level=logging.WARNING,
+        )
+        return None
+
+
 def _log_run_artifacts(tracker, storage_path: str) -> None:
     artifacts = {
         "ga_history": "ga_history.csv",
         "ga_method_history": "ga_method_history.csv",
         "ga_summary": "ga_summary.txt",
+        "ga_stop_details": "ga_stop_details.json",
         "ga_history_plot": "ga_history_plot.png",
         "baseline_results": "baseline_results.csv",
         "failed_genotypes": "failed_genotypes.csv",
@@ -371,6 +494,8 @@ def _log_run_artifacts(tracker, storage_path: str) -> None:
         "final_comparison": "ga_final_comparison.csv",
         "final_comparison_plot": "ga_final_comparison.png",
         "mlflow_run_info": "mlflow_run_info.md",
+        "mlflow_ui_log": "mlflow_ui.log",
+        "ray_observability": "ray_observability.json",
     }
     for artifact_name, file_name in artifacts.items():
         file_path = os.path.join(storage_path, file_name)
@@ -408,6 +533,84 @@ def _meets_improvement_thresholds(
     if pct is None:
         return False
     return pct >= min_pct
+
+
+def _resolve_stop_configuration(
+    config: EvolMergeConfiguration,
+    *,
+    max_fevals_cli: Optional[int],
+    timeout_cli: Optional[float],
+) -> Dict[str, Any]:
+    stop_cfg = getattr(config, "stop", None)
+    resolved_max_fevals = (
+        int(max_fevals_cli)
+        if max_fevals_cli is not None
+        else (
+            int(stop_cfg.max_fevals)
+            if stop_cfg is not None and stop_cfg.max_fevals is not None
+            else 100
+        )
+    )
+    resolved_timeout = (
+        float(timeout_cli)
+        if timeout_cli is not None
+        else (
+            float(stop_cfg.max_time_seconds)
+            if stop_cfg is not None and stop_cfg.max_time_seconds is not None
+            else None
+        )
+    )
+    return {
+        "max_fevals": resolved_max_fevals,
+        "timeout_seconds": resolved_timeout,
+        "target_improvement_abs": (
+            float(stop_cfg.target_improvement_abs)
+            if stop_cfg is not None and stop_cfg.target_improvement_abs is not None
+            else None
+        ),
+        "target_improvement_pct": (
+            float(stop_cfg.target_improvement_pct)
+            if stop_cfg is not None and stop_cfg.target_improvement_pct is not None
+            else None
+        ),
+        "target_reference": (
+            str(stop_cfg.target_reference) if stop_cfg is not None else "best_baseline"
+        ),
+        "min_generations_before_target_stop": (
+            int(stop_cfg.min_generations_before_target_stop)
+            if stop_cfg is not None
+            else 0
+        ),
+        "require_stage2_for_target": bool(
+            stop_cfg.require_stage2_for_target if stop_cfg is not None else False
+        ),
+        "stagnation_patience_generations": (
+            int(stop_cfg.stagnation_patience_generations)
+            if stop_cfg is not None
+            and stop_cfg.stagnation_patience_generations is not None
+            else 0
+        ),
+        "stagnation_min_delta": (
+            float(stop_cfg.stagnation_min_delta) if stop_cfg is not None else 0.0
+        ),
+    }
+
+
+def _write_stop_details(
+    storage_path: str,
+    *,
+    resolved_stop: Dict[str, Any],
+    stop_details: Optional[Dict[str, Any]],
+) -> str:
+    output_path = os.path.join(storage_path, "ga_stop_details.json")
+    payload = {
+        "resolved_stop": resolved_stop,
+        "final_stop": stop_details or {},
+    }
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        json.dump(payload, output_file, indent=2, sort_keys=True)
+        output_file.write("\n")
+    return output_path
 
 
 def _failed_blacklist_scope(config: EvolMergeConfiguration) -> str:
@@ -526,7 +729,12 @@ def _init_ray_for_baselines() -> None:
 
 @click.command("mergekit-evolve-ga")
 @click.argument("genome-config-path", type=str)
-@click.option("--max-fevals", type=int, default=100)
+@click.option(
+    "--max-fevals",
+    type=int,
+    default=None,
+    help="Maximum function evaluations (overrides YAML stop.max_fevals if set)",
+)
 @click.option(
     "--population-size",
     type=int,
@@ -617,6 +825,20 @@ def _init_ray_for_baselines() -> None:
     "--mlflow-tracking-uri", type=str, help="MLflow tracking URI (default: ./mlruns)"
 )
 @click.option(
+    "--mlflow-ui/--no-mlflow-ui",
+    "auto_mlflow_ui",
+    is_flag=True,
+    default=True,
+    help="Start or reuse a local MLflow UI while the run is active",
+)
+@click.option(
+    "--mlflow-ui-port",
+    type=int,
+    default=5001,
+    show_default=True,
+    help="Local port for the auto-started MLflow UI",
+)
+@click.option(
     "--task-search-path",
     type=str,
     multiple=True,
@@ -680,7 +902,7 @@ def _init_ray_for_baselines() -> None:
 )
 def main(
     genome_config_path: str,
-    max_fevals: int,
+    max_fevals: Optional[int],
     population_size: Optional[int],
     elite_fraction: Optional[float],
     mutation_rate: Optional[float],
@@ -706,6 +928,8 @@ def main(
     use_mlflow: bool,
     mlflow_experiment: Optional[str],
     mlflow_tracking_uri: Optional[str],
+    auto_mlflow_ui: bool,
+    mlflow_ui_port: int,
     task_search_path: List[str],
     allow_benchmark_tasks: bool,
     save_final_model: bool,
@@ -735,10 +959,48 @@ def main(
 
     stage_log("Stage-Init", "Validating configuration settings...")
     check_for_naughty_config(config, allow=allow_benchmark_tasks)
+    resolved_stop = _resolve_stop_configuration(
+        config,
+        max_fevals_cli=max_fevals,
+        timeout_cli=timeout,
+    )
+    max_fevals = int(resolved_stop["max_fevals"])
+    timeout = resolved_stop["timeout_seconds"]
+    stop_summary_parts = [f"max_fevals={max_fevals}"]
+    if timeout is not None:
+        stop_summary_parts.append(f"max_time_seconds={timeout:.0f}")
+    if resolved_stop.get("target_improvement_abs") is not None:
+        stop_summary_parts.append(
+            f"target_improvement_abs={resolved_stop['target_improvement_abs']:.6f}"
+        )
+    if resolved_stop.get("target_improvement_pct") is not None:
+        stop_summary_parts.append(
+            f"target_improvement_pct={resolved_stop['target_improvement_pct']:.2f}%"
+        )
+    if resolved_stop.get("stagnation_patience_generations"):
+        stop_summary_parts.append(
+            "stagnation="
+            f"{resolved_stop['stagnation_patience_generations']} gens"
+            f" @ delta<{resolved_stop['stagnation_min_delta']:.6f}"
+        )
+    stage_log("Stage-Init", "Resolved stop policy: " + ", ".join(stop_summary_parts))
 
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
     stage_log("Stage-Init", f"Storage path: {storage_path}")
+    run_label = default_run_label(storage_path, strategy)
+    ray_observer = RayRunObserver(
+        run_label=run_label,
+        strategy=strategy,
+        role="driver",
+        storage_path=storage_path,
+        snapshot_enabled=True,
+    )
+    ray_observer.set_phase(
+        "init",
+        generation=0,
+        fevals_completed=0,
+    )
     merge_cuda = _resolve_merge_cuda(merge_cuda, num_gpus)
     if tensor_parallel_size > 1:
         if not vllm:
@@ -792,6 +1054,66 @@ def main(
 
     task_search_path = list(task_search_path)
 
+    # Initialize experiment tracking before baselines so MLflow/W&B covers the full run.
+    ray_observer.set_phase("tracking", generation=0, fevals_completed=0)
+    stage_log("Stage-Tracking", "Initializing experiment tracker...")
+    tracker = None
+    if use_wandb and use_mlflow:
+        raise ValueError(
+            "Cannot use both wandb and mlflow at the same time. Choose one."
+        )
+    elif use_wandb:
+        stage_log("Stage-Tracking", "Using Weights & Biases for experiment tracking.")
+        tracker = create_tracker("wandb")
+        tracker.initialize(
+            project_name=wandb_project or "mergekit-evolve-ga",
+            config=config.model_dump(mode="json"),
+            entity=wandb_entity,
+        )
+    elif use_mlflow:
+        stage_log("Stage-Tracking", "Using MLflow for experiment tracking.")
+        tracker = create_tracker("mlflow")
+        resolved_mlflow_tracking_uri = (
+            mlflow_tracking_uri
+            or os.getenv("MLFLOW_TRACKING_URI")
+            or f"file://{os.path.join(storage_path, 'mlruns')}"
+        )
+        tracker.initialize(
+            project_name=mlflow_experiment or "mergekit-evolve-ga",
+            config=config.model_dump(mode="json"),
+            tracking_uri=resolved_mlflow_tracking_uri,
+        )
+    else:
+        stage_log(
+            "Stage-Tracking", "Experiment tracking disabled (logging to console only)."
+        )
+        tracker = create_tracker("none")
+        tracker.initialize(project_name="no-tracking", config={})
+
+    mlflow_ui_info = _start_mlflow_ui_if_needed(
+        storage_path,
+        tracker,
+        enabled=bool(use_mlflow and auto_mlflow_ui),
+        port=int(mlflow_ui_port),
+    )
+    ray_observer.set_mlflow_ui(bool(mlflow_ui_info and mlflow_ui_info.get("ui_url")))
+    mlflow_info_path = _write_mlflow_run_info(
+        storage_path,
+        tracker,
+        project_name=mlflow_experiment or "mergekit-evolve-ga",
+        mlflow_ui_info=mlflow_ui_info,
+    )
+    if mlflow_info_path:
+        stage_log("Stage-Tracking", f"MLflow run info written to {mlflow_info_path}")
+        metadata = getattr(tracker, "get_run_metadata", lambda: {})()
+        if metadata.get("run_url"):
+            stage_log("Stage-Tracking", f"MLflow review URL: {metadata['run_url']}")
+        if mlflow_ui_info and mlflow_ui_info.get("ui_url"):
+            stage_log(
+                "Stage-Tracking",
+                f"MLflow UI available at {mlflow_ui_info['ui_url']}",
+            )
+
     merge_options = MergeOptions(
         transformers_cache=os.path.join(storage_path, "transformers_cache"),
         lora_merge_cache=os.path.join(storage_path, "lora_merge_cache"),
@@ -820,6 +1142,7 @@ def main(
     baseline_csv_path = None
     baseline_best_score: Optional[float] = None
     if run_baseline:
+        ray_observer.set_phase("baseline", baseline_model_index=0)
         baseline_csv_path = run_baseline_evaluations(
             config,
             storage_path,
@@ -828,6 +1151,7 @@ def main(
             num_gpus,
             task_search_path,
             trust_remote_code,
+            ray_observer=ray_observer,
         )
         if baseline_csv_path:
             try:
@@ -841,50 +1165,26 @@ def main(
                 )
     else:
         stage_log("Stage-Baseline", "Skipping baseline evaluation (--no-baseline).")
-
-    # Initialize experiment tracking
-    stage_log("Stage-Tracking", "Initializing experiment tracker...")
-    tracker = None
-    if use_wandb and use_mlflow:
-        raise ValueError(
-            "Cannot use both wandb and mlflow at the same time. Choose one."
+        ray_observer.set_phase(
+            "baseline", baseline_model_index=0, baseline_model_total=0
         )
-    elif use_wandb:
-        stage_log("Stage-Tracking", "Using Weights & Biases for experiment tracking.")
-        tracker = create_tracker("wandb")
-        tracker.initialize(
-            project_name=wandb_project or "mergekit-evolve-ga",
-            config=config.model_dump(mode="json"),
-            entity=wandb_entity,
+    if (
+        (
+            resolved_stop.get("target_improvement_abs") is not None
+            or resolved_stop.get("target_improvement_pct") is not None
         )
-    elif use_mlflow:
-        stage_log("Stage-Tracking", "Using MLflow for experiment tracking.")
-        tracker = create_tracker("mlflow")
-        tracker.initialize(
-            project_name=mlflow_experiment or "mergekit-evolve-ga",
-            config=config.model_dump(mode="json"),
-            tracking_uri=mlflow_tracking_uri,
-        )
-    else:
+        and resolved_stop.get("target_reference") == "best_baseline"
+        and (baseline_best_score is None or not math.isfinite(baseline_best_score))
+    ):
         stage_log(
-            "Stage-Tracking", "Experiment tracking disabled (logging to console only)."
+            "Stage-Baseline",
+            "Stop target is configured against best_baseline, but baseline score is unavailable; target-based stopping will remain disabled for this run.",
+            level=logging.WARNING,
         )
-        tracker = create_tracker("none")
-        tracker.initialize(project_name="no-tracking", config={})
-
-    mlflow_info_path = _write_mlflow_run_info(
-        storage_path,
-        tracker,
-        project_name=mlflow_experiment or "mergekit-evolve-ga",
-    )
-    if mlflow_info_path:
-        stage_log("Stage-Tracking", f"MLflow run info written to {mlflow_info_path}")
-        metadata = getattr(tracker, "get_run_metadata", lambda: {})()
-        if metadata.get("run_url"):
-            stage_log("Stage-Tracking", f"MLflow review URL: {metadata['run_url']}")
 
     # convert models to single-shard safetensors
     if reshard:
+        ray_observer.set_phase("reshard", generation=0, fevals_completed=0)
         stage_log(
             "Stage-Reshard",
             "Converting source models to single-shard safetensors...",
@@ -971,6 +1271,8 @@ def main(
         model_storage_path=os.path.join(storage_path, "merged"),
         batch_size=batch_size,
         task_search_path=task_search_path,
+        run_label=run_label,
+        run_observer=ray_observer,
     )
 
     def log_population(res_list: List[dict], step: int):
@@ -1039,6 +1341,24 @@ def main(
             if tournament_size is not None
             else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size)
         ),
+        target_improvement_abs=resolved_stop.get("target_improvement_abs"),
+        target_improvement_pct=resolved_stop.get("target_improvement_pct"),
+        target_reference=str(resolved_stop.get("target_reference") or "best_baseline"),
+        target_reference_score=(
+            float(baseline_best_score)
+            if baseline_best_score is not None and math.isfinite(baseline_best_score)
+            else None
+        ),
+        min_generations_before_target_stop=int(
+            resolved_stop.get("min_generations_before_target_stop") or 0
+        ),
+        require_stage2_for_target=bool(
+            resolved_stop.get("require_stage2_for_target", False)
+        ),
+        stagnation_patience_generations=int(
+            resolved_stop.get("stagnation_patience_generations") or 0
+        ),
+        stagnation_min_delta=float(resolved_stop.get("stagnation_min_delta") or 0.0),
     )
 
     # Log resolved GA params
@@ -1098,6 +1418,30 @@ def main(
                 and getattr(yaml_ga, "novelty_archive_size", None) is not None
                 else None
             ),
+            "stop/max_fevals": float(max_fevals),
+            "stop/max_time_seconds": (float(timeout) if timeout is not None else None),
+            "stop/target_improvement_abs": (
+                float(resolved_stop["target_improvement_abs"])
+                if resolved_stop.get("target_improvement_abs") is not None
+                else None
+            ),
+            "stop/target_improvement_pct": (
+                float(resolved_stop["target_improvement_pct"])
+                if resolved_stop.get("target_improvement_pct") is not None
+                else None
+            ),
+            "stop/min_generations_before_target_stop": float(
+                resolved_stop.get("min_generations_before_target_stop", 0)
+            ),
+            "stop/require_stage2_for_target": float(
+                1.0 if resolved_stop.get("require_stage2_for_target") else 0.0
+            ),
+            "stop/stagnation_patience_generations": float(
+                resolved_stop.get("stagnation_patience_generations", 0)
+            ),
+            "stop/stagnation_min_delta": float(
+                resolved_stop.get("stagnation_min_delta", 0.0)
+            ),
         }
     )
 
@@ -1141,6 +1485,14 @@ def main(
             f"{current_best:.4f}"
             if math.isfinite(current_best) and current_best > float("-inf")
             else "--"
+        )
+        strat.set_runtime_context(generation=generation_idx, phase="ga")
+        ray_observer.record_generation_start(
+            generation=generation_idx,
+            fevals_completed=fevals_completed,
+            fevals_limit=fevals_limit,
+            population_size=population_size,
+            best_score=current_best,
         )
         print(f"[GA] === Generation {generation_idx}/{total_generations} ===")
         print(
@@ -1360,6 +1712,7 @@ def main(
         generation = int(
             info.get("generation", max(1, step // ga_params.population_size))
         )
+        strat.set_runtime_context(generation=generation, phase="ga")
         gen_best = info.get("gen_best")
         gen_mean = info.get("gen_mean")
         gen_std = info.get("gen_std")
@@ -1433,6 +1786,15 @@ def main(
         print(
             f"[GA] Progress update: completed={completed_generations}/{total_generations} "
             f"avg/gen={_format_time(avg_seconds)} | ETA~{_format_time(eta_seconds)}"
+        )
+        ray_observer.record_generation_end(
+            generation=generation,
+            fevals_completed=step,
+            generation_best=gen_best,
+            generation_mean=gen_mean,
+            best_score=best_so_far,
+            cache_hits=cache_hits,
+            failed_evals=failed_evals,
         )
 
         # Write/append CSV history for offline tracking
@@ -1627,6 +1989,11 @@ def main(
         nonlocal best_x, best_score
         best_x = x.copy()
         best_score = score
+        ray_observer.set_phase(
+            "ga",
+            best_score=float(score),
+            fevals_completed=step,
+        )
         print(f"New best score: {best_score:.4f}")
         save_best_config(best_x)
         log_best(best_x, best_score, step=step)
@@ -1826,16 +2193,56 @@ def main(
         stage_log("Stage-GA", "No baseline metrics available for this run.")
 
     stage_log("Stage-GA", "Starting GA optimization loop...")
+    ray_observer.set_phase(
+        "ga",
+        generation=0,
+        fevals_completed=0,
+        best_score=(
+            float(baseline_best_score)
+            if baseline_best_score is not None and math.isfinite(baseline_best_score)
+            else None
+        ),
+    )
+    strat.set_runtime_context(generation=0, phase="ga")
     prune_stale_merged_artifacts(storage_path)
     try:
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
     except KeyboardInterrupt:
+        ray_observer.set_phase(
+            "failed",
+            best_score=(
+                float(best_score)
+                if best_score is not None and math.isfinite(best_score)
+                else None
+            ),
+            fevals_completed=0,
+        )
         ray.shutdown()
+        raise
 
     stage_log("Stage-GA", "Optimization complete.")
     stage_log("Stage-GA", f"Best score achieved: {best_score:.4f}")
+    stop_details = getattr(optimizer, "last_stop_details", None) or {}
+    stop_details_path = _write_stop_details(
+        storage_path,
+        resolved_stop=resolved_stop,
+        stop_details=stop_details,
+    )
+    stage_log("Stage-GA", f"Stop details written to {stop_details_path}")
+    if stop_details.get("reason"):
+        stop_reason = str(stop_details["reason"])
+        stop_bits = [f"reason={stop_reason}"]
+        if stop_details.get("generation") is not None:
+            stop_bits.append(f"generation={stop_details['generation']}")
+        if stop_details.get("fevals") is not None:
+            stop_bits.append(f"fevals={stop_details['fevals']}")
+        if stop_details.get("best_improvement_pct") is not None:
+            stop_bits.append(
+                f"improvement_pct={float(stop_details['best_improvement_pct']):+.2f}%"
+            )
+        stage_log("Stage-GA", "Stop outcome: " + " ".join(stop_bits))
 
-    _write_ga_outputs(storage_path)
+    _write_ga_outputs(storage_path, stop_details=stop_details)
 
     if generation_best_history:
         initial_best = generation_best_history[0]
@@ -1863,6 +2270,8 @@ def main(
             else:  # pragma: no cover - guard against zero baseline best
                 pct_str = "Δvs_baseline_pct=undefined"
             summary_parts.append(pct_str)
+        if stop_details.get("reason"):
+            summary_parts.append(f"stop_reason={stop_details['reason']}")
 
         stage_log(
             "Stage-GA",
@@ -1928,6 +2337,10 @@ def main(
                 shutil.copytree(merged_path, final_model_path)
                 shutil.rmtree(merged_path, ignore_errors=True)
 
+            ray_observer.set_phase(
+                "final_compare",
+                best_score=float(best_score) if math.isfinite(best_score) else None,
+            )
             _evaluate_and_write_final_comparison(
                 config,
                 storage_path,
@@ -1959,6 +2372,14 @@ def main(
                     f"- Generations completed: {len(generation_best_history)}",
                     f"- Best score: {best_score:.6f}",
                 ]
+                if stop_details.get("reason"):
+                    summary_lines.append(
+                        f"- Stop reason: {str(stop_details['reason'])}"
+                    )
+                if stop_details.get("fevals") is not None:
+                    summary_lines.append(
+                        f"- Function evaluations completed: {int(stop_details['fevals'])}"
+                    )
                 if baseline_best_score is not None and math.isfinite(
                     baseline_best_score
                 ):
@@ -2050,6 +2471,11 @@ def main(
                             f"You can manually upload from: {os.path.join(storage_path, 'final_model')}",
                         )
         prune_stale_merged_artifacts(storage_path)
+        ray_observer.set_phase(
+            "finished",
+            best_score=float(best_score) if math.isfinite(best_score) else None,
+            fevals_completed=int(stop_details.get("fevals") or max_fevals),
+        )
     else:
         stage_log(
             "Stage-GA",
@@ -2061,6 +2487,10 @@ def main(
         stage_log("Stage-GA", "- Evaluation environment problems")
         stage_log("Stage-GA", "- Insufficient population size or evaluations")
         prune_stale_merged_artifacts(storage_path)
+        ray_observer.set_phase(
+            "failed",
+            fevals_completed=int(stop_details.get("fevals") or 0),
+        )
 
     _log_run_artifacts(tracker, storage_path)
     tracker.finish()
@@ -2074,6 +2504,7 @@ def run_baseline_evaluations(
     num_gpus: Optional[int],
     task_search_path: List[str],
     trust_remote_code: bool,
+    ray_observer: Optional[RayRunObserver] = None,
 ) -> Optional[str]:
     """Execute baseline evaluations for all models defined in the genome."""
     stage_log("Stage-Baseline", "Starting baseline evaluation phase...")
@@ -2090,7 +2521,18 @@ def run_baseline_evaluations(
         stage_log(
             "Stage-Baseline", "No models found in the genome; skipping baselines."
         )
+        if ray_observer is not None:
+            ray_observer.set_phase(
+                "baseline", baseline_model_index=0, baseline_model_total=0
+            )
         return None
+
+    if ray_observer is not None:
+        ray_observer.set_phase(
+            "baseline",
+            baseline_model_index=0,
+            baseline_model_total=len(models),
+        )
 
     baseline_csv_path = _reusable_baseline_csv_path(
         os.path.join(storage_dir, "baseline_results.csv"),
@@ -2101,9 +2543,19 @@ def run_baseline_evaluations(
             "Stage-Baseline",
             f"Reusing existing baseline metrics from {baseline_csv_path}",
         )
+        if ray_observer is not None:
+            ray_observer.set_phase(
+                "baseline",
+                baseline_model_index=len(models),
+                baseline_model_total=len(models),
+            )
         return baseline_csv_path
 
-    task_manager = create_task_manager(task_search_path)
+    required_task_names = _configured_task_names(config)
+    task_manager = create_task_manager(
+        task_search_path,
+        required_tasks=required_task_names,
+    )
 
     _init_ray_for_baselines()
 
@@ -2127,11 +2579,15 @@ def run_baseline_evaluations(
         limit: Optional[int],
         batch_size: Optional[int],
         task_search_path: List[str],
+        required_tasks: List[str],
         trust_remote_code: bool,
         fitness_mode: str,
         task_mix_profile: Optional[str],
     ) -> Dict[str, Any]:
-        task_manager = create_task_manager(task_search_path)
+        task_manager = create_task_manager(
+            task_search_path,
+            required_tasks=required_tasks,
+        )
         model_args: Dict[str, Any] = {
             "pretrained": model_name,
             "dtype": "bfloat16",
@@ -2172,11 +2628,15 @@ def run_baseline_evaluations(
         limit: Optional[int],
         batch_size: Optional[int],
         task_search_path: List[str],
+        required_tasks: List[str],
         trust_remote_code: bool,
         fitness_mode: str,
         task_mix_profile: Optional[str],
     ) -> Dict[str, Any]:
-        task_manager = create_task_manager(task_search_path)
+        task_manager = create_task_manager(
+            task_search_path,
+            required_tasks=required_tasks,
+        )
         model_args: Dict[str, Any] = {
             "pretrained": model_name,
             "dtype": "float32",
@@ -2218,6 +2678,7 @@ def run_baseline_evaluations(
             config.limit,
             batch_size,
             task_search_path,
+            required_task_names,
             trust_remote_code,
             config.fitness_mode,
             config.task_mix_profile,
@@ -2225,7 +2686,7 @@ def run_baseline_evaluations(
         for model_ref in models
     }
 
-    for model_ref in models:
+    for model_index, model_ref in enumerate(models, start=1):
         model_name = str(model_ref)
         row: Dict[str, Union[str, float, None]] = {
             "model": model_name,
@@ -2248,6 +2709,14 @@ def run_baseline_evaluations(
                 f"Evaluation failed for {model_name}: {exc}",
                 level=logging.ERROR,
             )
+            if ray_observer is not None:
+                ray_observer.record_baseline_progress(
+                    model_index=model_index,
+                    model_total=len(models),
+                    model_name=model_name,
+                    score=None,
+                    failed=True,
+                )
             LOGGER.debug("Baseline evaluation error", exc_info=exc)
             baseline_rows.append(row)
             continue
@@ -2264,12 +2733,32 @@ def run_baseline_evaluations(
                 f"Evaluation failed for {model_name}: {row['error']}",
                 level=logging.ERROR,
             )
+            if ray_observer is not None:
+                ray_observer.record_baseline_progress(
+                    model_index=model_index,
+                    model_total=len(models),
+                    model_name=model_name,
+                    score=None,
+                    failed=True,
+                )
             baseline_rows.append(row)
             continue
 
         successes += 1
         weighted_score = result.get("score")
         row["weighted_score"] = weighted_score
+        if ray_observer is not None:
+            ray_observer.record_baseline_progress(
+                model_index=model_index,
+                model_total=len(models),
+                model_name=model_name,
+                score=(
+                    float(weighted_score)
+                    if weighted_score is not None and math.isfinite(weighted_score)
+                    else None
+                ),
+                failed=False,
+            )
 
         row.update(_collect_task_metrics(result, config.tasks))
 
@@ -2306,6 +2795,13 @@ def run_baseline_evaluations(
         "Stage-Baseline",
         f"Completed evaluations: {successes}; failures: {failures}",
     )
+    if ray_observer is not None:
+        ray_observer.set_phase(
+            "baseline",
+            baseline_model_index=len(models),
+            baseline_model_total=len(models),
+            failed_evals=failures,
+        )
 
     return baseline_csv_path
 
@@ -2388,7 +2884,10 @@ def _evaluate_and_write_final_comparison(
             level=logging.WARNING,
         )
 
-    task_manager = create_task_manager(task_search_path)
+    task_manager = create_task_manager(
+        task_search_path,
+        required_tasks=_configured_task_names(config),
+    )
     use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
     device = "cuda" if use_cuda else "cpu"
 
@@ -2483,7 +2982,9 @@ def _write_comparison_plot(table: "pandas.DataFrame", output_path: str) -> None:
         )
 
 
-def _write_ga_outputs(storage_path: str) -> None:
+def _write_ga_outputs(
+    storage_path: str, *, stop_details: Optional[Dict[str, Any]] = None
+) -> None:
     """Write a compact GA summary table and optional plot to the run outputs."""
     history_path = os.path.join(storage_path, "ga_history.csv")
     if not os.path.exists(history_path):
@@ -2549,6 +3050,11 @@ def _write_ga_outputs(storage_path: str) -> None:
                 )
             f.write(spark + "\n")
             f.write(f"min={min_v:.5f} max={max_v:.5f}\n")
+
+        if stop_details:
+            f.write("\nStop details:\n")
+            for key in sorted(stop_details.keys()):
+                f.write(f"{key}={stop_details[key]}\n")
 
     # Optional plot (best/mean over generations)
     try:

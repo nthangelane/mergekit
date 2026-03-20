@@ -247,6 +247,37 @@ def test_decode_genotype_without_method_evolution_uses_allowed_method(monkeypatc
     assert decoded[0].method == MergeMethod.PASSTHROUGH
 
 
+def test_evol_merge_configuration_accepts_stop_policy():
+    config = EvolMergeConfiguration.model_validate(
+        {
+            "genome": {
+                "type": "multi_method",
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["passthrough", "linear", "slerp"],
+                "base_model": "author/model-a",
+                "max_models_per_layer": 2,
+            },
+            "tasks": [{"name": "boolq", "weight": 1.0, "metric": "acc,none"}],
+            "stop": {
+                "max_fevals": 200,
+                "max_time_seconds": 14400,
+                "target_improvement_pct": 5.0,
+                "target_reference": "best_baseline",
+                "min_generations_before_target_stop": 5,
+                "require_stage2_for_target": True,
+                "stagnation_patience_generations": 8,
+                "stagnation_min_delta": 0.005,
+            },
+        }
+    )
+
+    assert config.stop is not None
+    assert config.stop.max_fevals == 200
+    assert config.stop.target_improvement_pct == pytest.approx(5.0)
+    assert config.stop.require_stage2_for_target is True
+    assert config.stop.stagnation_patience_generations == 8
+
+
 def test_m1_micro_example_uses_layer_blocks(monkeypatch):
     class DummyConfig:
         def __init__(self):
