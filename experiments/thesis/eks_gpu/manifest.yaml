@@ -13,11 +13,19 @@ target_cluster_profile:
   per_experiment_gpu_cap: 10
   minimum_gpu_vram_gb: 24
   preferred_gpu_node_types:
+    - g6.xlarge
     - g6.12xlarge
     - g6e.12xlarge
     - g6e.48xlarge
     - p5.48xlarge
   preferred_scale_profiles:
+    - name: quota-safe-g6x4
+      gpu_worker_gpus: 1
+      gpu_nodes: 4
+      gpu_max_nodes: 5
+      expected_gpu_workers: 4
+      notes:
+        - Fits the current 20 vCPU G-family quota by using g6.xlarge nodes.
     - name: throughput-20
       gpu_worker_gpus: 1
       gpu_nodes: 5
@@ -35,6 +43,7 @@ target_cluster_profile:
       expected_gpu_workers_min: 10
       expected_gpu_workers_max: 14
   notes:
+    - If the account cannot launch the 20-30 worker target, use the quota-safe profile and run one thesis experiment at a time.
     - Tensor parallel values above 1 require Ray worker pods that advertise more than one GPU.
     - Use --gpu-gpus-per-node for the EC2 node shape and --gpu-worker-gpus for the Ray worker pod shape.
     - The preferred scale profile names map directly to `run_on_eks bootstrap --scale-profile ...`.
@@ -162,6 +171,42 @@ experiments:
     recommended_max_fevals: 320
     recommended_strategy: pool
     recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false
+
+  - id: exp08
+    name: Pythia-70M Adaptive Bridge Run
+    family: pythia
+    reason: Cloud mirror of the stable local 70M adaptive preset, intended to validate the EKS runtime with the conservative helpful-sft plus deduped pair before moving back to the 160M search space.
+    config_path: experiments/thesis/eks_gpu/exp08_pythia70m_adaptive_bridge/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp08_pythia70m_adaptive_bridge
+    storage_subpath: thesis/eks_gpu/exp08_pythia70m_adaptive_bridge
+    job_name: thesis-exp08-pythia70m-bridge
+    recommended_population: 8
+    recommended_generations: 24
+    recommended_max_fevals: 192
+    recommended_strategy: pool
+    recommended_num_gpus: 4
+    recommended_tensor_parallel_size: 1
+    recommended_gpu_worker_gpus: 1
+    minimum_gpu_vram_gb: 24
+    requires_gated_hf_access: false
+
+  - id: exp09
+    name: Pythia-70M Minimal Pool Diagnostic
+    family: pythia
+    reason: Minimal pooled merge validation to isolate EKS Ray worker failures in the first merge/eval wave using the same 70M helpful-sft plus deduped pair that worked locally.
+    config_path: experiments/thesis/eks_gpu/exp09_pythia70m_pool_diag/config.yml
+    storage_path: workspace/thesis/eks_gpu/exp09_pythia70m_pool_diag
+    storage_subpath: thesis/eks_gpu/exp09_pythia70m_pool_diag
+    job_name: thesis-exp09-pythia70m-pool-diag
+    recommended_population: 2
+    recommended_generations: 1
+    recommended_max_fevals: 2
+    recommended_strategy: pool
+    recommended_num_gpus: 1
     recommended_tensor_parallel_size: 1
     recommended_gpu_worker_gpus: 1
     minimum_gpu_vram_gb: 24

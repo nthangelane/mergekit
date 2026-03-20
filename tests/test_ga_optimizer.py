@@ -104,7 +104,7 @@ class ObjectiveStrategy:
         return results
 
 
-def _build_multi_method_genome(monkeypatch, allowed_methods):
+def _build_multi_method_genome(monkeypatch, allowed_methods, layer_granularity=0):
     class DummyConfig:
         def __init__(self):
             self.num_hidden_layers = 4
@@ -130,6 +130,7 @@ def _build_multi_method_genome(monkeypatch, allowed_methods):
                 "allowed_methods": list(allowed_methods),
                 "base_model": "author/model-a" if "slerp" in allowed_methods else None,
                 "max_models_per_layer": 2,
+                "layer_granularity": int(layer_granularity),
             }
         )
     )
@@ -341,6 +342,49 @@ def test_enhanced_ga_updates_method_probabilities_from_operator_outcomes(
     history_by_method = {row["merge_method"]: row for row in summary["history_rows"]}
     assert history_by_method["linear"]["parent_improvement_rate"] == pytest.approx(1.0)
     assert history_by_method["passthrough"]["survival_rate"] == pytest.approx(0.0)
+
+
+def test_enhanced_ga_does_not_promote_layered_mixed_to_sampleable_method(monkeypatch):
+    genome = _build_multi_method_genome(
+        monkeypatch,
+        ["linear", "passthrough"],
+        layer_granularity=2,
+    )
+    opt = EnhancedGAOptimizer(
+        genome=genome,
+        strategy=object(),  # type: ignore[arg-type]
+        params=EnhancedGAParams(
+            population_size=2,
+            adaptive_method_sampling=True,
+            initial_method_probs={"linear": 0.5, "passthrough": 0.5},
+            operator_update_smoothing=1.0,
+        ),
+        seed=0,
+    )
+
+    layered_mixed = (
+        genome.initial_genotype(random=False).view(-1).numpy().astype(np.float32)
+    )
+    layered_mixed[0] = genome.method_gene_value("linear")
+    layered_mixed[genome.layer_group_dim] = genome.method_gene_value("passthrough")
+    layered_mixed[1:3] = np.array([1.0, 0.0], dtype=np.float32)
+    layered_mixed[genome.layer_group_dim + 1 : genome.layer_group_dim + 3] = np.array(
+        [1.0, 0.0], dtype=np.float32
+    )
+
+    linear = genome.initial_genotype(random=False).view(-1).numpy().astype(np.float32)
+    pop = np.stack([layered_mixed, linear], axis=0)
+    opt._population_metadata = opt._seed_population_metadata(pop)
+
+    summary = opt._update_operator_state(
+        pop,
+        [{"score": 0.4}, {"score": 0.8}],
+        np.array([0.4, 0.8], dtype=np.float32),
+        np.array([1]),
+    )
+
+    assert "layered_mixed" not in summary["probabilities_after"]
+    assert set(summary["probabilities_after"]) == {"linear", "passthrough"}
 
 
 def test_enhanced_ga_passthrough_cap_forces_non_passthrough_sampling(monkeypatch):

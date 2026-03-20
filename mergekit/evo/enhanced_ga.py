@@ -238,6 +238,11 @@ class EnhancedGAOptimizer:
     def _seed_population_metadata(self, pop: np.ndarray) -> List[Dict[str, Any]]:
         metadata: List[Dict[str, Any]] = []
         for individual in pop:
+            actual_method = (
+                self._method_name_for_genotype(individual)
+                if self.is_multi_method
+                else None
+            )
             metadata.append(
                 {
                     "origin": "seed",
@@ -245,10 +250,11 @@ class EnhancedGAOptimizer:
                     "parent_indices": [],
                     "parent_scores": [],
                     "sampled_method": (
-                        self._method_name_for_genotype(individual)
-                        if self.is_multi_method
+                        actual_method
+                        if actual_method in self._configured_methods
                         else None
                     ),
+                    "actual_method": actual_method,
                 }
             )
         return metadata
@@ -592,21 +598,18 @@ class EnhancedGAOptimizer:
                 if idx < len(self._population_metadata)
                 else {}
             )
-            method_name = str(
-                meta.get("sampled_method") or self._method_name_for_genotype(individual)
+            sampled_method = meta.get("sampled_method")
+            actual_method = meta.get("actual_method") or self._method_name_for_genotype(
+                individual
             )
-            if method_name not in per_method:
-                per_method[method_name] = {
-                    "count": 0,
-                    "success_count": 0,
-                    "failure_count": 0,
-                    "survivor_count": 0,
-                    "score_values": [],
-                    "improvement_count": 0,
-                    "improvement_denominator": 0,
-                }
-                if method_name not in methods:
-                    methods.append(method_name)
+            method_name: Optional[str] = None
+            if sampled_method in self._configured_methods:
+                method_name = str(sampled_method)
+            elif actual_method in self._configured_methods:
+                method_name = str(actual_method)
+
+            if method_name is None:
+                continue
 
             stats = per_method[method_name]
             stats["count"] += 1
@@ -969,6 +972,7 @@ class EnhancedGAOptimizer:
                             float(fitness[p2_idx]),
                         ],
                         "sampled_method": sampled_method or actual_method,
+                        "actual_method": actual_method,
                     }
                 )
                 crossover_children += 1
@@ -988,6 +992,11 @@ class EnhancedGAOptimizer:
                     "parent_indices": [],
                     "parent_scores": [],
                     "sampled_method": (
+                        self._method_name_for_genotype(x0)
+                        if self.is_multi_method
+                        else None
+                    ),
+                    "actual_method": (
                         self._method_name_for_genotype(x0)
                         if self.is_multi_method
                         else None

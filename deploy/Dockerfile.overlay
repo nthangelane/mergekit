@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
-FROM 214109453209.dkr.ecr.us-east-1.amazonaws.com/mergekit-ga:20260315-scale
+ARG MERGEKIT_BASE_IMAGE=214109453209.dkr.ecr.us-east-1.amazonaws.com/mergekit-ga:20260320-adaptive-ga-overlay-011afc9
+FROM ${MERGEKIT_BASE_IMAGE}
 
 ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,6 +9,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
+RUN python -m pip install --no-cache-dir "ray[default]==2.35.0"
 COPY mergekit ./mergekit
 COPY docs ./docs
 COPY examples ./examples

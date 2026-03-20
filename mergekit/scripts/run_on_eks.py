@@ -55,6 +55,14 @@ DEFAULT_COST_TAGS = {
     "ManagedBy": "mergekit-eks",
 }
 SCALE_PROFILES: dict[str, dict[str, object]] = {
+    "quota-safe-g6x4": {
+        "description": "Quota-safe profile for accounts limited to 20 G-family vCPUs; 4 single-GPU Ray workers on g6.xlarge nodes.",
+        "gpu_node_type": "g6.xlarge",
+        "gpu_gpus_per_node": 1,
+        "gpu_worker_gpus": 1,
+        "gpu_nodes": 4,
+        "gpu_max_nodes": 5,
+    },
     "throughput-20": {
         "description": "20 single-GPU Ray workers for high-throughput GA evaluation.",
         "gpu_node_type": "g6.12xlarge",
@@ -1238,7 +1246,9 @@ def bootstrap(
         "CPU_WORKER_REPLICAS": str(max(cpu_nodes - 1, 0)),
         "CPU_WORKER_MAX_REPLICAS": str(max(cpu_max_nodes - 1, 0)),
         "GPU_WORKER_REPLICAS": str(gpu_nodes * gpu_worker_pods_per_node),
-        "GPU_WORKER_MIN_REPLICAS": str(1 if gpu_nodes > 0 else 0),
+        # Keep the desired GPU worker pool warm so submit-time GPU preflight can
+        # succeed without waiting for autoscaling after the job is already queued.
+        "GPU_WORKER_MIN_REPLICAS": str(gpu_nodes * gpu_worker_pods_per_node),
         "GPU_WORKER_MAX_REPLICAS": str(gpu_max_nodes * gpu_worker_pods_per_node),
         "GPU_WORKER_GPUS": str(gpu_worker_gpus),
         "EFS_FILE_SYSTEM_ID": efs_file_system_id,
