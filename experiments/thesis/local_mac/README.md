@@ -12,6 +12,8 @@ This group is for the small validation run that should execute on the developmen
 - `phase3_ablation_pythia70m.yml`
 - `thesis_run_pythia70m.yml`
 - `BENCHMARK_PLAN_20260319.md`
+- `NEW_MACHINE_SETUP.md`
+- `run_thesis_pool_local.sh`
 
 ## Current Local Defaults
 
@@ -25,6 +27,10 @@ This group is for the small validation run that should execute on the developmen
   [`RESULTS_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260319.md)
 - Thesis benchmark plan:
   [`BENCHMARK_PLAN_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/BENCHMARK_PLAN_20260319.md)
+- New machine setup and runbook:
+  [`NEW_MACHINE_SETUP.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/NEW_MACHINE_SETUP.md)
+- Reusable pooled local launcher:
+  [`run_thesis_pool_local.sh`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/run_thesis_pool_local.sh)
 
 ## Suggested Run
 
