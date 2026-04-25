@@ -14,11 +14,11 @@ dependencies = [
     "torch>=2.0.0",
     "tqdm==4.67.1",
     "click==8.2.1",
-    "safetensors~=0.5.2",
-    "accelerate~=1.6.0",
-    "pydantic~=2.10.6",
+    "safetensors~=0.7.0",
+    "accelerate~=1.13.0",
+    "pydantic~=2.13.3",
     "immutables==0.21",
-    "transformers>=4.45.2",
+    "transformers>=4.45.2,<5",
     "tokenizers>=0.20.1",
     "huggingface_hub",
     "peft",
@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["black~=25.1.0", "isort~=6.0.1", "pre-commit~=4.2.0"]
-test = ["pytest~=8.4.0"]
+dev = ["black~=26.3.1", "isort~=6.0.1", "pre-commit~=4.6.0"]
+test = ["pytest~=8.4.2"]
 evolve = ["ray[default]", "cma", "lm_eval", "wandb", "mlflow", "langdetect", "immutabledict", "memray"]
 vllm = ["vllm==0.7.2", "lm_eval[vllm]"]
 evolve-ga = ["ray[default]", "lm_eval", "wandb", "mlflow", "langdetect", "immutabledict", "memray"]
@@ -96,5 +96,5 @@ filterwarnings = [
 testpaths = ["tests"]
 
 [dependency-groups]
-test = ["pytest~=8.4.0"]
-dev = ["black~=25.1.0", "isort~=6.0.1", "pre-commit~=4.2.0"]
+test = ["pytest~=8.4.2"]
+dev = ["black~=26.3.1", "isort~=6.0.1", "pre-commit~=4.6.0"]

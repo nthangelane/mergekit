@@ -29,6 +29,7 @@ class _ResilientTaskManager(lm_eval.tasks.TaskManager):
     """TaskManager variant that skips malformed task YAMLs instead of aborting."""
 
     def __init__(self, *args, required_tasks: Optional[Sequence[str]] = None, **kwargs):
+        self.logger = getattr(self, "logger", LOGGER)
         self.required_tasks = tuple(
             dict.fromkeys(str(task) for task in (required_tasks or []) if task)
         )
