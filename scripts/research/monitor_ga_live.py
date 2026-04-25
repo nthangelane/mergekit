@@ -158,7 +158,7 @@ def main():
             print()
             print("Next steps:")
             print(
-                "  python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table"
+                "  python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table"
             )
             break
 
@@ -181,6 +181,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n\n⏸️  Monitoring stopped. GA is still running in background.")
-        print(f"   Resume monitoring: python monitor_ga_live.py")
+        print(f"   Resume monitoring: python scripts/research/monitor_ga_live.py")
         print(f"   Check progress: grep '[GA]' {LOG_FILE} | wc -l")
         sys.exit(0)

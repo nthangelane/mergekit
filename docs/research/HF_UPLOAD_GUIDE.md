@@ -18,7 +18,7 @@ huggingface-cli login
 
 #### Option A: Using the Upload Script (Easiest)
 ```bash
-python upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/model-name
+python scripts/hf/upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/model-name
 ```
 
 #### Option B: Using evolve_ga.py directly (Automatic)
@@ -75,12 +75,12 @@ tokenizer = AutoTokenizer.from_pretrained("username/model-name")
 
 ### Upload with private flag
 ```bash
-python upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/private-model --private
+python scripts/hf/upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/private-model --private
 ```
 
 ### Upload from different storage path
 ```bash
-python upload_to_hf.py /path/to/any/model/directory username/model-name
+python scripts/hf/upload_to_hf.py /path/to/any/model/directory username/model-name
 ```
 
 ## Troubleshooting

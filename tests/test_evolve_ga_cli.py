@@ -127,6 +127,7 @@ def test_num_gpus_zero_disables_merge_cuda_before_baseline(monkeypatch, tmp_path
         num_gpus,
         task_search_path,
         trust_remote_code,
+        ray_observer=None,
     ):
         assert merge_cuda is False
         assert num_gpus == 0

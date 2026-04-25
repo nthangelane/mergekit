@@ -177,7 +177,7 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log | wc -l
 # Should show: 10
 
 # Extract metrics
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --output convergence.png \
   --csv metrics.csv \
   --table

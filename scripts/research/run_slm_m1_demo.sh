@@ -1,6 +1,6 @@
 #!/bin/bash
-# run_slm_m1_demo.sh - Launch the TinyLlama SLM GA demo on CPU-only Apple silicon.
-# Usage: ./run_slm_m1_demo.sh [extra mergekit args]
+# scripts/research/run_slm_m1_demo.sh - Launch the TinyLlama SLM GA demo on CPU-only Apple silicon.
+# Usage: ./scripts/research/run_slm_m1_demo.sh [extra mergekit args]
 
 set -euo pipefail
 

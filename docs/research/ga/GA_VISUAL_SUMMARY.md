@@ -150,13 +150,13 @@ python -m mergekit.scripts.evolve_ga config.yml \
 
 **Before**:
 ```bash
-python plot_ga_results.py log.log
+python scripts/research/plot_ga_results.py log.log
 # Shows 1 point: No convergence visible
 ```
 
 **After**:
 ```bash
-python plot_ga_results.py log.log
+python scripts/research/plot_ga_results.py log.log
 # Shows 10 points: Clear fitness trajectory
 ```
 
@@ -210,11 +210,11 @@ grep "\[GA\]" workspace/ga_10gen_visual_run.log | wc -l
 # Output: 10 ✓
 
 # 2. Extract metrics
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --table
 
 # 3. Generate plot
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png
 ```
 

@@ -178,7 +178,7 @@ tail -f workspace/ga_10gen_mac_cpu_run.log | grep "\[GA\]"
 ### Phase 2: Solution Development ✅
 - Created `ga_10gen_explicit.yml` with explicit generations
 - Created `ga_10gen_mac_cpu.yml` with Mac optimization
-- Updated `plot_ga_results.py` with enhanced visualization
+- Updated `scripts/research/plot_ga_results.py` with enhanced visualization
 - Enhanced `README_GA_LOGGING_FIX.md` with Mac warning
 
 ### Phase 3: Fix Implementation ✅
@@ -218,7 +218,7 @@ tail -20 workspace/ga_10gen_mac_cpu_run.log
 ### After Run Completes
 ```bash
 # Extract metrics to table and CSV
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --table --csv metrics.csv --output convergence.png
 
 # View the convergence plot
@@ -264,7 +264,7 @@ Visibility Impact:    100% logging completeness! ✓
 - **New run** (with fix): `workspace/ga_10gen_mac_cpu_run.log` (⏳ in progress, expecting 10 [GA] lines)
 
 ### The Scripts
-- **Visualization**: `plot_ga_results.py` (enhanced with table/CSV/plot options)
+- **Visualization**: `scripts/research/plot_ga_results.py` (enhanced with table/CSV/plot options)
 - **Documentation**: `GA_*.md` files (complete GA system explanation)
 - **Mac Reference**: `MAC_*.md` files (Mac-specific setup and fixes)
 
@@ -302,7 +302,7 @@ TOTAL               ~15-20 min      ⏳ ~30-40% complete
 
 3. **After Run Completes**:
    ```bash
-   python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+   python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
      --output convergence.png --csv metrics.csv --table
    ```
 

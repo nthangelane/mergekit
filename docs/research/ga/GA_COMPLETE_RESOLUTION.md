@@ -110,7 +110,7 @@ The `--no-merge-cuda` flag is **critical** for Mac M1/M2 users. Without it, PyTo
 | `GA_DOCUMENTATION_INDEX.md` | Navigation guide | 5 min |
 | `GA_IMPLEMENTATION_CHECKLIST.md` | Task tracking | 5 min |
 
-**Plus**: Enhanced `plot_ga_results.py` for visualization
+**Plus**: Enhanced `scripts/research/plot_ga_results.py` for visualization
 
 ### 5. **Started the Fixed Run** ✅
 
@@ -244,7 +244,7 @@ Fitness
 - ✨ `workspace/ga_10gen_mac_cpu.yml` - **NEW** Mac-optimized
 
 ### Scripts (1 file)
-- ✏️ `plot_ga_results.py` - Enhanced visualization
+- ✏️ `scripts/research/plot_ga_results.py` - Enhanced visualization
 
 ### Updated Documentation
 - ✏️ `GA_EXPERIMENT_SUMMARY.md` - Added context
@@ -279,14 +279,14 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log | wc -l
 grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log
 
 # Extract: Get table and CSV
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --table --csv ga_metrics.csv --output convergence.png
 ```
 
 ### Step 5: Compare Plots
 ```bash
 # Old plot (1 point, flat)
-open ga_results.png
+open docs/research/assets/ga_results.png
 
 # New plot (10 points, convergence)
 open convergence.png
@@ -372,7 +372,7 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log | wc -l
 grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log
 
 # Extract and plot (after completion)
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --output convergence.png --csv metrics.csv --table
 
 # Compare old vs new
@@ -485,7 +485,7 @@ A: Yes, but `serial` gives best logging. `pool` is faster but batches callbacks.
 **Next Action**:
 1. Monitor: `tail -f workspace/ga_10gen_mac_cpu_run.log | grep "\[GA\]"` (expect 10 lines)
 2. Verify: No CUDA errors appear
-3. Extract: `python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table`
+3. Extract: `python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table`
 4. Compare: New 10-point plot vs old 1-point plot
 
 ---

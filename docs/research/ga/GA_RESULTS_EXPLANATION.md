@@ -97,7 +97,7 @@ python -m mergekit.scripts.evolve_ga \
 
 Use the updated plotting script:
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png \
   --csv ga_metrics.csv \
   --table
@@ -174,7 +174,7 @@ python -m mergekit.scripts.evolve_ga \
   2>&1 | tee workspace/ga_10gen_visual_run.log
 
 # 2. Plot results (after it completes)
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png \
   --csv ga_metrics.csv \
   --table

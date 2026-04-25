@@ -1,5 +1,5 @@
 #!/bin/bash
-# run_ga_10gen.sh - Run 10-generation GA experiment on CPU
+# scripts/research/run_ga_10gen.sh - Run 10-generation GA experiment on CPU
 # This script runs the GA experiment in the background and won't be interrupted
 
 echo "🚀 Starting 10-generation GA experiment..."

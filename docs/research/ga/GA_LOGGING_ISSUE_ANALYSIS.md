@@ -99,7 +99,7 @@ python -m mergekit.scripts.evolve_ga \
 ### Extract and visualize results:
 ```bash
 # Extract metrics to CSV and generate plots
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_10gen_convergence.png \
   --csv ga_metrics.csv \
   --table
@@ -148,4 +148,4 @@ Your system now logs:
 - ✅ Crossover operation tracking
 - ✅ Immigrant statistics
 
-All exportable to CSV and plottable with `plot_ga_results.py`
+All exportable to CSV and plottable with `scripts/research/plot_ga_results.py`

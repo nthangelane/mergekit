@@ -98,7 +98,7 @@ python -m mergekit.scripts.evolve_ga workspace/tiny_cpu_ga_experiment.yml \
 
 **B. After GA Run** (Manual)
 ```bash
-python upload_to_hf.py \
+python scripts/hf/upload_to_hf.py \
   workspace/tiny_cpu_ga_10gen/final_model \
   username/model-name
 ```
@@ -113,7 +113,7 @@ huggingface-cli login
 
 ### Upload Your Best Model
 ```bash
-python upload_to_hf.py \
+python scripts/hf/upload_to_hf.py \
   workspace/tiny_cpu_ga_10gen/final_model \
   nkululekothangelane/pythia-70m-merged-ga
 ```
@@ -181,7 +181,7 @@ python -m mergekit.scripts.evolve_ga workspace/tiny_cpu_ga_experiment.yml \
 ## 📚 Files Created/Modified
 
 ### New Files
-- `upload_to_hf.py` - Standalone HF upload script
+- `scripts/hf/upload_to_hf.py` - Standalone HF upload script
 - `HF_UPLOAD_GUIDE.md` - Detailed upload instructions
 - `GA_EXPERIMENT_SUMMARY.md` - This file
 

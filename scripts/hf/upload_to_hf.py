@@ -5,7 +5,7 @@ import argparse
 import os
 from pathlib import Path
 
-from huggingface_hub import get_repo_url, upload_folder
+from huggingface_hub import upload_folder
 
 
 def upload_model(local_path: str, repo_id: str, private: bool = False):

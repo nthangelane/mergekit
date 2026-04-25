@@ -149,7 +149,7 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log
 
 **4. Extract Metrics**
 ```bash
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --table --csv metrics.csv --output convergence.png
 ```
 
@@ -181,7 +181,7 @@ grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log
 ```bash
 # After run completes:
 echo "Opening old plot (1 point, flat):"
-open ga_results.png
+open docs/research/assets/ga_results.png
 
 echo "Opening new plot (10 points, convergence):"
 open convergence.png
@@ -203,8 +203,8 @@ ps aux | grep evolve_ga | grep -v grep                       # Process check
 
 # AFTER COMPLETION
 grep "\[GA\]" workspace/ga_10gen_mac_cpu_run.log             # View all
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table  # Extract table
-python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table  # Extract table
+python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \
   --output convergence.png --csv metrics.csv                 # Full analysis
 ```
 

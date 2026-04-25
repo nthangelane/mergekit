@@ -113,7 +113,14 @@ def _ensure_tokenizer_assets(
         LOG.warning(
             "Tokenizer assets are missing or broken; repairing from donor tokenizer files."
         )
-        _copy_tokenizer(merge_config, out_path, options=options)
+        try:
+            _copy_tokenizer(merge_config, out_path, options=options)
+        except Exception as e:
+            LOG.error(
+                "Failed to repair tokenizer assets. The merge was still successful, just copy them from somewhere else.",
+                exc_info=e,
+            )
+            return
         _materialize_symlinked_output_files(out_path, file_names)
 
 

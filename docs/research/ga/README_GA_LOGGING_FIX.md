@@ -125,10 +125,10 @@ grep "\[GA\]" workspace/ga_10gen_visual_run.log | wc -l
 **Extract and visualize:**
 ```bash
 # Display data as table
-python plot_ga_results.py workspace/ga_10gen_visual_run.log --table
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log --table
 
 # Generate convergence plot
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence_10gen.png \
   --csv ga_metrics_10gen.csv
 ```
@@ -272,7 +272,7 @@ grep "\[GA\]" workspace/ga_10gen_visual_run.log | \
 
 ### Check 4: Plot Generated
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output convergence.png
 ls -l convergence.png
 # Should show file exists with size > 100KB
@@ -305,13 +305,13 @@ tail workspace/ga_10gen_visual_run.log
 
 Use the **new** log file:
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output convergence_new.png
 ```
 
 Not the old one:
 ```bash
-python plot_ga_results.py workspace/ga_10gen_run.log  # Wrong!
+python scripts/research/plot_ga_results.py workspace/ga_10gen_run.log  # Wrong!
 ```
 
 ---
@@ -332,7 +332,7 @@ python plot_ga_results.py workspace/ga_10gen_run.log  # Wrong!
 - `workspace/ga_10gen_explicit.yml` - New explicit config
 
 ### Scripts
-- `plot_ga_results.py` - Enhanced visualization
+- `scripts/research/plot_ga_results.py` - Enhanced visualization
 
 ### Logs
 - `workspace/ga_10gen_run.log` - Original (1 generation logged)
@@ -349,8 +349,8 @@ python plot_ga_results.py workspace/ga_10gen_run.log  # Wrong!
 
 ### After Run Completes
 1. Check: `grep "\[GA\]" ... | wc -l` → expect 10
-2. Extract: `python plot_ga_results.py ... --table`
-3. Plot: `python plot_ga_results.py ... --output png`
+2. Extract: `python scripts/research/plot_ga_results.py ... --table`
+3. Plot: `python scripts/research/plot_ga_results.py ... --output png`
 4. Compare: New plot vs old plot
 
 ### For Future Runs

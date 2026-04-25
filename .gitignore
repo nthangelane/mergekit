@@ -173,6 +173,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+.claude/
 *.log
 
 # Large data directories

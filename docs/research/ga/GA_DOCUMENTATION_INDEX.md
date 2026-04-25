@@ -58,7 +58,7 @@
 
 | File | Function |
 |------|----------|
-| `plot_ga_results.py` | Extract and visualize GA metrics |
+| `scripts/research/plot_ga_results.py` | Extract and visualize GA metrics |
 | `mergekit/scripts/evolve_ga.py` | GA optimization entry point |
 
 ---
@@ -90,7 +90,7 @@
 - ✅ Added storage path to prevent CLI errors
 
 ### Tooling
-- ✅ Enhanced `plot_ga_results.py` with better visualization
+- ✅ Enhanced `scripts/research/plot_ga_results.py` with better visualization
 - ✅ Added table output for data inspection
 - ✅ Added CSV export for spreadsheet analysis
 
@@ -127,7 +127,7 @@ python -m mergekit.scripts.evolve_ga \
 ### Step 3: Visualize Results
 ```bash
 # After experiment completes (15-20 min runtime)
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png \
   --csv ga_metrics.csv \
   --table
@@ -210,8 +210,8 @@ For your CPU-based experiment, `serial` is optimal.
 - QUICK_START.md (existing) → Full GA workflow
 
 **Analyzing Results**:
-- plot_ga_results.py → Code for visualization
-- ga_results.png → Example plot
+- scripts/research/plot_ga_results.py → Code for visualization
+- docs/research/assets/ga_results.png → Example plot
 - ga_metrics.csv → Exported data
 
 ---
@@ -255,11 +255,11 @@ storage_path: workspace/ga_10gen_visual_storage
    - Look for `[GA]` lines appearing
 
 2. **After Completion**
-   - Run: `python plot_ga_results.py workspace/ga_10gen_visual_run.log --table`
+   - Run: `python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log --table`
    - Should show 10 rows of data
 
 3. **Generate Plots**
-   - Run: `python plot_ga_results.py workspace/ga_10gen_visual_run.log --output convergence.png`
+   - Run: `python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log --output convergence.png`
    - Compare new plot to old one
 
 4. **Analyze Results**

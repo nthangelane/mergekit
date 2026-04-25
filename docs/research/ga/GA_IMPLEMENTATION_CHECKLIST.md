@@ -42,7 +42,7 @@ Plot showed:      1 data point (no convergence visible)
 - [x] `GA_RESULTS_EXPLANATION.md` ← Full details (15 min)
 - [x] `GA_LOGGING_ISSUE_ANALYSIS.md` ← Technical (20 min)
 - [x] `GA_DOCUMENTATION_INDEX.md` ← Navigation (5 min)
-- [x] Enhanced `plot_ga_results.py` ← Better visualization
+- [x] Enhanced `scripts/research/plot_ga_results.py` ← Better visualization
 
 ### Step 4: Monitoring ⏳ IN PROGRESS
 - [ ] Run completes (expected: 15-20 min)
@@ -51,8 +51,8 @@ Plot showed:      1 data point (no convergence visible)
 
 ### Step 5: Verification ⏳ PENDING (after run)
 - [ ] Count lines: `grep "\[GA\]" ... | wc -l` → expect 10
-- [ ] Extract: `python plot_ga_results.py ... --table`
-- [ ] Plot: `python plot_ga_results.py ... --output png`
+- [ ] Extract: `python scripts/research/plot_ga_results.py ... --table`
+- [ ] Plot: `python scripts/research/plot_ga_results.py ... --output png`
 
 ---
 
@@ -74,19 +74,19 @@ grep "[GA]" workspace/ga_10gen_visual_run.log
 
 ### Check 3: Display table (1 min)
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log --table
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log --table
 ```
 **Expected**: 10 rows of data with increasing generation numbers
 
 ### Check 4: Generate plot (2 min)
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence_10gen.png
 ```
 **Expected**: Plot with 10 points showing downward fitness trend
 
 ### Check 5: Compare plots (5 min)
-- Open `ga_results.png` (old: 1 point)
+- Open `docs/research/assets/ga_results.png` (old: 1 point)
 - Open `ga_convergence_10gen.png` (new: 10 points)
 - Note: New plot shows clear convergence curve
 
@@ -127,7 +127,7 @@ Flat visualization
 
 ### Modified
 - ✏️ `workspace/tiny_cpu_ga_experiment.yml` - Added generations
-- ✏️ `plot_ga_results.py` - Enhanced visualization
+- ✏️ `scripts/research/plot_ga_results.py` - Enhanced visualization
 - ✏️ `GA_EXPERIMENT_SUMMARY.md` - Added context
 
 ---
@@ -141,7 +141,7 @@ tail -f workspace/ga_10gen_visual_run.log | grep "\[GA\]"
 
 ### After completion - Extract data
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png \
   --csv ga_metrics.csv \
   --table
@@ -178,7 +178,7 @@ grep "[GA]" workspace/ga_10gen*.log
 ### "Plot still shows 1 point?"
 ```bash
 # Make sure you used the NEW log file
-python plot_ga_results.py workspace/ga_10gen_visual_run.log ...
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log ...
 # Not: ga_10gen_run.log
 ```
 

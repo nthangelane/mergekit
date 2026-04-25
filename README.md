@@ -199,12 +199,12 @@ Example config
 
 #### TinyLlama SLM demo (M1-friendly)
 
-Need a turnkey proof-of-improvement run on an Apple silicon laptop? The repo now ships with `examples/slm_m1_demo.yml` plus the helper script `./run_slm_m1_demo.sh`, which keeps everything on CPU via the serial GA strategy. The config mixes three TinyLlama checkpoints, limits lm-eval to `lambada_openai` and `piqa`, and caps evaluations at 64 so each generation completes in a few minutes on an M1.
+Need a turnkey proof-of-improvement run on an Apple silicon laptop? The repo now ships with `examples/slm_m1_demo.yml` plus the helper script `./scripts/research/run_slm_m1_demo.sh`, which keeps everything on CPU via the serial GA strategy. The config mixes three TinyLlama checkpoints, limits lm-eval to `lambada_openai` and `piqa`, and caps evaluations at 64 so each generation completes in a few minutes on an M1.
 
-1. Make the helper executable once: `chmod +x run_slm_m1_demo.sh`.
-2. Launch the run (prints live output while tee'ing to `workspace/slm_m1_demo.log`): `./run_slm_m1_demo.sh`.
+1. Make the helper executable once: `chmod +x scripts/research/run_slm_m1_demo.sh`.
+2. Launch the run (prints live output while tee'ing to `workspace/slm_m1_demo.log`): `./scripts/research/run_slm_m1_demo.sh`.
 3. Inspect progress: `column -s, -t < workspace/slm_m1_demo_run/ga_history.csv | head`. The `best_score` column should improve steadily across generations.
-4. Override defaults with env vars when needed (e.g., `SLM_MAX_FEVALS=120 ./run_slm_m1_demo.sh` or `SLM_STORAGE=workspace/my_run ./run_slm_m1_demo.sh --limit 48`). All extra CLI args after the script name are forwarded to `mergekit.scripts.evolve_ga`.
+4. Override defaults with env vars when needed (e.g., `SLM_MAX_FEVALS=120 ./scripts/research/run_slm_m1_demo.sh` or `SLM_STORAGE=workspace/my_run ./scripts/research/run_slm_m1_demo.sh --limit 48`). All extra CLI args after the script name are forwarded to `mergekit.scripts.evolve_ga`.
 
 The helper script automatically calls `ray stop --force`, uses `--no-merge-cuda`, and stores artifacts under `workspace/slm_m1_demo_run`. The resulting merged checkpoint plus GA history files live inside that directory for further inspection or upload.
 

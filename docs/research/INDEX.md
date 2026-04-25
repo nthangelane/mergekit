@@ -9,9 +9,9 @@
 
 ## 🛠️ Executable Scripts
 
-- **upload_to_hf.py** - Standalone script to upload models to Hugging Face Hub
+- **scripts/hf/upload_to_hf.py** - Standalone script to upload models to Hugging Face Hub
   ```bash
-  python upload_to_hf.py <model_path> <hf_repo_id>
+  python scripts/hf/upload_to_hf.py <model_path> <hf_repo_id>
   ```
 
 ## 📂 Generated Artifacts
@@ -56,7 +56,7 @@ python -m mergekit.scripts.evolve_ga workspace/tiny_cpu_ga_experiment.yml \
 
 ### Upload Existing Model
 ```bash
-python upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/model-name
+python scripts/hf/upload_to_hf.py workspace/tiny_cpu_ga_10gen/final_model username/model-name
 ```
 
 ## 🔧 Modified Code
@@ -123,7 +123,7 @@ pip install huggingface_hub
    └─ Check workspace/*/final_model/
 
 5. Upload Model
-   └─ python upload_to_hf.py ...
+   └─ python scripts/hf/upload_to_hf.py ...
    └─ OR use --hf-model-id during GA
 
 6. Share & Use

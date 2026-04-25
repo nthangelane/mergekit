@@ -19,7 +19,7 @@ python -m mergekit.scripts.evolve_ga workspace/tiny_cpu_ga_experiment.yml \
 huggingface-cli login
 
 # Upload your best model
-python upload_to_hf.py workspace/my_experiment/final_model username/model-name
+python scripts/hf/upload_to_hf.py workspace/my_experiment/final_model username/model-name
 ```
 
 **Done!** Your model is now on Hugging Face Hub 🎉
@@ -126,8 +126,8 @@ huggingface-cli login
 
 ## 📖 More Info
 
-- **Full Guide**: See `GA_EXPERIMENT_SUMMARY.md`
-- **Upload Help**: See `HF_UPLOAD_GUIDE.md`
+- **Full Guide**: See `docs/research/ga/GA_EXPERIMENT_SUMMARY.md`
+- **Upload Help**: See `docs/research/HF_UPLOAD_GUIDE.md`
 - **Current Results**: See `workspace/tiny_cpu_ga_10gen/final_model/`
 
 ---

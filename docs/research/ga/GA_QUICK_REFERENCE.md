@@ -54,7 +54,7 @@ python -m mergekit.scripts.evolve_ga \
 
 ### Generate plots (after it finishes):
 ```bash
-python plot_ga_results.py workspace/ga_10gen_visual_run.log \
+python scripts/research/plot_ga_results.py workspace/ga_10gen_visual_run.log \
   --output ga_convergence.png \
   --csv ga_metrics.csv \
   --table
@@ -70,7 +70,7 @@ python plot_ga_results.py workspace/ga_10gen_visual_run.log \
 | `workspace/ga_10gen_explicit.yml` | ✨ Created | New explicit 10-gen config |
 | `GA_LOGGING_ISSUE_ANALYSIS.md` | ✨ Created | Detailed technical analysis |
 | `GA_RESULTS_EXPLANATION.md` | ✨ Created | Comprehensive explanation |
-| `plot_ga_results.py` | ✏️ Updated | Enhanced with table output |
+| `scripts/research/plot_ga_results.py` | ✏️ Updated | Enhanced with table output |
 
 ---
 

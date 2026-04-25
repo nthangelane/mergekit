@@ -88,10 +88,12 @@ def main():
             print("\n🎉 Next steps:")
             print("1. Extract metrics:")
             print(
-                "   python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table"
+                "   python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log --table"
             )
             print("\n2. Generate plot:")
-            print("   python plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \\")
+            print(
+                "   python scripts/research/plot_ga_results.py workspace/ga_10gen_mac_cpu_run.log \\"
+            )
             print("     --output convergence.png --csv metrics.csv")
             print("\n3. Compare results:")
             print("   grep '[GA]' workspace/ga_10gen_run.log | wc -l  # Old: 1")
@@ -114,5 +116,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n\n⏸️  Monitoring stopped. Run is still continuing in background.")
-        print("   Resume monitoring: python monitor_ga.py")
+        print("   Resume monitoring: python scripts/research/monitor_ga.py")
         sys.exit(0)
