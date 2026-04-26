@@ -1,0 +1,111 @@
+# Population size 16 sensitivity check — same feval budget, fewer generations
+# Scales elite_fraction and explorer_fraction proportionally to maintain search strategy
+# At pop=16 with N=96: ~6 complete generations (16x per gen)
+# Tests whether larger populations can leverage budget more effectively despite fewer generations
+# NOTE: Only 6 complete generations may limit convergence; observe best-of-gen progression
+
+genome:
+  type: multi_method
+
+  models:
+    - lomahony/pythia-70m-helpful-sft
+    - EleutherAI/pythia-70m-deduped
+
+  base_model: EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+
+  allowed_methods:
+    - passthrough
+    - linear
+    - slerp
+
+  layer_granularity: 0
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: wikitext
+    weight: 0.40
+    metric: byte_perplexity,none
+  - name: boolq
+    weight: 0.35
+    metric: acc,none
+  - name: sciq
+    weight: 0.25
+    metric: acc,none
+
+two_stage: true
+stage1_tasks:
+  - name: wikitext
+    weight: 0.30
+    metric: byte_perplexity,none
+  - name: boolq
+    weight: 0.30
+    metric: acc,none
+  - name: sciq
+    weight: 0.40
+    metric: acc,none
+stage1_limit: 4
+stage2_limit: 12
+stage2_top_k: 4
+
+fitness_mode: structured_phase1_tiny
+task_mix_profile: pythia70m_phase1
+
+behavior_prompts:
+  - "Q: What is the capital of France?\nA:"
+  - "Answer with one word. The opposite of hot is"
+  - "Finish the sentence: A triangle has"
+behavior_probe_max_new_tokens: 20
+behavior_repetition_ngram_size: 4
+behavior_min_distinct_ratio: 0.15
+behavior_reject_on_degenerate: false
+
+random_init: false
+
+ga:
+  population_size: 16
+  elite_fraction: 0.0625
+  mutation_rate: 0.10
+  mutation_sigma: 0.015
+  crossover: semantic
+  semantic_crossover_prob: 0.75
+  method_mutation_rate: 0.10
+  model_mutation_rate: 0.10
+  parameter_mutation_rate: 0.10
+  tournament_size: 3
+  adaptive_method_sampling: true
+  initial_method_probs:
+    passthrough: 0.25
+    linear: 0.45
+    slerp: 0.30
+  operator_temperature: 1.0
+  operator_update_smoothing: 0.20
+  operator_avg_child_weight: 0.50
+  operator_parent_improvement_weight: 0.30
+  operator_survival_weight: 0.20
+  passthrough_penalty: 0.02
+  passthrough_max_fraction: 0.30
+  explorer_fraction: 0.1875
+  diversity_parent_selection: true
+  diversity_parent_weight: 0.20
+  gene_diversity_bonus_weight: 0.04
+  behavior_diversity_bonus_weight: 0.03
+
+stop:
+  max_fevals: 96
+  max_time_seconds: 14400
+  target_improvement_pct: 5.0
+  target_reference: best_baseline
+  min_generations_before_target_stop: 5
+  require_stage2_for_target: true
+  stagnation_patience_generations: 8
+  stagnation_min_delta: 0.005
+
+limit: 12
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

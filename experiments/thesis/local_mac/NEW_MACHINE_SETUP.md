@@ -132,6 +132,12 @@ Launch the full pooled batch:
 ./experiments/thesis/local_mac/run_thesis_pool_local.sh 20260321-thesis-pool-batch
 ```
 
+Launch the full pooled batch with an explicit worker count:
+
+```bash
+./experiments/thesis/local_mac/run_thesis_pool_local.sh 20260321-thesis-pool-batch 3
+```
+
 What this does:
 
 - runs seeds `11`, `22`, `33` sequentially
@@ -152,6 +158,13 @@ SEEDS="11 22 33" \
 HF_SHARED_CACHE="$HOME/.cache/huggingface/hub" \
 ./experiments/thesis/local_mac/run_thesis_pool_local.sh my-batch
 ```
+
+The launcher now supports both forms:
+
+- positional worker count:
+  `./experiments/thesis/local_mac/run_thesis_pool_local.sh my-batch 3`
+- environment override:
+  `NUM_WORKERS=3 ./experiments/thesis/local_mac/run_thesis_pool_local.sh my-batch`
 
 ## Monitor The Run
 

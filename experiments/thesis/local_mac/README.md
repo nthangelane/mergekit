@@ -12,8 +12,14 @@ This group is for the small validation run that should execute on the developmen
 - `phase3_ablation_pythia70m.yml`
 - `thesis_run_pythia70m.yml`
 - `BENCHMARK_PLAN_20260319.md`
+- `RESULTS_20260321_THESIS_BATCH.md`
+- `RESULTS_20260425_DEPENDENCY_PROBE.md`
+- `PROJECT_IMPROVEMENT_TODO_20260426.md`
+- `DEPENDENCY_COMPATIBILITY_NOTES_20260426.md`
 - `NEW_MACHINE_SETUP.md`
 - `run_thesis_pool_local.sh`
+- `thesis_run_pythia70m_tuned.yml`
+- `pending_experiments/`
 
 ## Current Local Defaults
 
@@ -25,12 +31,24 @@ This group is for the small validation run that should execute on the developmen
   [`phase3_ablation_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/phase3_ablation_pythia70m.yml)
 - Results write-up:
   [`RESULTS_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260319.md)
+- Completed three-seed pooled thesis batch summary:
+  [`RESULTS_20260321_THESIS_BATCH.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260321_THESIS_BATCH.md)
+- Dependency-probe thesis validation:
+  [`RESULTS_20260425_DEPENDENCY_PROBE.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260425_DEPENDENCY_PROBE.md)
+- Project improvement checklist:
+  [`PROJECT_IMPROVEMENT_TODO_20260426.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/PROJECT_IMPROVEMENT_TODO_20260426.md)
+- Dependency compatibility notes:
+  [`DEPENDENCY_COMPATIBILITY_NOTES_20260426.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/DEPENDENCY_COMPATIBILITY_NOTES_20260426.md)
 - Thesis benchmark plan:
   [`BENCHMARK_PLAN_20260319.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/BENCHMARK_PLAN_20260319.md)
 - New machine setup and runbook:
   [`NEW_MACHINE_SETUP.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/NEW_MACHINE_SETUP.md)
 - Reusable pooled local launcher:
   [`run_thesis_pool_local.sh`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/run_thesis_pool_local.sh)
+- Proposed tuned follow-up preset:
+  [`thesis_run_pythia70m_tuned.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/thesis_run_pythia70m_tuned.yml)
+- Pending follow-up experiment specs:
+  [`pending_experiments/`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/pending_experiments)
 
 ## Suggested Run
 
