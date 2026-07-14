@@ -21,6 +21,8 @@ genome:
   max_models_per_layer: 2
   normalize: true
   allow_negative_weights: false
+  linear_min_source_weight: 0.15
+  linear_max_scale: 1.0
   enable_method_evolution: true
   enable_model_selection: true
 

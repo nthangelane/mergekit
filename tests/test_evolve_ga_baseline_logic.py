@@ -8,6 +8,7 @@ import pytest
 from mergekit.evo.tracking import MLflowTracker
 from mergekit.scripts.evolve_ga import (
     _best_weighted_score_from_frame,
+    _classify_solution_novelty,
     _collect_merge_method_outcomes,
     _init_ray_for_baselines,
     _meets_improvement_thresholds,
@@ -141,6 +142,20 @@ def test_collect_merge_method_outcomes_computes_success_rates():
     assert math.isclose(
         outcomes["metrics"]["merge_method/passthrough/success_rate"], 1.0
     )
+
+
+def test_classify_solution_novelty_treats_passthrough_as_control():
+    novelty = _classify_solution_novelty("passthrough")
+
+    assert novelty["is_novel_solution"] is False
+    assert novelty["novelty_class"] == "baseline_control"
+
+
+def test_classify_solution_novelty_accepts_non_passthrough_merge():
+    novelty = _classify_solution_novelty("linear")
+
+    assert novelty["is_novel_solution"] is True
+    assert novelty["novelty_class"] == "candidate_merge"
 
 
 def test_write_mlflow_run_info_writes_review_url(tmp_path):

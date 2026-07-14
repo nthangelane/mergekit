@@ -70,6 +70,11 @@ from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
 )
+from mergekit.evo.provenance import (
+    PARENT_LINEAGE_FILENAME,
+    inspect_parent_lineage,
+    write_parent_lineage_report,
+)
 from mergekit.evo.ray_observability import RayRunObserver, default_run_label
 from mergekit.evo.strategy import (
     ActorPoolEvaluationStrategy,
@@ -253,6 +258,96 @@ def _collect_merge_method_outcomes(
         "method_failure_counts": method_failure_counter,
         "metrics": metrics,
         "history_rows": history_rows,
+    }
+
+
+def _classify_solution_novelty(
+    method_name: str,
+    genotype_candidate: Optional[np.ndarray] = None,
+    genome: Optional[Union[ModelGenome, MultiMethodGenome]] = None,
+) -> Dict[str, Any]:
+    """Classify whether a candidate should count as a new merge solution."""
+    normalized_method = str(method_name or "unknown")
+    if normalized_method == "passthrough":
+        return {
+            "is_novel_solution": False,
+            "novelty_class": "baseline_control",
+            "novelty_reason": "passthrough preserves one parent and is not a new merge",
+        }
+    if normalized_method in {"decode_error", "unknown"}:
+        return {
+            "is_novel_solution": False,
+            "novelty_class": "unknown",
+            "novelty_reason": "candidate method could not be decoded",
+        }
+
+    if genotype_candidate is None or genome is None:
+        return {
+            "is_novel_solution": True,
+            "novelty_class": "candidate_merge",
+            "novelty_reason": "non-passthrough merge method",
+        }
+
+    if not hasattr(genome, "genotype_to_param_arrays"):
+        return {
+            "is_novel_solution": True,
+            "novelty_class": "candidate_merge",
+            "novelty_reason": "non-passthrough merge method",
+        }
+
+    try:
+        params = genome.genotype_to_param_arrays(genotype_candidate)
+    except Exception:  # pragma: no cover - diagnostic path only
+        logging.debug("Unable to decode genotype novelty details", exc_info=True)
+        return {
+            "is_novel_solution": True,
+            "novelty_class": "candidate_merge",
+            "novelty_reason": "non-passthrough merge method",
+        }
+
+    methods = [str(method) for method in params.get("merge_method", [])]
+    if methods and all(method == "passthrough" for method in methods):
+        return {
+            "is_novel_solution": False,
+            "novelty_class": "baseline_control",
+            "novelty_reason": "all layer groups are passthrough",
+        }
+
+    selection_columns = [
+        key
+        for key in params.keys()
+        if key.startswith("model_") and key.endswith("_selection")
+    ]
+    min_selected_sources = None
+    for row_idx, layer_method in enumerate(methods):
+        if layer_method == "passthrough":
+            continue
+        selected = 0
+        for column in selection_columns:
+            values = params.get(column) or []
+            if row_idx < len(values):
+                try:
+                    if float(values[row_idx] or 0.0) > 1e-6:
+                        selected += 1
+                except (TypeError, ValueError):
+                    continue
+        min_selected_sources = (
+            selected
+            if min_selected_sources is None
+            else min(min_selected_sources, selected)
+        )
+
+    if min_selected_sources is not None and min_selected_sources < 2:
+        return {
+            "is_novel_solution": False,
+            "novelty_class": "degenerate_merge",
+            "novelty_reason": "non-passthrough layer selects fewer than two sources",
+        }
+
+    return {
+        "is_novel_solution": True,
+        "novelty_class": "candidate_merge",
+        "novelty_reason": "uses a non-passthrough merge over multiple sources",
     }
 
 
@@ -496,6 +591,7 @@ def _log_run_artifacts(tracker, storage_path: str) -> None:
         "mlflow_run_info": "mlflow_run_info.md",
         "mlflow_ui_log": "mlflow_ui.log",
         "ray_observability": "ray_observability.json",
+        "parent_lineage": PARENT_LINEAGE_FILENAME,
     }
     for artifact_name, file_name in artifacts.items():
         file_path = os.path.join(storage_path, file_name)
@@ -988,6 +1084,22 @@ def main(
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
     stage_log("Stage-Init", f"Storage path: {storage_path}")
+    stage_log("Stage-Init", "Checking source-model parent lineage...")
+    parent_lineage = inspect_parent_lineage(config.genome.models)
+    parent_lineage_path = write_parent_lineage_report(storage_path, parent_lineage)
+    if parent_lineage.get("warning"):
+        stage_log(
+            "Stage-Init",
+            f"PARENT LINEAGE WARNING: {parent_lineage['warning']}",
+            level=logging.WARNING,
+        )
+    else:
+        common_lineage = parent_lineage.get("common_lineage") or []
+        lineage_summary = (
+            ", ".join(common_lineage) if common_lineage else "single parent"
+        )
+        stage_log("Stage-Init", f"Parent lineage check passed: {lineage_summary}")
+    stage_log("Stage-Init", f"Parent lineage metadata: {parent_lineage_path}")
     run_label = default_run_label(storage_path, strategy)
     ray_observer = RayRunObserver(
         run_label=run_label,
@@ -1055,6 +1167,8 @@ def main(
     task_search_path = list(task_search_path)
 
     # Initialize experiment tracking before baselines so MLflow/W&B covers the full run.
+    tracking_config = config.model_dump(mode="json")
+    tracking_config["parent_lineage"] = parent_lineage
     ray_observer.set_phase("tracking", generation=0, fevals_completed=0)
     stage_log("Stage-Tracking", "Initializing experiment tracker...")
     tracker = None
@@ -1067,7 +1181,7 @@ def main(
         tracker = create_tracker("wandb")
         tracker.initialize(
             project_name=wandb_project or "mergekit-evolve-ga",
-            config=config.model_dump(mode="json"),
+            config=tracking_config,
             entity=wandb_entity,
         )
     elif use_mlflow:
@@ -1080,7 +1194,7 @@ def main(
         )
         tracker.initialize(
             project_name=mlflow_experiment or "mergekit-evolve-ga",
-            config=config.model_dump(mode="json"),
+            config=tracking_config,
             tracking_uri=resolved_mlflow_tracking_uri,
         )
     else:
@@ -1579,6 +1693,8 @@ def main(
         behavior_diversity_values: List[float] = []
         archive_novelty_values: List[float] = []
         stability_values: List[float] = []
+        novel_solution_count = 0
+        novel_score_values: List[float] = []
 
         for genotype_candidate in genotype_iterable:
             _tally_config(genotype_candidate)
@@ -1606,6 +1722,9 @@ def main(
             metadata = (
                 population_metadata[idx] if idx < len(population_metadata) else {}
             )
+            novelty = _classify_solution_novelty(
+                candidate_method, np.asarray(genotype_candidate), genome
+            )
             fitness_components = dict(result.get("fitness_components") or {})
             behavior_probe = dict(result.get("behavior_probe") or {})
             gene_diversity = fitness_components.get("gene_diversity_score")
@@ -1625,14 +1744,22 @@ def main(
                 archive_novelty_values.append(float(archive_novelty))
             if stability_score is not None:
                 stability_values.append(float(stability_score))
+            score = result.get("score")
+            if novelty["is_novel_solution"]:
+                novel_solution_count += 1
+                if score is not None and math.isfinite(float(score)):
+                    novel_score_values.append(float(score))
 
             candidate_rows.append(
                 {
                     "candidate_index": idx,
                     "merge_method": candidate_method,
+                    "is_novel_solution": novelty["is_novel_solution"],
+                    "novelty_class": novelty["novelty_class"],
+                    "novelty_reason": novelty["novelty_reason"],
                     "sampled_method": metadata.get("sampled_method"),
                     "role": metadata.get("role") or metadata.get("origin"),
-                    "score": result.get("score"),
+                    "score": score,
                     "raw_score": result.get("raw_score"),
                     "score_source": result.get("score_source"),
                     "stage1_score": result.get("stage1_score"),
@@ -1694,6 +1821,12 @@ def main(
             float(method_counter.get("passthrough", 0) / len(candidate_rows))
             if candidate_rows
             else 0.0
+        )
+        novel_solution_fraction = (
+            float(novel_solution_count / len(candidate_rows)) if candidate_rows else 0.0
+        )
+        best_novel_solution_score = (
+            float(max(novel_score_values)) if novel_score_values else None
         )
         gene_diversity_mean = (
             float(np.mean(gene_diversity_values)) if gene_diversity_values else None
@@ -1943,6 +2076,8 @@ def main(
                 "ga/crossover_children": float(crossover_children),
                 "ga/immigrants": float(immigrants),
                 "population/passthrough_fraction": passthrough_fraction,
+                "population/novel_solution_fraction": novel_solution_fraction,
+                "population/best_novel_solution_score": best_novel_solution_score,
                 "population/gene_diversity_mean": gene_diversity_mean,
                 "population/behavior_diversity_mean": behavior_diversity_mean,
                 "population/archive_novelty_mean": archive_novelty_mean,

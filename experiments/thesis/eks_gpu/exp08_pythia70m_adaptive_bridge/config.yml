@@ -1,7 +1,7 @@
 # Experiment 8: Pythia-70M adaptive bridge run
 # This is the cloud mirror of the stable local adaptive preset. It is intended
-# to validate the EKS runtime using the same conservative search space that
-# behaved well locally before moving up to the 160M pair.
+# to validate the EKS runtime using the same conservative constrained search
+# space that behaved well locally before moving up to the 160M pair.
 
 genome:
   type: multi_method
@@ -16,12 +16,13 @@ genome:
   allowed_methods:
     - passthrough
     - linear
-    - slerp
 
   layer_granularity: 0
   max_models_per_layer: 2
   normalize: true
   allow_negative_weights: false
+  linear_min_source_weight: 0.15
+  linear_max_scale: 1.0
   enable_method_evolution: true
   enable_model_selection: true
 
@@ -48,8 +49,8 @@ stage1_tasks:
     weight: 0.40
     metric: acc,none
 stage1_limit: 4
-stage2_limit: 12
-stage2_top_k: 4
+stage2_limit: 24
+stage2_top_k: 2
 
 fitness_mode: structured_phase1_tiny
 task_mix_profile: pythia70m_phase1
@@ -79,8 +80,7 @@ ga:
   adaptive_method_sampling: true
   initial_method_probs:
     passthrough: 0.25
-    linear: 0.45
-    slerp: 0.30
+    linear: 0.75
   operator_temperature: 1.0
   operator_update_smoothing: 0.20
   operator_avg_child_weight: 0.50
@@ -88,11 +88,11 @@ ga:
   operator_survival_weight: 0.20
   passthrough_penalty: 0.02
   passthrough_max_fraction: 0.30
-  explorer_fraction: 0.25
+  explorer_fraction: 0.15
   diversity_parent_selection: true
   diversity_parent_weight: 0.20
-  gene_diversity_bonus_weight: 0.04
-  behavior_diversity_bonus_weight: 0.03
+  gene_diversity_bonus_weight: 0.02
+  behavior_diversity_bonus_weight: 0.01
 
 stop:
   max_fevals: 192
@@ -104,7 +104,7 @@ stop:
   stagnation_patience_generations: 8
   stagnation_min_delta: 0.005
 
-limit: 12
+limit: 24
 num_fewshot: 0
 apply_chat_template: false
 fewshot_as_multiturn: false

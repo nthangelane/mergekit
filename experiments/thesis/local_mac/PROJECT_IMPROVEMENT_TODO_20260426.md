@@ -158,3 +158,38 @@ Progress:
 - Re-ran full suite:
   `PYTHONPATH=/Users/nkululekothangelane/Documents/master_research/mergekit /tmp/mergekit-dep-probe-venv/bin/python -m pytest -q`
 - Result: `204 passed`, with `4` unrelated deprecation warnings.
+
+## 9. Align Local Search Space With Thesis Findings
+
+- [x] Fix nonfatal MLflow/W&B best-individual logging for
+  `MultiMethodGenome`.
+- [x] Add configurable `linear_min_source_weight` and `linear_max_scale`
+  controls so local linear candidates cannot win through near-parent
+  extrapolation alone.
+- [x] Opt the main and tuned local thesis configs into those linear controls.
+- [x] Move the main adaptive config to `linear` + `passthrough` and keep `slerp`
+  in explicit ablation configs.
+- [x] Increase main-config stage-2 fidelity and reduce promoted candidates.
+- [x] Add focused tests for the new multi-method tracking table and linear
+  constraints.
+- [x] Mark passthrough candidates as baseline controls in candidate history so
+  they are not counted as novel thesis solutions.
+- [x] Add a layered SLERP regression test that verifies emitted slices keep
+  their evolved layer ranges.
+
+Progress:
+- Added `MultiMethodGenome.genotype_to_param_arrays()` so MLflow/W&B can log
+  best individuals without assuming the older `ModelGenome` shape.
+- Added linear-source and scale constraints to
+  `mergekit/evo/multi_method_genome.py`.
+- Added candidate-history novelty fields:
+  `is_novel_solution`, `novelty_class`, and `novelty_reason`.
+- Added `population/novel_solution_fraction` and
+  `population/best_novel_solution_score` tracking metrics.
+- Updated the phase-3 layered SLERP note now that the config range behavior is
+  covered by a regression test.
+- Updated `main_adaptive_pythia70m.yml`, `thesis_run_pythia70m_tuned.yml`, and
+  the seed `44`/`55` pending configs.
+- Verified with:
+  `PYTHONPATH=/Users/nkululekothangelane/Documents/master_research/mergekit /tmp/mergekit-dep-probe-venv/bin/python -m pytest -q tests/test_multi_method_validation.py tests/test_evolve_ga_baseline_logic.py::test_mlflow_tracker_prefers_ui_url_env`
+- Result: `21 passed`, with unrelated deprecation warnings.

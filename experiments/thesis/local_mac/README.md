@@ -35,6 +35,10 @@ This group is for the small validation run that should execute on the developmen
   [`RESULTS_20260321_THESIS_BATCH.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260321_THESIS_BATCH.md)
 - Dependency-probe thesis validation:
   [`RESULTS_20260425_DEPENDENCY_PROBE.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260425_DEPENDENCY_PROBE.md)
+- Local adaptive GA experiment summary:
+  [`EXPERIMENT_SUMMARY_20260426.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/EXPERIMENT_SUMMARY_20260426.md)
+- Tuned seed-extension result:
+  [`RESULTS_20260426_SEEDS_44_55.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/RESULTS_20260426_SEEDS_44_55.md)
 - Project improvement checklist:
   [`PROJECT_IMPROVEMENT_TODO_20260426.md`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/PROJECT_IMPROVEMENT_TODO_20260426.md)
 - Dependency compatibility notes:
@@ -86,13 +90,15 @@ the next operator is tested without losing baseline preservation.
 
 The main local adaptive preset is now
 [`main_adaptive_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/main_adaptive_pythia70m.yml).
-It is the recommended default because the short validation run beat both parent
-baselines while keeping the search space narrow and stable.
+It is the recommended default because it keeps the search space narrow and
+stable: `linear` plus `passthrough`, higher stage-2 fidelity, and linear
+constraints that prevent near-parent extrapolation from winning by assigning
+one parent almost all of the weight.
 
 For thesis-worthy local evidence, the longer preset is now
-[`thesis_run_pythia70m.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/thesis_run_pythia70m.yml).
-It keeps the same stable search space, but raises evaluation fidelity, adds the
-new stop-policy controls, and is intended to be run across multiple seeds for
+[`thesis_run_pythia70m_tuned.yml`](/Users/nkululekothangelane/Documents/master_research/mergekit/experiments/thesis/local_mac/thesis_run_pythia70m_tuned.yml).
+It keeps the same stable search space, raises evaluation fidelity, adds the
+stop-policy controls, and is intended to be run across multiple seeds for
 reportable tables and narrative.
 
 The richer structural path is now kept as the explicit ablation preset

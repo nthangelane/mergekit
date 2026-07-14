@@ -6,7 +6,7 @@ set -euo pipefail
 # using the tuned configuration (thesis_run_pythia70m_tuned.yml) with pool strategy.
 # Prior completed seeds: 11, 22, 33
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 BATCH_LABEL="${1:-$(date +%Y%m%d)-thesis-pool-batch}"
 CLI_NUM_WORKERS="${2:-}"
 BATCH_DIR="$ROOT_DIR/workspace/thesis/local_mac/results/$BATCH_LABEL"
@@ -17,8 +17,8 @@ RAY_TMP_ROOT="${RAY_TMPDIR:-/tmp/ray-thesis-pool}"
 NUM_WORKERS="${CLI_NUM_WORKERS:-${NUM_WORKERS:-2}}"
 SHARED_CACHE="${HF_SHARED_CACHE:-$HOME/.cache/huggingface/hub}"
 
-# Use tuned config for extended validation
-CONFIG_PATH="$ROOT_DIR/experiments/thesis/local_mac/pending_experiments/thesis_run_pythia70m_tuned.yml"
+# Use tuned config for extended validation.
+CONFIG_PATH="${CONFIG_PATH_OVERRIDE:-$ROOT_DIR/experiments/thesis/local_mac/thesis_run_pythia70m_tuned.yml}"
 
 mkdir -p "$BATCH_DIR"
 mkdir -p "$RAY_TMP_ROOT"

@@ -39,7 +39,7 @@ Both seeds use `thesis_run_pythia70m_tuned.yml`:
 ### Seed 44
 ```bash
 python -m mergekit.scripts.evolve_ga \
-  experiments/thesis/local_mac/pending_experiments/thesis_run_pythia70m_tuned.yml \
+  experiments/thesis/local_mac/thesis_run_pythia70m_tuned.yml \
   --strategy pool \
   --num-workers 2 \
   --storage-path workspace/thesis/local_mac/results/20260321-thesis-pool-batch/seed44 \
@@ -58,7 +58,7 @@ python -m mergekit.scripts.evolve_ga \
 ### Seed 55
 ```bash
 python -m mergekit.scripts.evolve_ga \
-  experiments/thesis/local_mac/pending_experiments/thesis_run_pythia70m_tuned.yml \
+  experiments/thesis/local_mac/thesis_run_pythia70m_tuned.yml \
   --strategy pool \
   --num-workers 2 \
   --storage-path workspace/thesis/local_mac/results/20260321-thesis-pool-batch/seed55 \

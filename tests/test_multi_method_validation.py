@@ -63,6 +63,164 @@ def test_multi_method_allows_linear_with_passthrough():
     assert config.allowed_methods == ["linear", "passthrough"]
 
 
+def test_multi_method_rejects_invalid_linear_constraints():
+    with pytest.raises(ValueError):
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+                "linear_min_source_weight": 1.0,
+            }
+        )
+
+    with pytest.raises(ValueError):
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+                "linear_max_scale": -0.1,
+            }
+        )
+
+
+def test_linear_constraints_prevent_near_parent_extrapolation(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    genome = MultiMethodGenome(
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+                "linear_min_source_weight": 0.15,
+                "linear_max_scale": 1.0,
+            }
+        )
+    )
+    genotype = genome.initial_genotype(random=False)
+    model_start = genome.method_dim
+    genotype[model_start : model_start + 2] = 0.0
+    genotype[model_start] = 100.0
+    genotype[model_start + 1] = 0.001
+    genotype[model_start + genome.model_selection_dim] = 1.4
+
+    decoded = genome.decode_genotype(genotype)[0]
+    assert decoded.model_selection[0] == pytest.approx(0.85)
+    assert decoded.model_selection[1] == pytest.approx(0.15)
+    assert decoded.parameters[0] == pytest.approx(1.0)
+
+    config = genome.genotype_to_merge_config(genotype)
+    weights = [source.parameters["weight"] for source in config.slices[0].sources]
+    assert weights == pytest.approx([0.85, 0.15])
+
+
+def test_linear_constraints_activate_zero_weight_fallback_source(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    genome = MultiMethodGenome(
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+                "linear_min_source_weight": 0.15,
+                "linear_max_scale": 1.0,
+            }
+        )
+    )
+    genotype = genome.initial_genotype(random=False)
+    model_start = genome.method_dim
+    genotype[model_start : model_start + 2] = 0.0
+    genotype[model_start] = 1.0
+    genotype[model_start + genome.model_selection_dim] = 1.0
+
+    decoded = genome.decode_genotype(genotype)[0]
+    assert decoded.model_selection[0] == pytest.approx(0.85)
+    assert decoded.model_selection[1] == pytest.approx(0.15)
+
+    config = genome.genotype_to_merge_config(genotype)
+    weights = [source.parameters["weight"] for source in config.slices[0].sources]
+    assert weights == pytest.approx([0.85, 0.15])
+
+
+def test_multi_method_genotype_to_param_arrays_is_tabular(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    genome = MultiMethodGenome(
+        MultiMethodGenomeDefinition.model_validate(
+            {
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear", "passthrough"],
+                "layer_granularity": 2,
+                "max_models_per_layer": 2,
+            }
+        )
+    )
+    genotype = genome.initial_genotype(random=False)
+    second_group_offset = genome.layer_group_dim
+    genotype[second_group_offset] = genome.method_gene_value("passthrough")
+
+    params = genome.genotype_to_param_arrays(genotype)
+
+    assert params["layer_group"] == [0, 1]
+    assert params["merge_method"] == ["linear", "passthrough"]
+    assert len(params["model_0_selection"]) == 2
+    assert len(params["param_0"]) == 2
+
+
 def test_slerp_config_includes_layer_ranges(monkeypatch):
     class DummyConfig:
         def __init__(self):
@@ -110,6 +268,54 @@ def test_slerp_config_includes_layer_ranges(monkeypatch):
     assert source0.layer_range == (0, 4)
     assert source1.layer_range == (0, 4)
     assert config.slices[0].parameters["t"] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_layered_slerp_config_keeps_layer_group_ranges(monkeypatch):
+    class DummyConfig:
+        def __init__(self):
+            self.num_hidden_layers = 4
+            self.architectures = ["DummyForCausalLM"]
+            self.model_type = "dummy"
+
+        def to_dict(self):
+            return {
+                "architectures": self.architectures,
+                "model_type": self.model_type,
+                "hidden_size": 16,
+                "num_hidden_layers": self.num_hidden_layers,
+            }
+
+    def fake_config(self, trust_remote_code: bool = False):
+        return DummyConfig()
+
+    monkeypatch.setattr(ModelReference, "config", fake_config, raising=False)
+
+    definition = MultiMethodGenomeDefinition.model_validate(
+        {
+            "models": ["author/model-a", "author/model-b"],
+            "base_model": "author/model-a",
+            "allowed_methods": ["slerp"],
+            "layer_granularity": 2,
+            "enable_method_evolution": True,
+            "enable_model_selection": True,
+            "max_models_per_layer": 2,
+        }
+    )
+
+    genome = MultiMethodGenome(definition)
+    genotype = genome.initial_genotype(random=False)
+    config = genome.genotype_to_merge_config(genotype)
+
+    assert config.merge_method == "slerp"
+    assert config.slices is not None
+    assert [slice_def.sources[0].layer_range for slice_def in config.slices] == [
+        (0, 2),
+        (2, 4),
+    ]
+    assert [slice_def.sources[1].layer_range for slice_def in config.slices] == [
+        (0, 2),
+        (2, 4),
+    ]
 
 
 def test_passthrough_config_selects_one_model(monkeypatch):
@@ -311,6 +517,33 @@ def test_m1_micro_example_uses_layer_blocks(monkeypatch):
     genome = MultiMethodGenome(evol_config.genome)
     assert genome.num_layer_groups == 6  # 24 layers / 4-block granularity
     assert genome.max_models == 2
+
+
+def test_eks_pythia70m_bridge_matches_constrained_local_preset():
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "experiments"
+        / "thesis"
+        / "eks_gpu"
+        / "exp08_pythia70m_adaptive_bridge"
+        / "config.yml"
+    )
+    config_data = yaml.safe_load(config_path.read_text())
+
+    evol_config = EvolMergeConfiguration.model_validate(config_data)
+
+    assert isinstance(evol_config.genome, MultiMethodGenomeDefinition)
+    assert evol_config.genome.allowed_methods == ["passthrough", "linear"]
+    assert evol_config.genome.linear_min_source_weight == pytest.approx(0.15)
+    assert evol_config.genome.linear_max_scale == pytest.approx(1.0)
+    assert evol_config.stage1_limit == 4
+    assert evol_config.stage2_limit == 24
+    assert evol_config.stage2_top_k == 2
+    assert evol_config.limit == 24
+    assert evol_config.ga.initial_method_probs == {
+        "passthrough": pytest.approx(0.25),
+        "linear": pytest.approx(0.75),
+    }
 
 
 def test_evol_config_rejects_negative_initial_method_probabilities():

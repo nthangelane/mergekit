@@ -15,12 +15,13 @@ genome:
   allowed_methods:
     - passthrough
     - linear
-    - slerp
 
   layer_granularity: 0
   max_models_per_layer: 2
   normalize: true
   allow_negative_weights: false
+  linear_min_source_weight: 0.15
+  linear_max_scale: 1.0
   enable_method_evolution: true
   enable_model_selection: true
 
@@ -46,9 +47,9 @@ stage1_tasks:
   - name: sciq
     weight: 0.40
     metric: acc,none
-stage1_limit: 2
-stage2_limit: 6
-stage2_top_k: 3
+stage1_limit: 4
+stage2_limit: 24
+stage2_top_k: 2
 
 fitness_mode: structured_phase1_tiny
 task_mix_profile: pythia70m_phase1
@@ -77,9 +78,8 @@ ga:
   tournament_size: 3
   adaptive_method_sampling: true
   initial_method_probs:
-    passthrough: 0.30
-    linear: 0.45
-    slerp: 0.25
+    passthrough: 0.25
+    linear: 0.75
   operator_temperature: 1.0
   operator_update_smoothing: 0.20
   operator_avg_child_weight: 0.50
@@ -87,13 +87,23 @@ ga:
   operator_survival_weight: 0.20
   passthrough_penalty: 0.02
   passthrough_max_fraction: 0.30
-  explorer_fraction: 0.25
+  explorer_fraction: 0.15
   diversity_parent_selection: true
   diversity_parent_weight: 0.20
-  gene_diversity_bonus_weight: 0.04
-  behavior_diversity_bonus_weight: 0.03
+  gene_diversity_bonus_weight: 0.02
+  behavior_diversity_bonus_weight: 0.01
 
-limit: 6
+stop:
+  max_fevals: 192
+  max_time_seconds: 14400
+  target_improvement_pct: 5.0
+  target_reference: best_baseline
+  min_generations_before_target_stop: 5
+  require_stage2_for_target: true
+  stagnation_patience_generations: 8
+  stagnation_min_delta: 0.005
+
+limit: 24
 num_fewshot: 0
 apply_chat_template: false
 fewshot_as_multiturn: false

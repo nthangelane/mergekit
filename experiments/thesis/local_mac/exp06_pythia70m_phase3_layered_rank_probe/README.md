@@ -13,11 +13,10 @@ features that phase 3 is supposed to prove:
   `dare_linear`, and `dare_ties`
 
 Current SLERP note:
-When a genotype uses `slerp` with multiple layer groups enabled, the generated
-config currently expands SLERP across the full model layer range instead of
-restricting it to one narrow block. That keeps the emitted config compatible
-with the base architecture while the narrower per-block SLERP path remains a
-future refinement.
+Layered SLERP config generation is now guarded by a regression test that keeps
+each emitted slice restricted to its evolved layer group. SLERP still remains an
+ablation operator in this preset until a full run shows that the merge path is
+stable and that SLERP candidates can beat the parent baselines.
 
 This is still a smoke/validation preset, not a thesis-scale performance run.
 The intent is to prove that the structural path works locally before spending

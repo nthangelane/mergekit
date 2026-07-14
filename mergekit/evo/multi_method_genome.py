@@ -155,6 +155,8 @@ class MultiMethodGenomeDefinition(BaseModel, frozen=True):
     layer_granularity: int = 0
     normalize: Optional[bool] = None
     allow_negative_weights: bool = False
+    linear_min_source_weight: Optional[float] = None
+    linear_max_scale: Optional[float] = None
     filters: Optional[List[str]] = None
 
     # Multi-method specific options
@@ -174,6 +176,13 @@ class MultiMethodGenomeDefinition(BaseModel, frozen=True):
         valid_methods = set(METHOD_NAMES.values())
         for method in self.allowed_methods:
             assert method in valid_methods, f"Invalid method: {method}"
+
+        if self.linear_min_source_weight is not None and not (
+            0.0 <= self.linear_min_source_weight < 1.0
+        ):
+            raise ValueError("linear_min_source_weight must be in [0, 1)")
+        if self.linear_max_scale is not None and self.linear_max_scale < 0:
+            raise ValueError("linear_max_scale must be >= 0")
 
         # Check base model requirements
         base_required_methods = {
@@ -471,6 +480,7 @@ class MultiMethodGenome:
                     mask[indices] = 1.0
                     masked_total = float(mask.sum())
                 model_weights = mask / masked_total
+                model_weights = self._constrain_model_selection(method, model_weights)
             else:
                 # Ensure deterministic, normalized weights when selection is disabled
                 total = float(np.sum(model_weights))
@@ -480,6 +490,7 @@ class MultiMethodGenome:
                     )
                 else:
                     model_weights = model_weights / total
+                model_weights = self._constrain_model_selection(method, model_weights)
 
             # Decode parameters
             param_start = model_end
@@ -497,6 +508,78 @@ class MultiMethodGenome:
             )
 
         return layer_groups
+
+    def _constrain_model_selection(
+        self, method: MergeMethod, model_weights: np.ndarray
+    ) -> np.ndarray:
+        """Apply optional source-weight floors to decoded model selections."""
+        if (
+            method != MergeMethod.LINEAR
+            or self.definition.linear_min_source_weight is None
+        ):
+            return model_weights
+
+        constrained = np.asarray(model_weights, dtype=np.float32).copy()
+        floor = float(self.definition.linear_min_source_weight)
+        if floor <= 0:
+            return constrained
+
+        min_models = METHOD_MIN_MODELS.get(method, 2)
+        active = np.flatnonzero(constrained > 1e-8)
+        if active.size < min_models:
+            required = min(min_models, constrained.size)
+            if active.size == 0:
+                indices = np.argsort(-constrained)[:required]
+                constrained[:] = 0.0
+                constrained[indices] = 1.0 / float(required)
+                active = np.flatnonzero(constrained > 1e-8)
+            else:
+                missing_count = required - active.size
+                inactive = [
+                    idx
+                    for idx in np.argsort(-constrained)
+                    if idx not in set(active.tolist())
+                ][:missing_count]
+                reserved = floor * len(inactive)
+                active_total = float(constrained[active].sum())
+                if active_total <= 1e-8 or not np.isfinite(active_total):
+                    constrained[active] = (1.0 - reserved) / float(active.size)
+                else:
+                    constrained[active] = (
+                        constrained[active] / active_total * (1.0 - reserved)
+                    )
+                constrained[inactive] = floor
+                active = np.flatnonzero(constrained > 1e-8)
+
+        if active.size < 2:
+            return constrained
+
+        if floor * active.size >= 1.0:
+            constrained[:] = 0.0
+            constrained[active] = 1.0 / float(active.size)
+            return constrained
+
+        active_values = constrained[active]
+        low_mask = active_values < floor
+        if not np.any(low_mask):
+            return constrained
+
+        constrained[active[low_mask]] = floor
+        high_indices = active[~low_mask]
+        remaining = 1.0 - floor * int(np.sum(low_mask))
+        if high_indices.size == 0:
+            constrained[active] = 1.0 / float(active.size)
+            return constrained
+
+        high_total = float(constrained[high_indices].sum())
+        if high_total <= 1e-8 or not np.isfinite(high_total):
+            constrained[high_indices] = remaining / float(high_indices.size)
+        else:
+            constrained[high_indices] = (
+                constrained[high_indices] / high_total * remaining
+            )
+        constrained[constrained <= 1e-8] = 0.0
+        return constrained
 
     def _is_method_compatible(self, method_name: str) -> bool:
         """Check if a method is compatible with the current model configuration."""
@@ -531,6 +614,13 @@ class MultiMethodGenome:
             # Weight parameter
             if not self.definition.allow_negative_weights:
                 constrained[0] = abs(constrained[0])
+            if (
+                method == MergeMethod.LINEAR
+                and self.definition.linear_max_scale is not None
+            ):
+                constrained[0] = min(
+                    constrained[0], float(self.definition.linear_max_scale)
+                )
 
         elif method in [MergeMethod.TIES, MergeMethod.DARE_TIES, MergeMethod.DELLA]:
             # Weight and density parameters
@@ -570,6 +660,52 @@ class MultiMethodGenome:
             pass
 
         return constrained
+
+    def genotype_to_param_arrays(
+        self, genotype: Union[torch.Tensor, np.ndarray]
+    ) -> Dict[str, List[Any]]:
+        """Convert a multi-method genotype into tabular tracking columns."""
+        layer_groups = self.decode_genotype(genotype)
+        rows: List[Dict[str, Any]] = []
+        max_models = max(
+            (len(group.model_selection) for group in layer_groups), default=0
+        )
+        max_params = max((len(group.parameters) for group in layer_groups), default=0)
+
+        for layer_idx, layer_group in enumerate(layer_groups):
+            start, end = self._layer_range_for_index(layer_idx)
+            row: Dict[str, Any] = {
+                "layer_group": layer_idx,
+                "layer_start": start,
+                "layer_end": end,
+                "merge_method": METHOD_NAMES[layer_group.method],
+            }
+            for model_idx in range(max_models):
+                model_label = f"model_{model_idx}"
+                if model_idx < self.num_models:
+                    model_label = str(self.definition.models[model_idx])
+                row[f"model_{model_idx}"] = model_label
+                row[f"model_{model_idx}_selection"] = (
+                    float(layer_group.model_selection[model_idx])
+                    if model_idx < len(layer_group.model_selection)
+                    else 0.0
+                )
+            for param_idx in range(max_params):
+                row[f"param_{param_idx}"] = (
+                    float(layer_group.parameters[param_idx])
+                    if param_idx < len(layer_group.parameters)
+                    else None
+                )
+            rows.append(row)
+
+        columns: Dict[str, List[Any]] = {}
+        for row in rows:
+            for key in row:
+                columns.setdefault(key, [])
+        for row in rows:
+            for key in columns:
+                columns[key].append(row.get(key))
+        return columns
 
     def _layer_range_for_index(self, layer_idx: int) -> Tuple[int, int]:
         if self.definition.layer_granularity > 0:
