@@ -88,6 +88,7 @@ from mergekit.evo.orchestrator import resolve_merge_cuda as _resolve_merge_cuda
 from mergekit.evo.orchestrator import (
     resolve_stop_configuration as _resolve_stop_configuration,
 )
+from mergekit.evo.progress import ProgressLogger
 from mergekit.evo.provenance import (
     annotate_lineage_risk,
     inspect_parent_lineage,
@@ -773,6 +774,14 @@ def main(
 
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
+    progress = ProgressLogger(storage_path, seed=random_seed)
+    progress.write(
+        "run_started",
+        resumed=resume is not None,
+        mode="random_search" if random_search is not None else "ga",
+        max_fevals=max_fevals,
+        config_path=os.path.abspath(genome_config_path),
+    )
     try:
         resume_state = load_ga_state(storage_path) if resume is not None else None
     except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as exc:
@@ -823,6 +832,12 @@ def main(
         )
     parent_lineage["policy"] = config.provenance
     parent_lineage_path = write_parent_lineage_report(storage_path, parent_lineage)
+    progress.write(
+        "provenance_checked",
+        status=parent_lineage.get("status"),
+        risk_level=parent_lineage.get("risk_level"),
+        policy=config.provenance,
+    )
     if parent_lineage.get("warning"):
         stage_log(
             "Stage-Init",
@@ -1329,6 +1344,16 @@ def main(
             population_size=population_size,
             best_score=current_best,
         )
+        progress.write(
+            "generation_started",
+            idx=fevals_completed,
+            generation=generation_idx,
+            scores={
+                "best": (float(current_best) if math.isfinite(current_best) else None)
+            },
+            fevals_limit=fevals_limit,
+            population_size=population_size,
+        )
         print(f"[GA] === Generation {generation_idx}/{total_generations} ===")
         print(
             f"[GA] Progress: fevals={fevals_completed}/{fevals_limit} | "
@@ -1670,6 +1695,22 @@ def main(
             cache_hits=cache_hits,
             failed_evals=failed_evals,
         )
+        progress.write(
+            "generation_completed",
+            idx=step,
+            generation=generation,
+            scores={
+                "generation_best": gen_best,
+                "generation_mean": gen_mean,
+                "generation_std": gen_std,
+                "best_so_far": best_so_far,
+            },
+            secs=float(eval_seconds),
+            compute=True,
+            evaluations=evaluations,
+            cache_hits=cache_hits,
+            failed_evals=failed_evals,
+        )
 
         # Write/append CSV history for offline tracking
         try:
@@ -1871,6 +1912,11 @@ def main(
             fevals_completed=step,
         )
         print(f"New best score: {best_score:.4f}")
+        progress.write(
+            "new_best",
+            idx=step,
+            scores={"best": float(best_score)},
+        )
         save_best_config(best_x)
         log_best(best_x, best_score, step=step)
 
@@ -1967,6 +2013,11 @@ def main(
 
     search_label = "random search" if random_search is not None else "GA optimization"
     stage_log("Stage-GA", f"Starting {search_label} loop...")
+    progress.write(
+        "search_started",
+        mode="random_search" if random_search is not None else "ga",
+        max_fevals=max_fevals,
+    )
     ray_observer.set_phase(
         "ga",
         generation=0,
@@ -1983,6 +2034,18 @@ def main(
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
     except InsufficientDiskSpaceError as exc:
         _write_disk_abort(storage_path, exc)
+        progress.write(
+            "disk_abort",
+            scores={
+                "best": (
+                    float(best_score)
+                    if best_score is not None and math.isfinite(best_score)
+                    else None
+                )
+            },
+            free_disk_gb=exc.free_gb,
+            required_disk_gb=exc.required_gb,
+        )
         ray_observer.set_phase("failed")
         stage_log("Stage-GA", str(exc), level=logging.ERROR)
         state_path = os.path.join(storage_path, GA_STATE_FILENAME)
@@ -2002,6 +2065,16 @@ def main(
         tracker.finish()
         raise click.ClickException(str(exc)) from exc
     except KeyboardInterrupt:
+        progress.write(
+            "interrupted",
+            scores={
+                "best": (
+                    float(best_score)
+                    if best_score is not None and math.isfinite(best_score)
+                    else None
+                )
+            },
+        )
         ray_observer.set_phase(
             "failed",
             best_score=(
@@ -2024,6 +2097,16 @@ def main(
         storage_path,
         resolved_stop=resolved_stop,
         stop_details=stop_details,
+    )
+    progress.write(
+        "search_completed",
+        idx=int(stop_details.get("fevals") or 0),
+        generation=int(stop_details.get("generation") or 0),
+        scores={
+            "best": float(best_score) if math.isfinite(best_score) else None,
+        },
+        secs=float(stop_details.get("elapsed_seconds") or 0.0),
+        stop_reason=stop_details.get("reason"),
     )
     stage_log("Stage-GA", f"Stop details written to {stop_details_path}")
     if stop_details.get("reason"):
@@ -2302,6 +2385,13 @@ def main(
             best_score=float(best_score) if math.isfinite(best_score) else None,
             fevals_completed=int(stop_details.get("fevals") or max_fevals),
         )
+        progress.write(
+            "run_finished",
+            idx=int(stop_details.get("fevals") or max_fevals),
+            generation=int(stop_details.get("generation") or 0),
+            scores={"best": float(best_score)},
+            status="success",
+        )
     else:
         stage_log(
             "Stage-GA",
@@ -2316,6 +2406,13 @@ def main(
         ray_observer.set_phase(
             "failed",
             fevals_completed=int(stop_details.get("fevals") or 0),
+        )
+        progress.write(
+            "run_finished",
+            idx=int(stop_details.get("fevals") or 0),
+            generation=int(stop_details.get("generation") or 0),
+            scores={"best": None},
+            status="failed",
         )
 
     _log_run_artifacts(tracker, storage_path)

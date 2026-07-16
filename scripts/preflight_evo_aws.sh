@@ -35,6 +35,13 @@ if [[ "$SKIP_TESTS" != "1" ]]; then
   pytest -q "$ROOT_DIR/tests"
 fi
 
+python -m mergekit.scripts.run_campaign \
+  exp26_aos_on exp26_aos_off exp27_native \
+  exp28_adaptive exp28_random exp29_probe exp29_full \
+  exp210_lora exp210_full_ft \
+  --dry-run \
+  --output-root "$RUN_DIR/campaign-dry-run"
+
 python -m mergekit.scripts.evolve_ga \
   "$CONFIG_PATH" \
   --random-search 2 \
@@ -66,6 +73,7 @@ required = [
     "ga_history.csv",
     "ga_stop_details.json",
     "final_repair.json",
+    "progress.log",
 ]
 missing = [name for name in required if not (run_dir / name).is_file()]
 if missing:
@@ -104,6 +112,23 @@ if fitness.get("fitness_version") != "v2":
     raise SystemExit(f"Unexpected fitness version: {fitness}")
 if fitness.get("lower_is_better_transform") != "log_reciprocal":
     raise SystemExit(f"Unexpected lower-is-better transform: {fitness}")
+
+progress_events = [
+    json.loads(line)
+    for line in (run_dir / "progress.log").read_text().splitlines()
+    if line.strip()
+]
+required_progress_keys = {"ts", "msg", "seed", "disk_free_gb"}
+if any(not required_progress_keys.issubset(event) for event in progress_events):
+    raise SystemExit("Progress log contains an event with missing required fields")
+messages = [event.get("msg") for event in progress_events]
+for required_message in ("run_started", "generation_completed", "run_finished"):
+    if required_message not in messages:
+        raise SystemExit(f"Progress log is missing {required_message!r}")
+if progress_events[-1].get("msg") != "run_finished":
+    raise SystemExit(f"Unexpected final progress event: {progress_events[-1]}")
+if progress_events[-1].get("status") != "success":
+    raise SystemExit(f"Preflight progress did not finish successfully: {progress_events[-1]}")
 
 print(f"Evo preflight passed: {run_dir}")
 PY

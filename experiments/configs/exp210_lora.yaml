@@ -1,0 +1,33 @@
+campaign:
+  runner: finetune_baseline
+  seeds: [11]
+  budget_fevals: 192
+  two_stage_limits: [2, 3, 6]
+  device: cpu
+
+arm: lora
+model: EleutherAI/pythia-70m-deduped
+dataset: databricks/databricks-dolly-15k
+split: train
+budget_steps: 192
+device: cpu
+batch_size: 4
+seq_len: 256
+learning_rate: 0.0001
+max_train_examples: 2048
+lora_r: 8
+lora_alpha: 16
+target_tasks:
+  - {name: wikitext, weight: 0.40, metric: "byte_perplexity,none"}
+  - {name: boolq, weight: 0.35, metric: "acc,none"}
+  - {name: sciq, weight: 0.25, metric: "acc,none"}
+retention_tasks:
+  - {name: lambada_openai, weight: 0.50, metric: "acc,none"}
+  - {name: piqa, weight: 0.50, metric: "acc,none"}
+search_limit: 6
+export_limit: 12
+num_fewshot: 0
+eval_batch_size: 1
+fitness:
+  version: v2
+provenance: warn

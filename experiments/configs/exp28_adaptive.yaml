@@ -1,0 +1,76 @@
+campaign:
+  runner: evolve_ga
+  seeds: [11]
+  budget_fevals: 192
+  two_stage_limits: [2, 3, 6]
+  strategy: serial
+  device: cpu
+  max_disk_gb_min: 5
+
+genome:
+  type: multi_method
+  models:
+    - mlabonne/chesspythia-70m
+    - vineetsharma/databricks-dolly-15k-pythia-70m-deduped-v1
+  base_model: EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+  allowed_methods: [passthrough, linear, slerp]
+  layer_granularity: 0
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  enable_method_evolution: true
+  enable_model_selection: true
+
+optimizer: enhanced
+fitness:
+  version: v2
+tasks:
+  - {name: wikitext, weight: 0.40, metric: "byte_perplexity,none"}
+  - {name: boolq, weight: 0.35, metric: "acc,none"}
+  - {name: sciq, weight: 0.25, metric: "acc,none"}
+two_stage: true
+stage1_tasks:
+  - {name: wikitext, weight: 0.40, metric: "byte_perplexity,none"}
+  - {name: boolq, weight: 0.35, metric: "acc,none"}
+  - {name: sciq, weight: 0.25, metric: "acc,none"}
+stage1_limit: 2
+stage2_top_k: 3
+stage2_limit: 6
+fitness_mode: weighted_sum
+random_init: false
+ga:
+  population_size: 8
+  elite_fraction: 0.125
+  mutation_rate: 0.10
+  mutation_sigma: 0.015
+  crossover: semantic
+  semantic_crossover_prob: 0.75
+  method_mutation_rate: 0.10
+  model_mutation_rate: 0.10
+  parameter_mutation_rate: 0.10
+  tournament_size: 3
+  adaptive_method_sampling: true
+  initial_method_probs:
+    passthrough: 0.3333333333
+    linear: 0.3333333333
+    slerp: 0.3333333334
+  operator_temperature: 1.0
+  operator_update_smoothing: 0.20
+  operator_avg_child_weight: 0.50
+  operator_parent_improvement_weight: 0.30
+  operator_survival_weight: 0.20
+  passthrough_penalty: 0.02
+  passthrough_max_fraction: 0.30
+  explorer_fraction: 0.25
+  diversity_parent_selection: true
+  diversity_parent_weight: 0.20
+  gene_diversity_bonus_weight: 0.04
+  behavior_diversity_bonus_weight: 0.03
+stop:
+  max_fevals: 192
+limit: 12
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false
+provenance: warn

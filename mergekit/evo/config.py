@@ -6,6 +6,10 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, model_validator
 
+from mergekit.evo.contamination import (
+    assert_disjoint_from_evaluation,
+    repair_corpus_identity,
+)
 from mergekit.evo.genome import ModelGenomeDefinition
 from mergekit.evo.multi_method_genome import MultiMethodGenomeDefinition
 
@@ -270,24 +274,6 @@ class RepairConfiguration(BaseModel, frozen=True):
         return self
 
 
-def _repair_corpus_identity(corpus: str) -> Optional[Tuple[str, str]]:
-    normalized = corpus.strip().lower().replace("_", "-")
-    if normalized == "wikitext-train-slice":
-        return ("wikitext", "train")
-    return None
-
-
-def _evaluation_task_identity(task_name: str) -> Optional[Tuple[str, str]]:
-    normalized = task_name.strip().lower().replace("-", "_")
-    if normalized == "wikitext":
-        return ("wikitext", "test")
-    if normalized.startswith("wikitext"):
-        for split in ("train", "validation", "test"):
-            if normalized.endswith(f"_{split}"):
-                return ("wikitext", split)
-    return None
-
-
 class EvolMergeConfiguration(BaseModel, frozen=True):
     genome: Union[
         MultiMethodGenomeDefinition, ModelGenomeDefinition
@@ -340,21 +326,18 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
         if self.repair is not None and self.repair.enabled:
             if not self.two_stage:
                 raise ValueError("repair.enabled requires two_stage evaluation")
-            corpus_identity = _repair_corpus_identity(self.repair.corpus)
+            corpus_identity = repair_corpus_identity(self.repair.corpus)
             if corpus_identity is None:
                 raise ValueError(
                     "repair.corpus must be a known corpus with a verifiable split; "
                     "supported value: 'wikitext-train-slice'"
                 )
             evaluation_tasks = [*self.tasks, *(self.stage1_tasks or [])]
-            for task in evaluation_tasks:
-                task_identity = _evaluation_task_identity(task.name)
-                if task_identity == corpus_identity:
-                    raise ValueError(
-                        "Repair corpus contamination: "
-                        f"{self.repair.corpus!r} overlaps evaluation task "
-                        f"{task.name!r} on split {corpus_identity[1]!r}"
-                    )
+            assert_disjoint_from_evaluation(
+                corpus_identity,
+                evaluation_tasks,
+                source_label="Repair corpus",
+            )
         if self.fitness_mode == "structured_phase1_tiny" and not self.task_mix_profile:
             raise ValueError(
                 "structured_phase1_tiny requires task_mix_profile to be set"

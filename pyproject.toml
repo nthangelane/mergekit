@@ -53,6 +53,8 @@ mergekit-evolve = "mergekit.scripts.evolve:main"
 mergekit-pytorch = "mergekit.scripts.merge_raw_pytorch:main"
 mergekit-multi = "mergekit.scripts.multimerge:main"
 mergekit-evolve-ga = "mergekit.scripts.evolve_ga:main"
+mergekit-finetune-baseline = "mergekit.scripts.finetune_baseline:main"
+mergekit-run-campaign = "mergekit.scripts.run_campaign:main"
 mergekit-eks = "mergekit.scripts.run_on_eks:cli"
 
 [tool.setuptools]

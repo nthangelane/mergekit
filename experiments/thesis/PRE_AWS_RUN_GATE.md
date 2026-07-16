@@ -27,8 +27,10 @@ The smoke exercises:
 - two-stage evaluation and Stage 2 top-K promotion
 - gated parent-distillation repair on a WikiText train slice
 - per-merge free-disk checks and scratch-directory reuse
+- fsynced JSON-lines progress monitoring with elapsed time and free disk
 - candidate and generation CSV logging
 - final winner merge, repair replay, and comparison evaluation
+- validation of every Experiment 2.6-2.10 campaign preset
 
 The script validates the required artifacts and exits non-zero on any mismatch.
 Results are written beneath `workspace/thesis/preflight/` and are ignored by Git.
@@ -44,12 +46,18 @@ pytest -q \
   tests/test_evo_resources.py \
   tests/test_random_search.py \
   tests/test_evo_repair.py \
-  tests/test_parent_provenance.py
+  tests/test_parent_provenance.py \
+  tests/test_finetune_baseline.py \
+  tests/test_campaign.py
 ```
 
 These cover interrupted/resumed equivalence, low-disk abort state, seed
 reproducibility, repair gating and restoration, repair-split contamination, and
 lineage warning escalation.
+
+The fine-tuning tests include a real 50-step LoRA CPU run against a generated
+tiny GPT-NeoX checkpoint, while campaign tests validate all pinned protocols and
+the Ctrl-C/rerun resume decision.
 
 ## Promotion Checklist
 
@@ -62,6 +70,7 @@ lineage warning escalation.
 - Confirm `ga_stop_details.json` records `final_stop.reason` as
   `random_search_complete` and `final_stop.fevals` as `2`.
 - Confirm `final_repair.json` and `final_model/` exist.
+- Confirm `progress.log` ends with `run_finished` and `status: success`.
 - Build the AWS image from that same SHA; do not patch code in the cluster.
 - Start with one AWS worker and `--random-search 2` before increasing workers or
   evaluation budget.
