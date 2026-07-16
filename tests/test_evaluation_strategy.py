@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.strategy import (
     EvaluationStrategyBase,
     SerialEvaluationStrategy,
@@ -87,6 +88,71 @@ def test_evaluation_strategy_two_stage_promotes_top_k():
     assert results[1]["stage2_limit"] == 10
     assert results[1]["stage1_tasks"] == ["stage1-task"]
     assert results[1]["stage2_tasks"] == ["stage2-task"]
+
+
+def test_serial_two_stage_repairs_only_top_k(monkeypatch):
+    config = EvolMergeConfiguration.model_validate(
+        {
+            "genome": {
+                "models": ["author/model-a", "author/model-b"],
+                "merge_method": "linear",
+            },
+            "tasks": ["stage2-task"],
+            "stage1_tasks": ["stage1-task"],
+            "two_stage": True,
+            "stage2_top_k": 2,
+            "repair": {
+                "enabled": True,
+                "probe_steps": 1,
+                "max_steps": 1,
+            },
+        }
+    )
+    strategy = SerialEvaluationStrategy.__new__(SerialEvaluationStrategy)
+    strategy.config = config
+    strategy.num_gpus = 0
+    strategy.genome = SimpleNamespace(
+        method_label_for_genotype=lambda genotype: "linear"
+    )
+    strategy.merge_options = object()
+    strategy.model_storage_path = "/tmp/unused"
+    strategy.batch_size = 1
+    strategy.task_manager = object()
+    strategy.run_observer = None
+    strategy.current_generation = 1
+    strategy.current_phase = "ga"
+
+    repaired = []
+
+    def fake_repair(path, genotype, eval_config):
+        del path, eval_config
+        repaired.append(int(genotype[0]))
+        return {"repaired": True, "probe_slope": 0.1, "steps_used": 1}
+
+    strategy.repair_checkpoint = fake_repair
+
+    def fake_eval(genotype, eval_config, genome, merge_options, **kwargs):
+        del genome, merge_options
+        repair_callback = kwargs.get("repair_callback")
+        result = {"score": float(genotype[0]), "results": {}}
+        if repair_callback is not None:
+            result["score"] += 10.0
+            result["repair"] = repair_callback("/tmp/merged", genotype, eval_config)
+        return result
+
+    monkeypatch.setattr(
+        "mergekit.evo.strategy._evaluate_genotype_serial_cpu_impl", fake_eval
+    )
+
+    results = strategy.evaluate_genotypes(
+        [np.array([1]), np.array([4]), np.array([2]), np.array([3])]
+    )
+
+    assert repaired == [4, 3]
+    assert sum(not result.get("stage2_skipped", False) for result in results) == 2
+    assert results[1]["repair_pre_score"] == 4.0
+    assert results[1]["repair_post_score"] == 14.0
+    assert results[1]["repair"]["steps_used"] == 1
 
 
 def test_candidate_contexts_capture_generation_stage_and_method():

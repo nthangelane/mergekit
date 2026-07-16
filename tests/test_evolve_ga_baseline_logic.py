@@ -1,5 +1,7 @@
 import math
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pandas
@@ -92,7 +94,6 @@ def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
     init_calls = []
 
     monkeypatch.delenv("RAY_ADDRESS", raising=False)
-    monkeypatch.setattr("mergekit.scripts.evolve_ga.ray.is_initialized", lambda: False)
 
     def fake_init(*args, **kwargs):
         init_calls.append(kwargs)
@@ -100,7 +101,8 @@ def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
             raise ConnectionError("no ray instance")
         return None
 
-    monkeypatch.setattr("mergekit.scripts.evolve_ga.ray.init", fake_init)
+    fake_ray = SimpleNamespace(is_initialized=lambda: False, init=fake_init)
+    monkeypatch.setattr("mergekit.scripts.evolve_ga._require_ray", lambda: fake_ray)
     monkeypatch.setattr(
         "mergekit.scripts.evolve_ga.stage_log", lambda *args, **kwargs: None
     )
@@ -110,6 +112,28 @@ def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
     assert len(init_calls) == 2
     assert init_calls[0]["address"] == "auto"
     assert "address" not in init_calls[1]
+
+
+def test_evolve_ga_import_does_not_require_ray():
+    code = """
+import builtins
+original_import = builtins.__import__
+def import_without_ray(name, *args, **kwargs):
+    if name == 'ray' or name.startswith('ray.'):
+        raise ImportError('ray intentionally unavailable')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = import_without_ray
+import mergekit.scripts.evolve_ga
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_unique_model_refs_preserves_order_while_deduping():

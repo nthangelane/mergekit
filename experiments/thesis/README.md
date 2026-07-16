@@ -15,6 +15,17 @@ This directory is the canonical home for the formal thesis experiment presets.
 
 Tensor parallel evaluation now exists in the GA runner, but it only works when a Ray GPU worker pod advertises more than one GPU on a single node. The EKS bootstrap flow supports that with `--gpu-gpus-per-node` and `--gpu-worker-gpus`.
 
+## Pre-AWS Gate
+
+Before deploying a new evo commit, run:
+
+```bash
+scripts/preflight_evo_aws.sh
+```
+
+The required checks, artifacts, and one-worker promotion rule are documented in
+[`PRE_AWS_RUN_GATE.md`](PRE_AWS_RUN_GATE.md).
+
 ## Status Tracking
 
 Use the tracker script from the repo root:

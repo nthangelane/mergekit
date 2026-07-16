@@ -11,6 +11,19 @@ from mergekit.common import ModelReference
 
 LOGGER = logging.getLogger(__name__)
 PARENT_LINEAGE_FILENAME = "parent_lineage.json"
+TASK_VECTOR_METHODS = frozenset(
+    {
+        "task_arithmetic",
+        "ties",
+        "dare_linear",
+        "dare_ties",
+        "breadcrumbs",
+        "breadcrumbs_ties",
+        "della",
+        "della_linear",
+    }
+)
+TASK_VECTOR_METHOD_PREFIXES = ("dare_", "della", "breadcrumbs")
 
 _HUB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _LINK_BEFORE_FINETUNE_RE = re.compile(
@@ -170,7 +183,7 @@ def inspect_parent_lineage(
         status = "single_parent"
         warning = None
     elif common_lineage:
-        status = "compatible"
+        status = "common_lineage"
         warning = None
     elif lookup_failures:
         status = "unknown"
@@ -193,6 +206,40 @@ def inspect_parent_lineage(
         "warning": warning,
         "parents": parents,
     }
+
+
+def annotate_lineage_risk(
+    report: Dict[str, Any], merge_methods: Iterable[str]
+) -> Dict[str, Any]:
+    """Attach merge-method context and escalate disconnected task-vector parents."""
+    result = dict(report)
+    methods = sorted({str(method).lower() for method in merge_methods if method})
+    task_vector_methods = sorted(
+        method
+        for method in methods
+        if method in TASK_VECTOR_METHODS
+        or method.startswith(TASK_VECTOR_METHOD_PREFIXES)
+    )
+    result["merge_methods"] = methods
+    result["task_vector_methods"] = task_vector_methods
+    result["risk_level"] = "warning" if result.get("warning") else "none"
+
+    if result.get("status") == "no_common_lineage" and task_vector_methods:
+        escalation = (
+            "Task-vector merge methods require deltas from a shared base checkpoint; "
+            "the configured methods "
+            f"({', '.join(task_vector_methods)}) are unsafe for the detected lineages."
+        )
+        existing = result.get("warning")
+        result["warning"] = f"{existing} {escalation}" if existing else escalation
+        result["risk_level"] = "critical"
+
+    return result
+
+
+def lineage_policy_failed(report: Dict[str, Any]) -> bool:
+    """Return whether strict provenance mode must stop the run."""
+    return report.get("status") in {"no_common_lineage", "unknown"}
 
 
 def write_parent_lineage_report(storage_path: str, report: Dict[str, Any]) -> str:

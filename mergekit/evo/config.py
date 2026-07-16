@@ -198,6 +198,59 @@ class StopConfiguration(BaseModel, frozen=True):
         return self
 
 
+class RepairConfiguration(BaseModel, frozen=True):
+    enabled: bool = False
+    probe_steps: int = 100
+    max_steps: int = 500
+    gate_min_slope: float = 1e-5
+    tau_distill: float = 2.0
+    corpus: str = "wikitext-train-slice"
+    lr: float = 1e-5
+    batch_size: int = 4
+    seq_len: int = 256
+    plateau_patience: int = 50
+
+    @model_validator(mode="after")
+    def validate_repair_settings(self):
+        if self.probe_steps <= 0:
+            raise ValueError("repair.probe_steps must be > 0")
+        if self.max_steps < self.probe_steps:
+            raise ValueError("repair.max_steps must be >= repair.probe_steps")
+        if self.gate_min_slope < 0:
+            raise ValueError("repair.gate_min_slope must be >= 0")
+        if self.tau_distill <= 0:
+            raise ValueError("repair.tau_distill must be > 0")
+        if self.lr <= 0:
+            raise ValueError("repair.lr must be > 0")
+        if self.batch_size <= 0:
+            raise ValueError("repair.batch_size must be > 0")
+        if self.seq_len <= 0:
+            raise ValueError("repair.seq_len must be > 0")
+        if self.plateau_patience <= 0:
+            raise ValueError("repair.plateau_patience must be > 0")
+        if not self.corpus.strip():
+            raise ValueError("repair.corpus must not be empty")
+        return self
+
+
+def _repair_corpus_identity(corpus: str) -> Optional[Tuple[str, str]]:
+    normalized = corpus.strip().lower().replace("_", "-")
+    if normalized == "wikitext-train-slice":
+        return ("wikitext", "train")
+    return None
+
+
+def _evaluation_task_identity(task_name: str) -> Optional[Tuple[str, str]]:
+    normalized = task_name.strip().lower().replace("-", "_")
+    if normalized == "wikitext":
+        return ("wikitext", "test")
+    if normalized.startswith("wikitext"):
+        for split in ("train", "validation", "test"):
+            if normalized.endswith(f"_{split}"):
+                return ("wikitext", split)
+    return None
+
+
 class EvolMergeConfiguration(BaseModel, frozen=True):
     genome: Union[
         MultiMethodGenomeDefinition, ModelGenomeDefinition
@@ -221,8 +274,10 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     num_fewshot: Optional[int] = None
     shuffle: bool = False
     random_init: bool = False
+    provenance: Literal["warn", "fail", "off"] = "warn"
     ga: Optional[GAOptimizerConfiguration] = None
     stop: Optional[StopConfiguration] = None
+    repair: Optional[RepairConfiguration] = None
     apply_chat_template: bool = True
     fewshot_as_multiturn: bool = True
 
@@ -243,6 +298,24 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
         if self.two_stage:
             if self.stage2_top_k is not None and self.stage2_top_k < 1:
                 raise ValueError("two_stage requires stage2_top_k >= 1")
+        if self.repair is not None and self.repair.enabled:
+            if not self.two_stage:
+                raise ValueError("repair.enabled requires two_stage evaluation")
+            corpus_identity = _repair_corpus_identity(self.repair.corpus)
+            if corpus_identity is None:
+                raise ValueError(
+                    "repair.corpus must be a known corpus with a verifiable split; "
+                    "supported value: 'wikitext-train-slice'"
+                )
+            evaluation_tasks = [*self.tasks, *(self.stage1_tasks or [])]
+            for task in evaluation_tasks:
+                task_identity = _evaluation_task_identity(task.name)
+                if task_identity == corpus_identity:
+                    raise ValueError(
+                        "Repair corpus contamination: "
+                        f"{self.repair.corpus!r} overlaps evaluation task "
+                        f"{task.name!r} on split {corpus_identity[1]!r}"
+                    )
         if self.fitness_mode == "structured_phase1_tiny" and not self.task_mix_profile:
             raise ValueError(
                 "structured_phase1_tiny requires task_mix_profile to be set"

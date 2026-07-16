@@ -10,6 +10,9 @@
 - **15 Supported Merge Methods**: From linear to advanced methods like DARE-TIES and breadcrumbs
 - **Backwards Compatibility**: Seamlessly handles both genome types
 - **Enhanced GA Optimizer**: Automatic detection of genome types with appropriate optimization strategies
+- **Native Random Search**: Fixed-budget uniform sampling through the same evaluator and logs
+- **Run Safety**: Parent-lineage metadata, resumable enhanced-GA state, CPU device detection, and free-disk guards
+- **Gated Repair**: Optional Stage-2-only CPU self-distillation with a contamination-checked corpus
 
 ## Genome Types
 
@@ -235,6 +238,10 @@ multi_method_genome:
 ### Execution Options
 
 - `--max-fevals`: maximum evaluations before stopping
+- `--random-search N`: evaluate exactly N independently sampled genotypes; `ga.population_size` controls two-stage batching
+- `--resume RUN_DIR`: resume an enhanced GA from `RUN_DIR/ga_state.json`
+- `--device {auto,cpu,cuda}`: select or auto-detect the execution device
+- `--max-disk-gb-min`: minimum free GiB required before every merge (default 5)
 - `--limit`: maximum evaluation samples per task (overrides YAML `limit`)
 - `--timeout`: optional time budget in seconds
 
@@ -278,6 +285,7 @@ mergekit-evolve-ga \
 ```bash
 mergekit-evolve-ga \
   --strategy serial \
+  --device cpu \
   --no-merge-cuda \
   --num-gpus 0 \
   --limit 32 \
@@ -285,6 +293,48 @@ mergekit-evolve-ga \
   --storage-path /tmp/test \
   config_minimal.yml
 ```
+
+### Random-Search Baseline
+
+```bash
+mergekit-evolve-ga \
+  config_multimethod.yml \
+  --random-search 96 \
+  --population-size 8 \
+  --strategy serial \
+  --device cpu \
+  --num-gpus 0 \
+  --storage-path /tmp/mk-random-seed11 \
+  --random-seed 11
+```
+
+Random search bypasses every genetic operator but retains lineage checks,
+two-stage promotion, evaluation caching, candidate CSVs, and final export. Use
+the same population size and `stage2_top_k` as the comparison GA.
+
+### Provenance And Repair
+
+Set top-level `provenance: warn|fail|off` in YAML. Every run writes
+`parent_lineage.json`; strict mode stops when lineage is disconnected or cannot
+be verified. Task-vector methods receive a critical warning without a shared
+base checkpoint.
+
+Optional repair configuration is CPU serial and Stage-2-only:
+
+```yaml
+two_stage: true
+stage2_top_k: 2
+repair:
+  enabled: true
+  corpus: wikitext-train-slice
+  probe_steps: 100
+  max_steps: 500
+  gate_min_slope: 0.00001
+  tau_distill: 2.0
+```
+
+The corpus split is validated against configured evaluation tasks. A failed
+repair gate restores the exact unmodified child parameters.
 
 ## Notes
 

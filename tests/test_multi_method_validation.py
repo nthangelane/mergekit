@@ -815,10 +815,11 @@ def test_merge_model_with_details_executes_native_layered_config(monkeypatch, tm
         genotype,
         genome,
         str(tmp_path),
-        MergeOptions(),
+        MergeOptions(reuse_scratch_dir=True, min_free_disk_gb=0),
     )
 
     assert result["merged_path"] is not None
+    assert result["merged_path"].startswith(str(tmp_path / "candidate-scratch-"))
     assert len(seen_configs) == 1
     assert seen_configs[0].slices is not None
     assert [slice_def.merge_method for slice_def in seen_configs[0].slices] == [

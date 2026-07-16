@@ -1,9 +1,13 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from mergekit.common import ModelReference
 from mergekit.evo.provenance import (
+    annotate_lineage_risk,
     inspect_parent_lineage,
+    lineage_policy_failed,
     write_parent_lineage_report,
 )
 
@@ -42,7 +46,7 @@ def test_parent_lineage_detects_shared_structured_base():
         card_loader=lambda *_args: "",
     )
 
-    assert report["status"] == "compatible"
+    assert report["status"] == "common_lineage"
     assert report["common_lineage"] == ["base/model"]
     assert report["warning"] is None
 
@@ -97,7 +101,7 @@ def test_parent_lineage_lookup_failure_is_warning_only():
 def test_parent_lineage_report_is_persisted(tmp_path):
     report = {
         "schema_version": 1,
-        "status": "compatible",
+        "status": "common_lineage",
         "common_lineage": ["base/model"],
         "warning": None,
         "parents": [],
@@ -107,3 +111,40 @@ def test_parent_lineage_report_is_persisted(tmp_path):
 
     assert json.loads((tmp_path / "parent_lineage.json").read_text()) == report
     assert output_path == str(tmp_path / "parent_lineage.json")
+
+
+def test_task_vector_method_escalates_disconnected_lineage():
+    report = {
+        "schema_version": 1,
+        "status": "no_common_lineage",
+        "common_lineage": [],
+        "warning": "No shared base checkpoint was found.",
+        "parents": [],
+    }
+
+    annotated = annotate_lineage_risk(report, ["linear", "dare_ties"])
+
+    assert annotated["risk_level"] == "critical"
+    assert annotated["task_vector_methods"] == ["dare_ties"]
+    assert "require deltas from a shared base checkpoint" in annotated["warning"]
+    assert lineage_policy_failed(annotated)
+
+
+@pytest.mark.parametrize(
+    "method", ["dare_custom", "della_magnitude", "breadcrumbs_xyz"]
+)
+def test_task_vector_method_prefixes_escalate_lineage_warning(method):
+    annotated = annotate_lineage_risk(
+        {
+            "status": "no_common_lineage",
+            "warning": "No shared base checkpoint.",
+        },
+        [method],
+    )
+
+    assert annotated["risk_level"] == "critical"
+    assert annotated["task_vector_methods"] == [method]
+
+
+def test_strict_policy_accepts_common_lineage():
+    assert not lineage_policy_failed({"status": "common_lineage"})

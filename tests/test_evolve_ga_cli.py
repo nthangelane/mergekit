@@ -128,9 +128,11 @@ def test_num_gpus_zero_disables_merge_cuda_before_baseline(monkeypatch, tmp_path
         task_search_path,
         trust_remote_code,
         ray_observer=None,
+        use_ray=True,
     ):
         assert merge_cuda is False
         assert num_gpus == 0
+        assert use_ray is True
         raise _StopAfterBaselineHook("stop after merge-cuda resolution")
 
     monkeypatch.setattr(

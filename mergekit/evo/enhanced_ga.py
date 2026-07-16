@@ -4,12 +4,17 @@
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from mergekit.evo.cache_utils import genotype_cache_key, persisted_failure_result
+from mergekit.evo.checkpoint import (
+    atomic_write_json,
+    capture_rng_state,
+    restore_rng_state,
+)
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import MultiMethodGenome
 from mergekit.evo.ranking import weighted_rank_scores
@@ -18,7 +23,9 @@ from mergekit.evo.stop_policy import (
     evaluate_stagnation_stop,
     evaluate_target_stop,
 )
-from mergekit.evo.strategy import EvaluationStrategyBase
+
+if TYPE_CHECKING:
+    from mergekit.evo.strategy import EvaluationStrategyBase
 
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
@@ -99,7 +106,7 @@ class EnhancedGAOptimizer:
     def __init__(
         self,
         genome: Union[ModelGenome, MultiMethodGenome],
-        strategy: EvaluationStrategyBase,
+        strategy: "EvaluationStrategyBase",
         params: EnhancedGAParams,
         random_init: bool = False,
         seed: Optional[int] = None,
@@ -107,6 +114,9 @@ class EnhancedGAOptimizer:
         on_population_evaluated: Optional[OnPopulationEvaluated] = None,
         on_new_best: Optional[OnNewBest] = None,
         on_generation_start: Optional[OnGenerationStart] = None,
+        checkpoint_path: Optional[str] = None,
+        resume_state: Optional[Dict[str, Any]] = None,
+        config_signature: Optional[str] = None,
     ):
         self.genome = genome
         self.strategy = strategy
@@ -117,6 +127,9 @@ class EnhancedGAOptimizer:
         self.on_population_evaluated = on_population_evaluated
         self.on_new_best = on_new_best
         self.on_generation_start = on_generation_start
+        self.checkpoint_path = checkpoint_path
+        self.resume_state = resume_state
+        self.config_signature = config_signature
 
         # Determine genome type and capabilities
         self.is_multi_method = isinstance(genome, MultiMethodGenome)
@@ -160,6 +173,133 @@ class EnhancedGAOptimizer:
         self._population_metadata: List[Dict[str, Any]] = []
         self._last_operator_summary: Dict[str, Any] = {}
         self.last_stop_details: Optional[Dict[str, Any]] = None
+        self._fitness_history: List[List[float]] = []
+
+    @staticmethod
+    def _state_float(value: Any) -> float:
+        if value == "Infinity":
+            return float("inf")
+        if value == "-Infinity":
+            return float("-inf")
+        if value == "NaN":
+            return float("nan")
+        return float(value)
+
+    def _write_checkpoint(
+        self,
+        *,
+        population: np.ndarray,
+        generation: int,
+        fevals: int,
+        elapsed_seconds: float,
+        best_x: np.ndarray,
+        best_score: float,
+        best_generation: Optional[int],
+        best_score_source: Optional[str],
+        no_improve: int,
+        stagnation_generations: int,
+        status: str = "ready",
+    ) -> None:
+        if not self.checkpoint_path:
+            return
+        cache_rows = [
+            {
+                "key": list(key),
+                "score": score,
+                "result": result,
+            }
+            for key, (score, result) in self._fitness_cache.items()
+        ]
+        atomic_write_json(
+            self.checkpoint_path,
+            {
+                "schema_version": 1,
+                "optimizer": "enhanced_ga",
+                "status": status,
+                "config_signature": self.config_signature,
+                "generation": int(generation),
+                "fevals": int(fevals),
+                "elapsed_seconds": float(elapsed_seconds),
+                "population": population,
+                "fitness_history": self._fitness_history,
+                "best_x": best_x,
+                "best_score": best_score,
+                "best_generation": best_generation,
+                "best_score_source": best_score_source,
+                "no_improve": int(no_improve),
+                "stagnation_generations": int(stagnation_generations),
+                "mutation_sigma": float(self.params.mutation_sigma),
+                "adaptive_operator_state": {
+                    "method_probabilities": self._method_probs,
+                    "last_operator_summary": self._last_operator_summary,
+                    "population_metadata": self._population_metadata,
+                    "previous_generation_breeding": self._prev_generation_breeding,
+                    "novelty_archive": self._novelty_archive,
+                },
+                "fitness_cache": cache_rows,
+                "rng_state": capture_rng_state(self.rs),
+            },
+        )
+
+    def _restore_checkpoint(self) -> Dict[str, Any]:
+        state = dict(self.resume_state or {})
+        if state.get("optimizer") != "enhanced_ga":
+            raise ValueError("Checkpoint was not created by EnhancedGAOptimizer")
+        checkpoint_signature = state.get("config_signature")
+        if (
+            self.config_signature
+            and checkpoint_signature
+            and checkpoint_signature != self.config_signature
+        ):
+            raise ValueError("Checkpoint configuration does not match this run")
+
+        population = np.asarray(state["population"], dtype=np.float32)
+        if population.shape != (self.pop_size, self.dim):
+            raise ValueError(
+                "Checkpoint population shape does not match the configured optimizer: "
+                f"{population.shape} != {(self.pop_size, self.dim)}"
+            )
+        adaptive = dict(state.get("adaptive_operator_state") or {})
+        self._method_probs = {
+            str(key): float(value)
+            for key, value in (adaptive.get("method_probabilities") or {}).items()
+        }
+        self._last_operator_summary = dict(adaptive.get("last_operator_summary") or {})
+        self._population_metadata = list(adaptive.get("population_metadata") or [])
+        self._prev_generation_breeding = dict(
+            adaptive.get("previous_generation_breeding") or {}
+        )
+        self._novelty_archive = [
+            np.asarray(item, dtype=np.float32)
+            for item in adaptive.get("novelty_archive") or []
+        ]
+        self._fitness_history = [
+            [self._state_float(value) for value in row]
+            for row in state.get("fitness_history") or []
+        ]
+        self._fitness_cache = {}
+        for row in state.get("fitness_cache") or []:
+            key = tuple(int(value) for value in row["key"])
+            self._fitness_cache[key] = (
+                self._state_float(row["score"]),
+                dict(row["result"]),
+            )
+        self.params.mutation_sigma = float(
+            state.get("mutation_sigma", self.params.mutation_sigma)
+        )
+        restore_rng_state(state["rng_state"], self.rs)
+        return {
+            "population": population,
+            "generation": int(state.get("generation", 0)),
+            "fevals": int(state.get("fevals", 0)),
+            "elapsed_seconds": float(state.get("elapsed_seconds", 0.0)),
+            "best_x": np.asarray(state["best_x"], dtype=np.float32),
+            "best_score": self._state_float(state.get("best_score", "-Infinity")),
+            "best_generation": state.get("best_generation"),
+            "best_score_source": state.get("best_score_source"),
+            "no_improve": int(state.get("no_improve", 0)),
+            "stagnation_generations": int(state.get("stagnation_generations", 0)),
+        }
 
     def _initialize_method_probs(self) -> Dict[str, float]:
         if not self._configured_methods:
@@ -753,19 +893,46 @@ class EnhancedGAOptimizer:
     def run(
         self, max_fevals: int, timeout: Optional[float] = None
     ) -> Tuple[np.ndarray, float]:
-        pop = self._init_population()
-        self._population_metadata = self._seed_population_metadata(pop)
-        fevals = 0
-        start_time = time.time()
-        best_x = pop[0].copy()
-        best_score = -np.inf
-        best_generation: Optional[int] = None
-        best_score_source: Optional[str] = None
-        no_improve = 0
-        stagnation_generations = 0
-        self._fitness_cache: Dict[Tuple[int, ...], Tuple[float, dict]] = {}
+        if self.resume_state:
+            restored = self._restore_checkpoint()
+            pop = restored["population"]
+            fevals = int(restored["fevals"])
+            prior_elapsed = float(restored["elapsed_seconds"])
+            best_x = restored["best_x"]
+            best_score = float(restored["best_score"])
+            best_generation = restored["best_generation"]
+            best_score_source = restored["best_score_source"]
+            no_improve = int(restored["no_improve"])
+            stagnation_generations = int(restored["stagnation_generations"])
+        else:
+            pop = self._init_population()
+            self._population_metadata = self._seed_population_metadata(pop)
+            fevals = 0
+            prior_elapsed = 0.0
+            best_x = pop[0].copy()
+            best_score = -np.inf
+            best_generation = None
+            best_score_source = None
+            no_improve = 0
+            stagnation_generations = 0
+            self._fitness_cache = {}
+            self._fitness_history = []
+        start_time = time.time() - prior_elapsed
         effective_max_fevals = max(1, int(max_fevals))
         self.last_stop_details = None
+
+        self._write_checkpoint(
+            population=pop,
+            generation=max(0, fevals // self.pop_size),
+            fevals=fevals,
+            elapsed_seconds=time.time() - start_time,
+            best_x=best_x,
+            best_score=best_score,
+            best_generation=best_generation,
+            best_score_source=best_score_source,
+            no_improve=no_improve,
+            stagnation_generations=stagnation_generations,
+        )
 
         while True:
             elapsed_seconds = time.time() - start_time
@@ -808,6 +975,7 @@ class EnhancedGAOptimizer:
             fitness, res_list = self._evaluate_population(pop)
             fevals += self.pop_size
             eval_seconds = time.time() - t0
+            self._fitness_history.append([float(value) for value in fitness.tolist()])
             order = np.argsort(-fitness)
             elite_indices = order[: self.n_elite]
             self._last_operator_summary = self._update_operator_state(
@@ -1016,6 +1184,18 @@ class EnhancedGAOptimizer:
                 "role_counts": dict(role_counts),
                 "duplicate_resamples": float(duplicate_resamples),
             }
+            self._write_checkpoint(
+                population=pop,
+                generation=generation_idx,
+                fevals=fevals,
+                elapsed_seconds=time.time() - start_time,
+                best_x=best_x,
+                best_score=best_score,
+                best_generation=best_generation,
+                best_score_source=best_score_source,
+                no_improve=no_improve,
+                stagnation_generations=stagnation_generations,
+            )
 
         if self.last_stop_details is None:
             self.last_stop_details = StopDetails(
@@ -1029,6 +1209,20 @@ class EnhancedGAOptimizer:
                 max_fevals=effective_max_fevals,
                 timeout_seconds=float(timeout) if timeout is not None else None,
             ).to_dict()
+
+        self._write_checkpoint(
+            population=pop,
+            generation=max(0, fevals // self.pop_size),
+            fevals=fevals,
+            elapsed_seconds=time.time() - start_time,
+            best_x=best_x,
+            best_score=best_score,
+            best_generation=best_generation,
+            best_score_source=best_score_source,
+            no_improve=no_improve,
+            stagnation_generations=stagnation_generations,
+            status="complete",
+        )
 
         return best_x, best_score
 

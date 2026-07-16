@@ -1,37 +1,28 @@
 # Copyright (C) 2025 Arcee AI
 # SPDX-License-Identifier: BUSL-1.1
 
+from __future__ import annotations
+
 import asyncio
+import hashlib
 import logging
 import math
 import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import lm_eval.tasks
 import numpy as np
-import ray
-import ray.util.queue
-import ray.util.scheduling_strategies
 import torch
 import transformers
 
 from mergekit.common import get_torch_accelerator_count
-from mergekit.evo.actors import (
-    InMemoryMergeEvaluator,
-    OnDiskMergeEvaluator,
-    OnDiskMergeEvaluatorCPU,
-)
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.helpers import (
+    evaluate_model,
     evaluate_model_cpu,
-    evaluate_model_ray,
-    evaluate_model_ray_cpu,
-    merge_model_ray,
-    merge_model_ray_cpu,
+    merge_model,
     merge_model_with_details,
-    merge_model_with_details_ray,
 )
 from mergekit.evo.ranking import weighted_rank_scores
 from mergekit.evo.ray_observability import (
@@ -41,6 +32,18 @@ from mergekit.evo.ray_observability import (
 )
 from mergekit.evo.task_utils import create_task_manager
 from mergekit.options import MergeOptions
+
+
+def _require_ray():
+    try:
+        import ray
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise RuntimeError(
+            "Ray is required for pool, buffered, and GPU-serial evaluation. "
+            "Install the distributed dependencies or use --strategy serial "
+            "with --device cpu."
+        ) from exc
+    return ray
 
 
 def _gpus_per_evaluation(
@@ -258,6 +261,11 @@ class EvaluationStrategyBase(ABC):
             else:
                 result["score"] = stage2_result.get("score")
                 result["results"] = stage2_result.get("results")
+            repair_metadata = stage2_result.get("repair")
+            if repair_metadata is not None:
+                result["repair"] = repair_metadata
+                result["repair_pre_score"] = result.get("stage1_score")
+                result["repair_post_score"] = result.get("stage2_score")
 
         return combined_results
 
@@ -290,6 +298,7 @@ class EvaluationStrategyBase(ABC):
 
     def _stage_config(self, stage: int) -> EvolMergeConfiguration:
         if stage == 1:
+            repair_config = getattr(self.config, "repair", None)
             return self.config.model_copy(
                 update={
                     "tasks": getattr(self.config, "stage1_tasks", None)
@@ -300,6 +309,11 @@ class EvaluationStrategyBase(ABC):
                         else self.config.limit
                     ),
                     "two_stage": False,
+                    "repair": (
+                        repair_config.model_copy(update={"enabled": False})
+                        if repair_config is not None
+                        else None
+                    ),
                 }
             )
         if stage == 2:
@@ -340,6 +354,13 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        ray = _require_ray()
+        from mergekit.evo.actors import (
+            InMemoryMergeEvaluator,
+            OnDiskMergeEvaluator,
+            OnDiskMergeEvaluatorCPU,
+        )
+
         if in_memory:
             if self.num_gpus and self.num_gpus > 0:
                 self.actor_cls = InMemoryMergeEvaluator
@@ -414,7 +435,6 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
         )
 
 
-@ray.remote
 class BufferedRayEvaluationStrategyActor:
     def __init__(
         self,
@@ -426,7 +446,7 @@ class BufferedRayEvaluationStrategyActor:
         num_workers: Optional[int] = None,
         tensor_parallel_size: int = 1,
         batch_size: Optional[int] = None,
-        task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+        task_manager: Optional[Any] = None,
         model_storage_path: Optional[str] = None,
         quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
         worker_name: Optional[str] = None,
@@ -523,6 +543,20 @@ class BufferedRayEvaluationStrategyActor:
         return await future_result
 
     async def process_queue(self):
+        ray = _require_ray()
+        merge_model_ray = ray.remote(
+            num_cpus=1,
+            num_gpus=1,
+            max_retries=3,
+            retry_exceptions=[ConnectionError],
+        )(merge_model)
+        merge_model_ray_cpu = ray.remote(
+            num_cpus=1,
+            max_retries=3,
+            retry_exceptions=[ConnectionError],
+        )(merge_model)
+        evaluate_model_ray = ray.remote(num_cpus=1, num_gpus=1.0)(evaluate_model)
+        evaluate_model_ray_cpu = ray.remote(num_cpus=1)(evaluate_model_cpu)
         merging: Dict[ray.ObjectRef, asyncio.Future] = {}
         merged: List[Tuple[asyncio.Future, ray.ObjectRef]] = []
         evaluating: Dict[ray.ObjectRef, asyncio.Future] = {}
@@ -654,8 +688,10 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             raise ValueError("In-memory evaluation is not supported for buffered mode")
 
         super().__init__(*args, **kwargs)
+        ray = _require_ray()
         actor_name = worker_actor_name(self.run_label, "buffered", 0)
-        self.actor = BufferedRayEvaluationStrategyActor.options(
+        actor_cls = ray.remote(BufferedRayEvaluationStrategyActor)
+        self.actor = actor_cls.options(
             max_concurrency=1000,
             name=actor_name,
         ).remote(
@@ -682,6 +718,7 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
     def _evaluate_genotypes_once(
         self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
     ) -> List[dict]:
+        ray = _require_ray()
         candidate_contexts = self._candidate_contexts(genotypes, eval_config)
         return ray.get(
             [
@@ -691,7 +728,6 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
         )
 
 
-@ray.remote
 def evaluate_genotype_serial(
     genotype: np.ndarray,
     config: EvolMergeConfiguration,
@@ -701,10 +737,11 @@ def evaluate_genotype_serial(
     vllm: bool = False,
     tensor_parallel_size: int = 1,
     batch_size: Optional[int] = None,
-    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    task_manager: Optional[Any] = None,
     quantization_config: Optional[transformers.BitsAndBytesConfig] = None,
     context: Optional[Dict[str, Any]] = None,
 ):
+    ray = _require_ray()
     gpus_per_eval = _gpus_per_evaluation(
         total_gpus=tensor_parallel_size,
         vllm=vllm,
@@ -716,7 +753,14 @@ def evaluate_genotype_serial(
     strat = ray.util.scheduling_strategies.PlacementGroupSchedulingStrategy(
         placement_group=pg
     )
-    merge_info = merge_model_with_details_ray.options(scheduling_strategy=strat).remote(
+    merge_remote = ray.remote(
+        num_cpus=1,
+        num_gpus=1,
+        max_retries=3,
+        retry_exceptions=[ConnectionError],
+    )(merge_model_with_details)
+    evaluate_remote = ray.remote(num_cpus=1, num_gpus=1.0)(evaluate_model)
+    merge_info = merge_remote.options(scheduling_strategy=strat).remote(
         genotype, genome, model_storage_path, merge_options
     )
     merge_info = ray.get(merge_info)
@@ -734,7 +778,7 @@ def evaluate_genotype_serial(
         kwargs["quantization_config"] = quantization_config
     eval_config = config
     res = ray.get(
-        evaluate_model_ray.options(
+        evaluate_remote.options(
             scheduling_strategy=strat,
             num_gpus=gpus_per_eval,
         ).remote(
@@ -762,7 +806,8 @@ def _evaluate_genotype_serial_cpu_impl(
     merge_options: MergeOptions,
     model_storage_path: Optional[str] = None,
     batch_size: Optional[int] = None,
-    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    task_manager: Optional[Any] = None,
+    repair_callback=None,
 ):
     import sys
     import time
@@ -807,6 +852,11 @@ def _evaluate_genotype_serial_cpu_impl(
     )
     sys.stdout.flush()
 
+    repair_metadata = None
+    if repair_callback is not None:
+        print("[EVAL] Running gated Stage-2 repair...", flush=True)
+        repair_metadata = repair_callback(merged_path, genotype, config)
+
     print(f"[EVAL] Step 2/2: Evaluating merged model on {config.tasks}...", flush=True)
     sys.stdout.flush()
     eval_start = time.perf_counter()
@@ -844,10 +894,12 @@ def _evaluate_genotype_serial_cpu_impl(
         flush=True,
     )
     sys.stdout.flush()
+    if repair_metadata is not None:
+        res = dict(res)
+        res["repair"] = repair_metadata
     return res
 
 
-@ray.remote
 def evaluate_genotype_serial_cpu(
     genotype: np.ndarray,
     config: EvolMergeConfiguration,
@@ -855,7 +907,7 @@ def evaluate_genotype_serial_cpu(
     merge_options: MergeOptions,
     model_storage_path: Optional[str] = None,
     batch_size: Optional[int] = None,
-    task_manager: Optional[lm_eval.tasks.TaskManager] = None,
+    task_manager: Optional[Any] = None,
 ):
     return _evaluate_genotype_serial_cpu_impl(
         genotype,
@@ -877,9 +929,64 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         **kwargs,
     ):
         self.vllm = vllm
+        self._repair_distiller = None
+        self._repair_corpus = None
         if in_memory:
             raise ValueError("In-memory evaluation is not supported for serial mode")
         super().__init__(*args, **kwargs)
+
+    def repair_checkpoint(
+        self,
+        checkpoint_path: str,
+        genotype: np.ndarray,
+        eval_config: Optional[EvolMergeConfiguration] = None,
+    ) -> Dict[str, Any]:
+        config = eval_config or self.config
+        repair_config = getattr(config, "repair", None)
+        if repair_config is None or not repair_config.enabled:
+            return {"repaired": False, "skipped": True}
+        if self.num_gpus and self.num_gpus > 0:
+            raise ValueError(
+                "Gated repair currently supports CPU serial execution only"
+            )
+
+        from mergekit.evo.repair import (
+            ParentDistiller,
+            blend_weights_for_genotype,
+            load_repair_corpus,
+            repair_checkpoint,
+        )
+
+        if self._repair_distiller is None:
+            parent_refs = [
+                str(model)
+                for model in getattr(
+                    getattr(self.genome, "definition", None), "models", []
+                )
+            ]
+            self._repair_distiller = ParentDistiller(
+                parent_refs,
+                tau_distill=repair_config.tau_distill,
+                trust_remote_code=self.merge_options.trust_remote_code,
+            )
+        if self._repair_corpus is None:
+            self._repair_corpus = load_repair_corpus(
+                repair_config.corpus,
+                max_examples=repair_config.batch_size * repair_config.max_steps,
+            )
+
+        genotype_array = np.asarray(genotype, dtype=np.float32).reshape(-1)
+        genotype_seed = int(hashlib.sha1(genotype_array.tobytes()).hexdigest()[:8], 16)
+        base_seed = int(self.merge_options.random_seed or 0)
+        return repair_checkpoint(
+            checkpoint_path,
+            self._repair_distiller,
+            self._repair_corpus,
+            config=repair_config,
+            weights=blend_weights_for_genotype(self.genome, genotype_array),
+            seed=(base_seed + genotype_seed) % (2**31),
+            trust_remote_code=self.merge_options.trust_remote_code,
+        )
 
     def _evaluate_genotypes_once(
         self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
@@ -893,12 +1000,14 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
         sys.stdout.flush()
 
         if self.num_gpus and self.num_gpus > 0:
+            ray = _require_ray()
             print(f"[SERIAL] Using GPU path with {self.num_gpus} GPUs", flush=True)
             sys.stdout.flush()
             candidate_contexts = self._candidate_contexts(genotypes, eval_config)
+            remote_evaluator = ray.remote(evaluate_genotype_serial)
             return ray.get(
                 [
-                    evaluate_genotype_serial.remote(
+                    remote_evaluator.remote(
                         x,
                         eval_config,
                         self.genome,
@@ -947,6 +1056,13 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                     model_storage_path=self.model_storage_path,
                     batch_size=self.batch_size,
                     task_manager=self.task_manager,
+                    repair_callback=(
+                        self.repair_checkpoint
+                        if getattr(
+                            getattr(eval_config, "repair", None), "enabled", False
+                        )
+                        else None
+                    ),
                 )
                 results.append(result)
                 if getattr(self, "run_observer", None) is not None:

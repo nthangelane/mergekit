@@ -1,64 +1,54 @@
 #!/bin/bash
+set -euo pipefail
 
-# Random search baseline experiment runner for thesis GA comparison
-# Executes 3 independent seeds (11, 22, 33) sequentially
-# Each run: max 96 fevals, pure random candidate generation (no GA operators)
-# Output: workspace/thesis/local_mac/results/random_search_baseline/seed{11,22,33}
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+cd "$ROOT_DIR"
+CONFIG_PATH="$ROOT_DIR/experiments/thesis/local_mac/pending_experiments/thesis_random_search_baseline.yml"
+BASE_OUTPUT_DIR="$ROOT_DIR/workspace/thesis/local_mac/results/random_search_baseline"
+SHARED_CACHE="${HF_SHARED_CACHE:-$HOME/.cache/huggingface/hub}"
+SEEDS="${SEEDS:-11 22 33}"
+SAMPLES="${SAMPLES:-96}"
+STRATEGY="${STRATEGY:-pool}"
+NUM_WORKERS="${NUM_WORKERS:-4}"
 
-set -e  # Exit on error
+mkdir -p "$BASE_OUTPUT_DIR" "$SHARED_CACHE"
 
-CONFIG="./thesis_random_search_baseline.yml"
-BASE_OUTPUT_DIR="./workspace/thesis/local_mac/results/random_search_baseline"
+echo "Native random-search baseline"
+echo "Config: $CONFIG_PATH"
+echo "Seeds: $SEEDS"
+echo "Samples per seed: $SAMPLES"
+echo "Strategy: $STRATEGY"
 
-# Seeds to run
-SEEDS=(11 22 33)
+for seed in $SEEDS; do
+  RUN_DIR="$BASE_OUTPUT_DIR/seed${seed}"
+  if [[ -f "$RUN_DIR/ga_stop_details.json" ]]; then
+    echo "Skipping seed${seed}; completion artifact already exists."
+    continue
+  fi
 
-# GA hyperparameters (same pool strategy as completed GA batch)
-POOL_STRATEGY="multiprocessing"
-WORKERS=4
+  mkdir -p "$RUN_DIR"
+  rm -rf "$RUN_DIR/transformers_cache"
+  ln -s "$SHARED_CACHE" "$RUN_DIR/transformers_cache"
 
-echo "=========================================="
-echo "Random Search Baseline Experiment"
-echo "=========================================="
-echo "Config: $CONFIG"
-echo "Seeds: ${SEEDS[@]}"
-echo "Pool strategy: $POOL_STRATEGY"
-echo "Workers per seed: $WORKERS"
-echo "Max fevals per seed: 96"
-echo ""
+  EXTRA_ARGS=()
+  if [[ "$STRATEGY" != "serial" ]]; then
+    EXTRA_ARGS+=(--num-workers "$NUM_WORKERS")
+  fi
 
-# Create output directory
-mkdir -p "$BASE_OUTPUT_DIR"
-
-for SEED in "${SEEDS[@]}"; do
-    OUTPUT_DIR="$BASE_OUTPUT_DIR/seed$SEED"
-
-    echo "=========================================="
-    echo "Running seed $SEED"
-    echo "Output directory: $OUTPUT_DIR"
-    echo "=========================================="
-
-    START_TIME=$(date +%s)
-
-    # Run the search
-    python -m thesis.run_search \
-        --config "$CONFIG" \
-        --seed "$SEED" \
-        --output-dir "$OUTPUT_DIR" \
-        --pool-strategy "$POOL_STRATEGY" \
-        --num-workers "$WORKERS"
-
-    END_TIME=$(date +%s)
-    ELAPSED=$((END_TIME - START_TIME))
-    ELAPSED_MIN=$((ELAPSED / 60))
-    ELAPSED_SEC=$((ELAPSED % 60))
-
-    echo ""
-    echo "Seed $SEED completed in ${ELAPSED_MIN}m ${ELAPSED_SEC}s"
-    echo ""
+  python -m mergekit.scripts.evolve_ga \
+    "$CONFIG_PATH" \
+    --random-search "$SAMPLES" \
+    --strategy "$STRATEGY" \
+    "${EXTRA_ARGS[@]}" \
+    --storage-path "$RUN_DIR" \
+    --device cpu \
+    --num-gpus 0 \
+    --no-merge-cuda \
+    --batch-size 1 \
+    --baseline \
+    --no-reshard \
+    --random-seed "$seed" \
+    2>&1 | tee "$RUN_DIR/run.log"
 done
 
-echo "=========================================="
-echo "All seeds completed successfully"
-echo "Results in: $BASE_OUTPUT_DIR"
-echo "=========================================="
+echo "Random-search runs completed: $BASE_OUTPUT_DIR"

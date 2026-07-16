@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import shutil
+import socket
 import tempfile
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Union
@@ -13,9 +14,6 @@ import lm_eval
 import lm_eval.api.model
 import lm_eval.models.huggingface
 import lm_eval.tasks
-import ray
-import ray.util.queue
-import ray.util.scheduling_strategies
 import torch
 import transformers
 
@@ -24,6 +22,7 @@ from mergekit.config import MergeConfiguration
 from mergekit.evo.config import PHASE1_TASK_MIX_PROFILES, TaskConfiguration
 from mergekit.evo.genome import InvalidGenotypeError, ModelGenome
 from mergekit.evo.monkeypatch import monkeypatch_lmeval_vllm
+from mergekit.evo.resources import InsufficientDiskSpaceError, ensure_free_disk
 
 # Try to import multi-method genome exception
 try:
@@ -817,9 +816,6 @@ def evaluate_model(
             shutil.rmtree(merged_path, ignore_errors=True)
 
 
-evaluate_model_ray = ray.remote(num_cpus=1, num_gpus=1.0)(evaluate_model)
-
-
 def evaluate_model_cpu(
     merged_path: str,
     tasks: List[TaskConfiguration],
@@ -941,9 +937,6 @@ def evaluate_model_cpu(
             shutil.rmtree(merged_path, ignore_errors=True)
 
 
-evaluate_model_ray_cpu = ray.remote(num_cpus=1)(evaluate_model_cpu)
-
-
 def merge_model_with_details(
     genotype: torch.Tensor,
     genome: ModelGenome,
@@ -976,10 +969,21 @@ def merge_model_with_details(
         }
 
     os.makedirs(model_storage_path, exist_ok=True)
-    res = tempfile.mkdtemp(prefix="merged", dir=model_storage_path)
+
+    def _run_merge_guarded(config: MergeConfiguration, output_path: str) -> None:
+        ensure_free_disk(model_storage_path, merge_options.min_free_disk_gb)
+        run_merge(config, out_path=output_path, options=merge_options)
+
+    if merge_options.reuse_scratch_dir:
+        worker_id = f"{socket.gethostname()}-{os.getpid()}"
+        res = os.path.join(model_storage_path, f"candidate-scratch-{worker_id}")
+        shutil.rmtree(res, ignore_errors=True)
+        os.makedirs(res, exist_ok=True)
+    else:
+        res = tempfile.mkdtemp(prefix="merged", dir=model_storage_path)
     try:
         if cfg is not None:
-            run_merge(cfg, out_path=res, options=merge_options)
+            _run_merge_guarded(cfg, res)
             return {
                 "merged_path": res,
                 "error_stage": None,
@@ -999,7 +1003,7 @@ def merge_model_with_details(
                 component_cfg: MergeConfiguration = component["config"]
                 _validate_merge_compatibility(component_cfg, merge_options)
                 component_path = os.path.join(component_root, component["name"])
-                run_merge(component_cfg, out_path=component_path, options=merge_options)
+                _run_merge_guarded(component_cfg, component_path)
                 component_paths[component["name"]] = component_path
 
             final_slices = []
@@ -1028,9 +1032,12 @@ def merge_model_with_details(
                     "tokenizer_source": tokenizer_source,
                 }
             )
-            run_merge(final_config, out_path=res, options=merge_options)
+            _run_merge_guarded(final_config, res)
         finally:
             shutil.rmtree(component_root, ignore_errors=True)
+    except InsufficientDiskSpaceError:
+        shutil.rmtree(res, ignore_errors=True)
+        raise
     except Exception as exc:  # pragma: no cover - run_merge handles many cases
         logging.error("Merge execution failed", exc_info=exc)
         shutil.rmtree(res, ignore_errors=True)
@@ -1064,33 +1071,6 @@ def merge_model(
         merge_options,
     )
     return result["merged_path"]
-
-
-merge_model_ray = ray.remote(
-    num_cpus=1,
-    num_gpus=1,
-    max_retries=3,
-    retry_exceptions=[ConnectionError],
-)(merge_model)
-
-merge_model_with_details_ray = ray.remote(
-    num_cpus=1,
-    num_gpus=1,
-    max_retries=3,
-    retry_exceptions=[ConnectionError],
-)(merge_model_with_details)
-
-merge_model_ray_cpu = ray.remote(
-    num_cpus=1,
-    max_retries=3,
-    retry_exceptions=[ConnectionError],
-)(merge_model)
-
-merge_model_with_details_ray_cpu = ray.remote(
-    num_cpus=1,
-    max_retries=3,
-    retry_exceptions=[ConnectionError],
-)(merge_model_with_details)
 
 
 def _apply_metric_guards(result: dict) -> None:

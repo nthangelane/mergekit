@@ -1,0 +1,67 @@
+# Minimal real-model smoke for the evo pipeline before a cloud campaign.
+# It exercises lineage, native random search, two-stage evaluation, gated repair,
+# scratch reuse, disk checks, candidate logging, and final export on CPU.
+
+genome:
+  type: multi_method
+  models:
+    - lomahony/pythia-70m-helpful-sft
+    - EleutherAI/pythia-70m-deduped
+  base_model: EleutherAI/pythia-70m-deduped
+  tokenizer_source: base
+  allowed_methods:
+    - linear
+  layer_granularity: 0
+  max_models_per_layer: 2
+  normalize: true
+  allow_negative_weights: false
+  linear_min_source_weight: 0.15
+  linear_max_scale: 1.0
+  enable_method_evolution: true
+  enable_model_selection: true
+
+tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: byte_perplexity,none
+
+two_stage: true
+stage1_tasks:
+  - name: wikitext
+    weight: 1.0
+    metric: byte_perplexity,none
+stage1_limit: 1
+stage2_limit: 1
+stage2_top_k: 1
+
+provenance: warn
+random_init: true
+
+repair:
+  enabled: true
+  probe_steps: 1
+  max_steps: 2
+  gate_min_slope: 0.0
+  tau_distill: 2.0
+  corpus: wikitext-train-slice
+  lr: 0.00001
+  batch_size: 1
+  seq_len: 32
+  plateau_patience: 1
+
+ga:
+  population_size: 2
+  elite_fraction: 0.5
+  mutation_rate: 0.1
+  mutation_sigma: 0.01
+  crossover: uniform
+  tournament_size: 2
+
+stop:
+  max_fevals: 2
+  max_time_seconds: 1800
+
+limit: 1
+num_fewshot: 0
+apply_chat_template: false
+fewshot_as_multiturn: false

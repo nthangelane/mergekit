@@ -1,18 +1,7 @@
-# Random search baseline for thesis GA comparison
-# This config disables all evolutionary operators and uses pure random sampling
-# at identical feval budget (N=96) to establish whether GA selection/crossover/mutation
-# provide genuine value over naive random candidate generation.
-#
-# All GA hyperparameters are neutralised:
-# - population_size=1: evaluate each candidate independently
-# - crossover=uniform: schema-required field; never fires at pop=1 (no second parent exists)
-# - mutation_rate=0.0: no within-candidate perturbation
-# - adaptive_method_sampling=false: no operator adaptation
-# - tournament_size=1: no selection pressure
-# - elite_fraction=0.0: no elitism/carry-over
-# - explorer_fraction=0.0: no explorers (meaningless at pop=1)
-# - stage2_top_k=1: matches population size (avoids promoting non-existent candidates)
-# - random_init=true: each candidate randomly initialised
+# Native random-search baseline for the thesis GA comparison.
+# Run with --random-search 96. The GA block is retained only to provide the
+# population_size=8 batching cadence used by the comparison GA; selection,
+# crossover, mutation, and adaptation are bypassed by the native mode.
 
 genome:
   type: multi_method
@@ -27,12 +16,13 @@ genome:
   allowed_methods:
     - passthrough
     - linear
-    - slerp
 
   layer_granularity: 0
   max_models_per_layer: 2
   normalize: true
   allow_negative_weights: false
+  linear_min_source_weight: 0.15
+  linear_max_scale: 1.0
   enable_method_evolution: true
   enable_model_selection: true
 
@@ -59,8 +49,8 @@ stage1_tasks:
     weight: 0.40
     metric: acc,none
 stage1_limit: 4
-stage2_limit: 12
-stage2_top_k: 1           # must not exceed population_size
+stage2_limit: 24
+stage2_top_k: 2
 
 fitness_mode: structured_phase1_tiny
 task_mix_profile: pythia70m_phase1
@@ -75,23 +65,23 @@ behavior_min_distinct_ratio: 0.15
 behavior_reject_on_degenerate: false
 
 random_init: true
+provenance: warn
 
 ga:
-  population_size: 1
-  elite_fraction: 0.0
-  mutation_rate: 0.0
+  population_size: 8
+  elite_fraction: 0.125
+  mutation_rate: 0.10
   mutation_sigma: 0.015
-  crossover: uniform        # schema requires a valid type; never fires at population_size=1
-  semantic_crossover_prob: 0.0
-  method_mutation_rate: 0.0
-  model_mutation_rate: 0.0
-  parameter_mutation_rate: 0.0
-  tournament_size: 1
-  adaptive_method_sampling: false
+  crossover: semantic
+  semantic_crossover_prob: 0.75
+  method_mutation_rate: 0.10
+  model_mutation_rate: 0.10
+  parameter_mutation_rate: 0.10
+  tournament_size: 3
+  adaptive_method_sampling: true
   initial_method_probs:
     passthrough: 0.25
-    linear: 0.45
-    slerp: 0.30
+    linear: 0.75
   operator_temperature: 1.0
   operator_update_smoothing: 0.20
   operator_avg_child_weight: 0.50
@@ -99,11 +89,11 @@ ga:
   operator_survival_weight: 0.20
   passthrough_penalty: 0.02
   passthrough_max_fraction: 0.30
-  explorer_fraction: 0.0    # no explorers at pop=1
-  diversity_parent_selection: false
-  diversity_parent_weight: 0.0
-  gene_diversity_bonus_weight: 0.0
-  behavior_diversity_bonus_weight: 0.0
+  explorer_fraction: 0.15
+  diversity_parent_selection: true
+  diversity_parent_weight: 0.20
+  gene_diversity_bonus_weight: 0.02
+  behavior_diversity_bonus_weight: 0.01
 
 stop:
   max_fevals: 96
@@ -115,7 +105,7 @@ stop:
   stagnation_patience_generations: 8
   stagnation_min_delta: 0.005
 
-limit: 12
+limit: 24
 num_fewshot: 0
 apply_chat_template: false
 fewshot_as_multiturn: false

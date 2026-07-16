@@ -15,7 +15,7 @@
 
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -26,7 +26,9 @@ from mergekit.evo.stop_policy import (
     evaluate_stagnation_stop,
     evaluate_target_stop,
 )
-from mergekit.evo.strategy import EvaluationStrategyBase
+
+if TYPE_CHECKING:
+    from mergekit.evo.strategy import EvaluationStrategyBase
 
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
@@ -89,7 +91,7 @@ class GAOptimizer:
     def __init__(
         self,
         genome: ModelGenome,
-        strategy: EvaluationStrategyBase,
+        strategy: "EvaluationStrategyBase",
         params: GAParams,
         random_init: bool = False,
         seed: Optional[int] = None,

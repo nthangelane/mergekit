@@ -34,7 +34,6 @@ from urllib.request import urlopen
 import click
 import numpy as np
 import pandas
-import ray
 import torch
 import tqdm
 import yaml
@@ -52,6 +51,7 @@ except ImportError:
 from mergekit.common import ModelReference, call_with_dtype
 from mergekit.config import MergeConfiguration
 from mergekit.evo.cache_utils import genotype_exact_hash
+from mergekit.evo.checkpoint import GA_STATE_FILENAME, atomic_write_json, load_ga_state
 from mergekit.evo.config import (
     EvolMergeConfiguration,
     ModelGenomeDefinition,
@@ -61,33 +61,61 @@ from mergekit.evo.config import (
 from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
 from mergekit.evo.ga import GAOptimizer, GAParams
 from mergekit.evo.genome import ModelGenome
-from mergekit.evo.helpers import (
-    _eval_model,
-    merge_model_with_details,
-    validate_input_model_architecture,
-)
 from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
 )
 from mergekit.evo.provenance import (
     PARENT_LINEAGE_FILENAME,
+    annotate_lineage_risk,
     inspect_parent_lineage,
+    lineage_policy_failed,
     write_parent_lineage_report,
 )
+from mergekit.evo.random_search import RandomSearchOptimizer
 from mergekit.evo.ray_observability import RayRunObserver, default_run_label
-from mergekit.evo.strategy import (
-    ActorPoolEvaluationStrategy,
-    BufferedRayEvaluationStrategy,
-    SerialEvaluationStrategy,
-)
-from mergekit.evo.task_utils import create_task_manager
+from mergekit.evo.resources import InsufficientDiskSpaceError, ensure_free_disk
 from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
 from mergekit.options import MergeOptions
 
 LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
 FAILED_BLACKLIST_FILENAME = "failed_genotype_blacklist.csv"
+
+
+def _require_ray():
+    try:
+        import ray
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise click.ClickException(
+            "Ray is not installed. Use --strategy serial --device cpu, or install "
+            "the distributed experiment dependencies."
+        ) from exc
+    return ray
+
+
+def _eval_model(*args, **kwargs):
+    from mergekit.evo.helpers import _eval_model as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def merge_model_with_details(*args, **kwargs):
+    from mergekit.evo.helpers import merge_model_with_details as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def validate_input_model_architecture(*args, **kwargs):
+    from mergekit.evo.helpers import validate_input_model_architecture as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def create_task_manager(*args, **kwargs):
+    from mergekit.evo.task_utils import create_task_manager as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
@@ -592,6 +620,9 @@ def _log_run_artifacts(tracker, storage_path: str) -> None:
         "mlflow_ui_log": "mlflow_ui.log",
         "ray_observability": "ray_observability.json",
         "parent_lineage": PARENT_LINEAGE_FILENAME,
+        "ga_state": GA_STATE_FILENAME,
+        "run_abort": "run_abort.json",
+        "final_repair": "final_repair.json",
     }
     for artifact_name, file_name in artifacts.items():
         file_path = os.path.join(storage_path, file_name)
@@ -766,6 +797,38 @@ def _resolve_merge_cuda(merge_cuda: bool, num_gpus: Optional[int]) -> bool:
     return merge_cuda
 
 
+def _resolve_device(device: str, num_gpus: Optional[int]) -> str:
+    if device == "auto":
+        if num_gpus == 0:
+            return "cpu"
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        raise click.ClickException(
+            "--device cuda was requested, but torch.cuda.is_available() is false."
+        )
+    if device == "cuda" and num_gpus == 0:
+        raise click.ClickException("--device cuda conflicts with --num-gpus 0.")
+    if device == "cpu" and num_gpus is not None and num_gpus > 0:
+        raise click.ClickException("--device cpu conflicts with --num-gpus > 0.")
+    return device
+
+
+def _write_disk_abort(storage_path: str, exc: InsufficientDiskSpaceError) -> str:
+    state_path = os.path.join(storage_path, GA_STATE_FILENAME)
+    abort_path = os.path.join(storage_path, "run_abort.json")
+    atomic_write_json(
+        abort_path,
+        {
+            "reason": "insufficient_disk_space",
+            "message": str(exc),
+            "free_disk_gb": exc.free_gb,
+            "required_disk_gb": exc.required_gb,
+            "ga_state": state_path if os.path.isfile(state_path) else None,
+        },
+    )
+    return abort_path
+
+
 def prune_stale_merged_artifacts(
     storage_path: str, *, keep: Optional[List[Path]] = None
 ) -> None:
@@ -798,6 +861,7 @@ def _init_ray_for_baselines() -> None:
     standalone local experiments.
     """
 
+    ray = _require_ray()
     if ray.is_initialized():
         return
 
@@ -830,6 +894,13 @@ def _init_ray_for_baselines() -> None:
     type=int,
     default=None,
     help="Maximum function evaluations (overrides YAML stop.max_fevals if set)",
+)
+@click.option(
+    "--random-search",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="N",
+    help="Evaluate N uniform random genotypes without selection or breeding",
 )
 @click.option(
     "--population-size",
@@ -885,9 +956,29 @@ def _init_ray_for_baselines() -> None:
     "--storage-path",
     type=str,
     help="Path to storage accessible to all nodes for model storage",
-    required=True,
+    required=False,
+)
+@click.option(
+    "--resume",
+    type=click.Path(file_okay=False, path_type=str),
+    default=None,
+    help="Resume an enhanced GA run from RUN_DIR/ga_state.json",
 )
 @click.option("--num-gpus", type=int, help="Number of GPUs to use across all nodes")
+@click.option(
+    "--device",
+    type=click.Choice(["auto", "cpu", "cuda"]),
+    default="auto",
+    show_default=True,
+    help="Execution device; auto selects CUDA only when available",
+)
+@click.option(
+    "--max-disk-gb-min",
+    type=click.FloatRange(min=0.0),
+    default=5.0,
+    show_default=True,
+    help="Minimum free disk space required before each candidate merge",
+)
 @click.option(
     "--tensor-parallel-size",
     type=click.IntRange(1, 10),
@@ -999,6 +1090,7 @@ def _init_ray_for_baselines() -> None:
 def main(
     genome_config_path: str,
     max_fevals: Optional[int],
+    random_search: Optional[int],
     population_size: Optional[int],
     elite_fraction: Optional[float],
     mutation_rate: Optional[float],
@@ -1009,7 +1101,10 @@ def main(
     strategy: str,
     in_memory: bool,
     storage_path: Optional[str],
+    resume: Optional[str],
     num_gpus: Optional[int],
+    device: str,
+    max_disk_gb_min: float,
     tensor_parallel_size: int,
     num_workers: Optional[int],
     merge_cuda: bool,
@@ -1053,6 +1148,18 @@ def main(
         config = config.model_copy(update={"limit": limit})
         stage_log("Stage-Init", f"Overriding evaluation limit from CLI: {limit}")
 
+    if resume is not None:
+        resume = os.path.abspath(resume)
+        if storage_path is not None and os.path.abspath(storage_path) != resume:
+            raise click.ClickException(
+                "--storage-path must match --resume when both are supplied."
+            )
+        storage_path = resume
+    if storage_path is None:
+        raise click.ClickException("Provide --storage-path or --resume RUN_DIR.")
+    if resume is not None and random_search is not None:
+        raise click.ClickException("--resume cannot be combined with --random-search.")
+
     stage_log("Stage-Init", "Validating configuration settings...")
     check_for_naughty_config(config, allow=allow_benchmark_tasks)
     resolved_stop = _resolve_stop_configuration(
@@ -1060,6 +1167,8 @@ def main(
         max_fevals_cli=max_fevals,
         timeout_cli=timeout,
     )
+    if random_search is not None:
+        resolved_stop["max_fevals"] = int(random_search)
     max_fevals = int(resolved_stop["max_fevals"])
     timeout = resolved_stop["timeout_seconds"]
     stop_summary_parts = [f"max_fevals={max_fevals}"]
@@ -1083,9 +1192,40 @@ def main(
 
     storage_path = os.path.abspath(storage_path)
     os.makedirs(storage_path, exist_ok=True)
+    try:
+        resume_state = load_ga_state(storage_path) if resume is not None else None
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"Unable to load GA checkpoint: {exc}") from exc
     stage_log("Stage-Init", f"Storage path: {storage_path}")
+    if resume_state is not None:
+        stage_log(
+            "Stage-Init",
+            "Loaded GA checkpoint at generation "
+            f"{resume_state.get('generation', 0)} with "
+            f"{resume_state.get('fevals', 0)} completed evaluations.",
+        )
     stage_log("Stage-Init", "Checking source-model parent lineage...")
-    parent_lineage = inspect_parent_lineage(config.genome.models)
+    lineage_models = list(config.genome.models)
+    if config.genome.base_model is not None:
+        lineage_models.append(config.genome.base_model)
+    lineage_models = _unique_model_refs(lineage_models)
+    merge_methods = _configured_merge_methods(config)
+    if config.provenance == "off":
+        parent_lineage = {
+            "schema_version": 1,
+            "status": "off",
+            "common_lineage": [],
+            "warning": None,
+            "parents": [],
+            "merge_methods": sorted(set(merge_methods)),
+            "task_vector_methods": [],
+            "risk_level": "none",
+        }
+    else:
+        parent_lineage = annotate_lineage_risk(
+            inspect_parent_lineage(lineage_models), merge_methods
+        )
+    parent_lineage["policy"] = config.provenance
     parent_lineage_path = write_parent_lineage_report(storage_path, parent_lineage)
     if parent_lineage.get("warning"):
         stage_log(
@@ -1093,6 +1233,8 @@ def main(
             f"PARENT LINEAGE WARNING: {parent_lineage['warning']}",
             level=logging.WARNING,
         )
+    elif config.provenance == "off":
+        stage_log("Stage-Init", "Parent lineage check disabled by configuration.")
     else:
         common_lineage = parent_lineage.get("common_lineage") or []
         lineage_summary = (
@@ -1100,6 +1242,11 @@ def main(
         )
         stage_log("Stage-Init", f"Parent lineage check passed: {lineage_summary}")
     stage_log("Stage-Init", f"Parent lineage metadata: {parent_lineage_path}")
+    if config.provenance == "fail" and lineage_policy_failed(parent_lineage):
+        raise click.ClickException(
+            "Parent provenance validation failed in strict mode. "
+            f"See {parent_lineage_path} for evidence."
+        )
     run_label = default_run_label(storage_path, strategy)
     ray_observer = RayRunObserver(
         run_label=run_label,
@@ -1113,7 +1260,30 @@ def main(
         generation=0,
         fevals_completed=0,
     )
-    merge_cuda = _resolve_merge_cuda(merge_cuda, num_gpus)
+    device = _resolve_device(device, num_gpus)
+    if device == "cpu":
+        if merge_cuda:
+            stage_log(
+                "Stage-Init",
+                "CPU execution selected; disabling CUDA merge operations.",
+                level=logging.WARNING,
+            )
+        merge_cuda = False
+        if num_gpus is None:
+            num_gpus = 0
+    else:
+        merge_cuda = _resolve_merge_cuda(merge_cuda, num_gpus)
+    stage_log("Stage-Init", f"Resolved execution device: {device}")
+    repair_config = getattr(config, "repair", None)
+    if repair_config is not None and repair_config.enabled:
+        if strategy != "serial" or device != "cpu":
+            raise click.ClickException(
+                "repair.enabled currently requires --strategy serial --device cpu."
+            )
+        stage_log(
+            "Stage-Init",
+            "Gated parent-distillation repair enabled for Stage-2 finalists.",
+        )
     if tensor_parallel_size > 1:
         if not vllm:
             raise click.ClickException(
@@ -1169,6 +1339,10 @@ def main(
     # Initialize experiment tracking before baselines so MLflow/W&B covers the full run.
     tracking_config = config.model_dump(mode="json")
     tracking_config["parent_lineage"] = parent_lineage
+    tracking_config["search_mode"] = (
+        "random_search" if random_search is not None else "genetic_algorithm"
+    )
+    tracking_config["random_search_samples"] = random_search
     ray_observer.set_phase("tracking", generation=0, fevals_completed=0)
     stage_log("Stage-Tracking", "Initializing experiment tracker...")
     tracker = None
@@ -1232,6 +1406,7 @@ def main(
         transformers_cache=os.path.join(storage_path, "transformers_cache"),
         lora_merge_cache=os.path.join(storage_path, "lora_merge_cache"),
         cuda=merge_cuda,
+        device=device,
         low_cpu_memory=merge_cuda and not in_memory,
         out_shard_size=1_000_000_000_000,
         trust_remote_code=trust_remote_code,
@@ -1241,6 +1416,8 @@ def main(
         read_to_gpu=merge_cuda and not in_memory,
         copy_tokenizer=True,
         safe_serialization=True,
+        min_free_disk_gb=max_disk_gb_min,
+        reuse_scratch_dir=True,
     )
 
     stage_log("Stage-Init", "Checking source-model base architecture compatibility...")
@@ -1266,6 +1443,7 @@ def main(
             task_search_path,
             trust_remote_code,
             ray_observer=ray_observer,
+            use_ray=strategy != "serial",
         )
         if baseline_csv_path:
             try:
@@ -1360,10 +1538,16 @@ def main(
         )
 
     if strategy == "pool":
+        from mergekit.evo.strategy import ActorPoolEvaluationStrategy
+
         strat_cls = ActorPoolEvaluationStrategy
     elif strategy == "buffered":
+        from mergekit.evo.strategy import BufferedRayEvaluationStrategy
+
         strat_cls = BufferedRayEvaluationStrategy
     elif strategy == "serial":
+        from mergekit.evo.strategy import SerialEvaluationStrategy
+
         strat_cls = SerialEvaluationStrategy
     else:
         raise ValueError(f"Unknown strategy {strategy}")
@@ -1479,6 +1663,10 @@ def main(
     tracker.log_metrics(
         {
             "ga/population_size": ga_params.population_size,
+            "search/random_search": float(1.0 if random_search is not None else 0.0),
+            "search/random_samples": (
+                float(random_search) if random_search is not None else None
+            ),
             "ga/elite_fraction": ga_params.elite_fraction,
             "ga/mutation_rate": ga_params.mutation_rate,
             "ga/mutation_sigma": ga_params.mutation_sigma,
@@ -1506,6 +1694,17 @@ def main(
             ),
             "eval/behavior_min_distinct_ratio": float(
                 config.behavior_min_distinct_ratio
+            ),
+            "repair/enabled": float(
+                1.0
+                if getattr(getattr(config, "repair", None), "enabled", False)
+                else 0.0
+            ),
+            "repair/probe_steps": (
+                float(config.repair.probe_steps) if config.repair else None
+            ),
+            "repair/max_steps": (
+                float(config.repair.max_steps) if config.repair else None
             ),
             "ga/gene_diversity_bonus_weight": (
                 float(getattr(yaml_ga, "gene_diversity_bonus_weight"))
@@ -1753,6 +1952,15 @@ def main(
             candidate_rows.append(
                 {
                     "candidate_index": idx,
+                    "genotype_hash": genotype_exact_hash(
+                        np.asarray(genotype_candidate)
+                    ),
+                    "genotype": json.dumps(
+                        np.asarray(genotype_candidate, dtype=np.float32)
+                        .reshape(-1)
+                        .tolist(),
+                        separators=(",", ":"),
+                    ),
                     "merge_method": candidate_method,
                     "is_novel_solution": novelty["is_novel_solution"],
                     "novelty_class": novelty["novelty_class"],
@@ -1783,6 +1991,17 @@ def main(
                     "archive_novelty_bonus": fitness_components.get(
                         "archive_novelty_bonus"
                     ),
+                    "repair_repaired": (result.get("repair") or {}).get("repaired"),
+                    "repair_probe_slope": (result.get("repair") or {}).get(
+                        "probe_slope"
+                    ),
+                    "repair_steps_used": (result.get("repair") or {}).get("steps_used"),
+                    "repair_initial_loss": (result.get("repair") or {}).get(
+                        "initial_loss"
+                    ),
+                    "repair_final_loss": (result.get("repair") or {}).get("final_loss"),
+                    "repair_pre_score": result.get("repair_pre_score"),
+                    "repair_post_score": result.get("repair_post_score"),
                     "fitness_proxy": result.get("fitness_proxy"),
                     "error_stage": result.get("error_stage"),
                     "error_type": result.get("error_type"),
@@ -2151,8 +2370,51 @@ def main(
         or getattr(config.ga, "rank_objective_weights", None) is not None
         or config.fitness_mode == "weighted_rank"
     )
+    run_signature = hashlib.sha256(
+        json.dumps(
+            {
+                "config": config.model_dump(mode="json"),
+                "ga_params": ga_params.__dict__,
+                "random_seed": random_seed,
+                "strategy": strategy,
+                "device": device,
+                "batch_size": batch_size,
+                "merge_cuda": merge_cuda,
+                "trust_remote_code": trust_remote_code,
+                "vllm": vllm,
+                "tensor_parallel_size": tensor_parallel_size,
+                "num_gpus": num_gpus,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    if resume_state is not None and not use_enhanced:
+        raise click.ClickException(
+            "--resume currently requires an enhanced or multi-method GA configuration."
+        )
+    if (
+        resume_state is not None
+        and resume_state.get("config_signature")
+        and resume_state["config_signature"] != run_signature
+    ):
+        raise click.ClickException(
+            "Checkpoint configuration does not match the requested resumed run."
+        )
 
-    if use_enhanced:
+    if random_search is not None:
+        optimizer = RandomSearchOptimizer(
+            genome=genome,
+            strategy=strat,
+            num_samples=int(random_search),
+            seed=random_seed,
+            population_size=ga_params.population_size,
+            persisted_failed_genotypes=persisted_failed_genotypes,
+            on_population_evaluated=on_pop,
+            on_new_best=on_best,
+            on_generation_start=on_generation_start,
+        )
+    elif use_enhanced:
         # Convert GAParams to EnhancedGAParams for new features
         enhanced_params = EnhancedGAParams()
         for key, value in ga_params.__dict__.items():
@@ -2299,6 +2561,9 @@ def main(
             on_population_evaluated=on_pop,
             on_new_best=on_best,
             on_generation_start=on_generation_start,
+            checkpoint_path=os.path.join(storage_path, GA_STATE_FILENAME),
+            resume_state=resume_state,
+            config_signature=run_signature,
         )
     else:
         # Use traditional optimizer
@@ -2327,7 +2592,8 @@ def main(
     else:
         stage_log("Stage-GA", "No baseline metrics available for this run.")
 
-    stage_log("Stage-GA", "Starting GA optimization loop...")
+    search_label = "random search" if random_search is not None else "GA optimization"
+    stage_log("Stage-GA", f"Starting {search_label} loop...")
     ray_observer.set_phase(
         "ga",
         generation=0,
@@ -2342,6 +2608,26 @@ def main(
     prune_stale_merged_artifacts(storage_path)
     try:
         best_x, best_score = optimizer.run(max_fevals=max_fevals, timeout=timeout)
+    except InsufficientDiskSpaceError as exc:
+        _write_disk_abort(storage_path, exc)
+        ray_observer.set_phase("failed")
+        stage_log("Stage-GA", str(exc), level=logging.ERROR)
+        state_path = os.path.join(storage_path, GA_STATE_FILENAME)
+        if os.path.isfile(state_path):
+            stage_log(
+                "Stage-GA",
+                f"Run stopped cleanly; resume state remains at {state_path}",
+                level=logging.ERROR,
+            )
+        else:
+            stage_log(
+                "Stage-GA",
+                "Run stopped cleanly; this optimizer has no resumable state file.",
+                level=logging.ERROR,
+            )
+        _log_run_artifacts(tracker, storage_path)
+        tracker.finish()
+        raise click.ClickException(str(exc)) from exc
     except KeyboardInterrupt:
         ray_observer.set_phase(
             "failed",
@@ -2352,10 +2638,13 @@ def main(
             ),
             fevals_completed=0,
         )
-        ray.shutdown()
+        try:
+            _require_ray().shutdown()
+        except click.ClickException:
+            pass
         raise
 
-    stage_log("Stage-GA", "Optimization complete.")
+    stage_log("Stage-GA", f"{search_label.capitalize()} complete.")
     stage_log("Stage-GA", f"Best score achieved: {best_score:.4f}")
     stop_details = getattr(optimizer, "last_stop_details", None) or {}
     stop_details_path = _write_stop_details(
@@ -2451,26 +2740,55 @@ def main(
         if save_final_model:
             stage_log("Stage-GA", "Saving final merged model artifacts...")
             final_model_path = os.path.join(storage_path, "final_model")
-            if best_config is not None:
-                run_merge(best_config, final_model_path, merge_options)
-            else:
-                merge_result = merge_model_with_details(
-                    best_x,
-                    genome_pretty,
-                    os.path.join(storage_path, "merged"),
-                    merge_options,
-                )
-                merged_path = merge_result.get("merged_path")
-                if not merged_path:
-                    raise RuntimeError(
-                        merge_result.get(
-                            "error_message", "Failed to materialize layered final model"
-                        )
-                    )
-                if os.path.exists(final_model_path):
+            try:
+                if best_config is not None:
+                    ensure_free_disk(storage_path, merge_options.min_free_disk_gb)
                     shutil.rmtree(final_model_path, ignore_errors=True)
-                shutil.copytree(merged_path, final_model_path)
-                shutil.rmtree(merged_path, ignore_errors=True)
+                    run_merge(best_config, final_model_path, merge_options)
+                else:
+                    merge_result = merge_model_with_details(
+                        best_x,
+                        genome_pretty,
+                        os.path.join(storage_path, "merged"),
+                        merge_options,
+                    )
+                    merged_path = merge_result.get("merged_path")
+                    if not merged_path:
+                        raise RuntimeError(
+                            merge_result.get(
+                                "error_message",
+                                "Failed to materialize layered final model",
+                            )
+                        )
+                    if os.path.exists(final_model_path):
+                        shutil.rmtree(final_model_path, ignore_errors=True)
+                    shutil.copytree(merged_path, final_model_path)
+                    shutil.rmtree(merged_path, ignore_errors=True)
+            except InsufficientDiskSpaceError as exc:
+                _write_disk_abort(storage_path, exc)
+                ray_observer.set_phase("failed")
+                stage_log("Stage-GA", str(exc), level=logging.ERROR)
+                _log_run_artifacts(tracker, storage_path)
+                tracker.finish()
+                raise click.ClickException(str(exc)) from exc
+
+            if repair_config is not None and repair_config.enabled:
+                stage_log("Stage-GA", "Applying gated repair to exported winner...")
+                final_repair = strat.repair_checkpoint(
+                    final_model_path,
+                    best_x,
+                    config,
+                )
+                atomic_write_json(
+                    os.path.join(storage_path, "final_repair.json"),
+                    final_repair,
+                )
+                stage_log(
+                    "Stage-GA",
+                    "Export repair outcome: "
+                    f"repaired={final_repair.get('repaired')} "
+                    f"probe_slope={final_repair.get('probe_slope')}",
+                )
 
             ray_observer.set_phase(
                 "final_compare",
@@ -2640,6 +2958,7 @@ def run_baseline_evaluations(
     task_search_path: List[str],
     trust_remote_code: bool,
     ray_observer: Optional[RayRunObserver] = None,
+    use_ray: bool = True,
 ) -> Optional[str]:
     """Execute baseline evaluations for all models defined in the genome."""
     stage_log("Stage-Baseline", "Starting baseline evaluation phase...")
@@ -2692,13 +3011,15 @@ def run_baseline_evaluations(
         required_tasks=required_task_names,
     )
 
-    _init_ray_for_baselines()
-
     use_cuda = (merge_cuda or (num_gpus or 0) > 0) and (num_gpus or 0) > 0
     device = "cuda" if use_cuda else "cpu"
     stage_log(
         "Stage-Baseline",
-        f"Using Ray {'GPU' if use_cuda else 'CPU'} workers for baseline evaluations.",
+        (
+            f"Using Ray {'GPU' if use_cuda else 'CPU'} workers for baseline evaluations."
+            if use_ray
+            else "Using local CPU execution for serial baseline evaluations."
+        ),
     )
 
     metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
@@ -2706,7 +3027,6 @@ def run_baseline_evaluations(
     successes = 0
     failures = 0
 
-    @ray.remote(num_cpus=1, num_gpus=1.0)
     def _baseline_eval_gpu(
         model_name: str,
         tasks: List[TaskConfiguration],
@@ -2755,7 +3075,6 @@ def run_baseline_evaluations(
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    @ray.remote(num_cpus=1)
     def _baseline_eval_cpu(
         model_name: str,
         tasks: List[TaskConfiguration],
@@ -2804,9 +3123,10 @@ def run_baseline_evaluations(
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    baseline_remote = _baseline_eval_gpu if use_cuda else _baseline_eval_cpu
-    baseline_refs = {
-        str(model_ref): baseline_remote.remote(
+    baseline_impl = _baseline_eval_gpu if use_cuda else _baseline_eval_cpu
+
+    def baseline_args(model_ref: ModelReference) -> Tuple[Any, ...]:
+        return (
             str(model_ref),
             config.tasks,
             config.num_fewshot,
@@ -2818,8 +3138,20 @@ def run_baseline_evaluations(
             config.fitness_mode,
             config.task_mix_profile,
         )
-        for model_ref in models
-    }
+
+    ray = None
+    baseline_refs: Dict[str, Any] = {}
+    if use_ray:
+        _init_ray_for_baselines()
+        ray = _require_ray()
+        baseline_remote = ray.remote(
+            num_cpus=1,
+            num_gpus=1.0 if use_cuda else 0,
+        )(baseline_impl)
+        baseline_refs = {
+            str(model_ref): baseline_remote.remote(*baseline_args(model_ref))
+            for model_ref in models
+        }
 
     for model_index, model_ref in enumerate(models, start=1):
         model_name = str(model_ref)
@@ -2833,7 +3165,11 @@ def run_baseline_evaluations(
 
         stage_log("Stage-Baseline", f"Evaluating {model_name}...")
         try:
-            result = ray.get(baseline_refs[model_name])
+            result = (
+                ray.get(baseline_refs[model_name])
+                if ray is not None
+                else baseline_impl(*baseline_args(model_ref))
+            )
         except (
             Exception
         ) as exc:  # pragma: no cover - remote environment depends on cluster state
