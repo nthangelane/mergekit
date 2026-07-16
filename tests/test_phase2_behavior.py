@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from mergekit.evo.config import TaskConfiguration
@@ -34,6 +36,46 @@ def test_structured_phase1_fitness_uses_task_language_and_stability():
     assert result["fitness_components"]["behavior_diversity_score"] == pytest.approx(
         0.6
     )
+    assert result["fitness_metadata"] == {
+        "version": "v1",
+        "lower_is_better_transform": "legacy_reciprocal",
+    }
+
+
+def test_structured_phase1_v2_uses_log_reciprocal_language_quality():
+    result = score_evaluation_payload(
+        {
+            "results": {
+                "sciq": {"acc,none": 0.5},
+                "wikitext": {"byte_perplexity,none": 50.0},
+            },
+            "higher_is_better": {
+                "sciq": {"acc,none": True},
+                "wikitext": {"byte_perplexity,none": False},
+            },
+        },
+        [
+            TaskConfiguration(name="sciq", weight=0.6, metric="acc,none"),
+            TaskConfiguration(
+                name="wikitext", weight=0.4, metric="byte_perplexity,none"
+            ),
+        ],
+        fitness_mode="structured_phase1_tiny",
+        fitness_version="v2",
+        lower_is_better_transform="log_reciprocal",
+        task_mix_profile="pythia70m_phase1",
+    )
+
+    expected_language_quality = 1.0 / (1.0 + math.log1p(50.0))
+    expected_score = 0.55 * 0.5 + 0.35 * expected_language_quality + 0.10
+    assert result["fitness_components"]["language_quality"] == pytest.approx(
+        expected_language_quality
+    )
+    assert result["score"] == pytest.approx(expected_score)
+    assert result["fitness_metadata"] == {
+        "version": "v2",
+        "lower_is_better_transform": "log_reciprocal",
+    }
 
 
 def test_evaluate_model_cpu_rejects_degenerate_behavior_probe(monkeypatch, tmp_path):

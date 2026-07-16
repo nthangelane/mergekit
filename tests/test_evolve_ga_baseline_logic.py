@@ -90,6 +90,30 @@ def test_reusable_baseline_csv_path_rejects_missing_scores(tmp_path):
     assert _reusable_baseline_csv_path(str(csv_path), ["model-a", "model-b"]) is None
 
 
+def test_reusable_baseline_csv_path_rejects_different_fitness_definition(tmp_path):
+    csv_path = tmp_path / "baseline_results.csv"
+    pandas.DataFrame(
+        [
+            {
+                "model": "model-a",
+                "weighted_score": 0.5,
+                "fitness_version": "v1",
+                "lower_is_better_transform": "legacy_reciprocal",
+            }
+        ]
+    ).to_csv(csv_path, index=False)
+
+    assert (
+        _reusable_baseline_csv_path(
+            str(csv_path),
+            ["model-a"],
+            expected_fitness_version="v2",
+            expected_lower_is_better_transform="log_reciprocal",
+        )
+        is None
+    )
+
+
 def test_init_ray_for_baselines_falls_back_to_local_runtime(monkeypatch):
     init_calls = []
 

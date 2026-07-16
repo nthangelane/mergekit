@@ -20,10 +20,17 @@ genome:
   enable_method_evolution: true
   enable_model_selection: true
 
+optimizer: enhanced
+fitness:
+  version: v2
+
 tasks:
   - name: wikitext
     weight: 1.0
     metric: byte_perplexity,none
+
+fitness_mode: structured_phase1_tiny
+task_mix_profile: pythia70m_phase1
 
 two_stage: true
 stage1_tasks:

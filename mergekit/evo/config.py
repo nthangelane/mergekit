@@ -165,6 +165,43 @@ class TaskConfiguration(BaseModel, frozen=True):
         return value
 
 
+class FitnessConfiguration(BaseModel, frozen=True):
+    """Versioned definition for normalizing lower-is-better metrics."""
+
+    version: Literal["v1", "v2"] = "v1"
+    lower_is_better_transform: Literal["legacy_reciprocal", "log_reciprocal"] = (
+        "legacy_reciprocal"
+    )
+
+    @model_validator(mode="before")
+    def resolve_versioned_transform(cls, value):
+        if value is None:
+            value = {}
+        if isinstance(value, cls):
+            return value
+
+        payload = dict(value)
+        version = payload.get("version", "v1")
+        expected_transform = {
+            "v1": "legacy_reciprocal",
+            "v2": "log_reciprocal",
+        }.get(version)
+        if expected_transform is None:
+            return payload
+
+        configured_transform = payload.get("lower_is_better_transform")
+        if (
+            configured_transform is not None
+            and configured_transform != expected_transform
+        ):
+            raise ValueError(
+                f"fitness.version {version!r} requires "
+                f"lower_is_better_transform={expected_transform!r}"
+            )
+        payload["lower_is_better_transform"] = expected_transform
+        return payload
+
+
 class StopConfiguration(BaseModel, frozen=True):
     max_fevals: Optional[int] = None
     max_time_seconds: Optional[float] = None
@@ -264,6 +301,8 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     fitness_mode: Literal["weighted_sum", "structured_phase1_tiny", "weighted_rank"] = (
         "weighted_sum"
     )
+    fitness: FitnessConfiguration = FitnessConfiguration()
+    optimizer: Literal["auto", "standard", "enhanced"] = "auto"
     task_mix_profile: Optional[str] = None
     behavior_prompts: Optional[List[str]] = None
     behavior_probe_max_new_tokens: int = 24

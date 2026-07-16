@@ -26,6 +26,13 @@ scripts/preflight_evo_aws.sh
 The required checks, artifacts, and one-worker promotion rule are documented in
 [`PRE_AWS_RUN_GATE.md`](PRE_AWS_RUN_GATE.md).
 
+Fitness values are versioned. Historical configurations default to `v1`; future
+local and AWS campaign presets explicitly use `v2`. The formulas and comparison
+rules are documented in [`FITNESS_DEFINITIONS.md`](FITNESS_DEFINITIONS.md).
+
+The runner module boundaries and explicit optimizer policy are described in
+[`docs/research/ga/EVO_PIPELINE_ARCHITECTURE.md`](../../docs/research/ga/EVO_PIPELINE_ARCHITECTURE.md).
+
 ## Status Tracking
 
 Use the tracker script from the repo root:

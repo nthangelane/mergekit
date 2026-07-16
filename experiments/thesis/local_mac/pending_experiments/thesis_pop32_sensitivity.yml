@@ -27,6 +27,10 @@ genome:
   enable_method_evolution: true
   enable_model_selection: true
 
+optimizer: enhanced
+fitness:
+  version: v2
+
 tasks:
   - name: wikitext
     weight: 0.40

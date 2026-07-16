@@ -868,6 +868,12 @@ def _evaluate_genotype_serial_cpu_impl(
         batch_size=batch_size,
         task_manager=task_manager,
         fitness_mode=getattr(config, "fitness_mode", "weighted_sum"),
+        fitness_version=getattr(getattr(config, "fitness", None), "version", "v1"),
+        lower_is_better_transform=getattr(
+            getattr(config, "fitness", None),
+            "lower_is_better_transform",
+            "legacy_reciprocal",
+        ),
         task_mix_profile=getattr(config, "task_mix_profile", None),
         behavior_prompts=getattr(config, "behavior_prompts", None),
         behavior_probe_max_new_tokens=getattr(

@@ -484,6 +484,60 @@ def test_evol_merge_configuration_accepts_stop_policy():
     assert config.stop.stagnation_patience_generations == 8
 
 
+def test_evol_config_defaults_existing_runs_to_v1_fitness():
+    config = EvolMergeConfiguration.model_validate(
+        {
+            "genome": {
+                "type": "multi_method",
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+            },
+            "tasks": ["sciq"],
+        }
+    )
+
+    assert config.fitness.version == "v1"
+    assert config.fitness.lower_is_better_transform == "legacy_reciprocal"
+
+
+def test_evol_config_resolves_v2_fitness_transform():
+    config = EvolMergeConfiguration.model_validate(
+        {
+            "genome": {
+                "type": "multi_method",
+                "models": ["author/model-a", "author/model-b"],
+                "allowed_methods": ["linear"],
+                "max_models_per_layer": 2,
+            },
+            "tasks": ["sciq"],
+            "fitness": {"version": "v2"},
+        }
+    )
+
+    assert config.fitness.version == "v2"
+    assert config.fitness.lower_is_better_transform == "log_reciprocal"
+
+
+def test_evol_config_rejects_mislabeled_fitness_transform():
+    with pytest.raises(ValueError, match="fitness.version 'v2' requires"):
+        EvolMergeConfiguration.model_validate(
+            {
+                "genome": {
+                    "type": "multi_method",
+                    "models": ["author/model-a", "author/model-b"],
+                    "allowed_methods": ["linear"],
+                    "max_models_per_layer": 2,
+                },
+                "tasks": ["sciq"],
+                "fitness": {
+                    "version": "v2",
+                    "lower_is_better_transform": "legacy_reciprocal",
+                },
+            }
+        )
+
+
 def test_m1_micro_example_uses_layer_blocks(monkeypatch):
     class DummyConfig:
         def __init__(self):

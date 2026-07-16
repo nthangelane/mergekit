@@ -155,9 +155,16 @@ def _normalize_higher_is_better_metric(value: float) -> float:
     return value / (1.0 + abs(value))
 
 
-def _normalize_lower_is_better_metric(value: float) -> float:
+def _normalize_lower_is_better_metric(
+    value: float,
+    transform: str = "legacy_reciprocal",
+) -> float:
     safe_value = max(0.0, float(value))
-    return 1.0 / (1.0 + safe_value)
+    if transform == "legacy_reciprocal":
+        return 1.0 / (1.0 + safe_value)
+    if transform == "log_reciprocal":
+        return 1.0 / (1.0 + math.log1p(safe_value))
+    raise ValueError(f"Unknown lower-is-better transform: {transform!r}")
 
 
 def _weighted_average(pairs: List[tuple[float, float]]) -> float:
@@ -221,6 +228,8 @@ def score_evaluation_payload(
     tasks: List[TaskConfiguration],
     *,
     fitness_mode: str = "weighted_sum",
+    fitness_version: str = "v1",
+    lower_is_better_transform: str = "legacy_reciprocal",
     task_mix_profile: Optional[str] = None,
     behavior_probe: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -259,7 +268,13 @@ def score_evaluation_payload(
             )
         else:
             language_pairs.append(
-                (float(task.weight), _normalize_lower_is_better_metric(metric_value))
+                (
+                    float(task.weight),
+                    _normalize_lower_is_better_metric(
+                        metric_value,
+                        transform=lower_is_better_transform,
+                    ),
+                )
             )
 
     task_score = _weighted_average(task_pairs)
@@ -280,6 +295,10 @@ def score_evaluation_payload(
             else 0.0
         ),
     }
+    fitness_metadata = {
+        "version": fitness_version,
+        "lower_is_better_transform": lower_is_better_transform,
+    }
 
     if fitness_mode != "structured_phase1_tiny":
         return {
@@ -287,6 +306,7 @@ def score_evaluation_payload(
             "results": task_results_map,
             "fitness_components": dict(objective_payload),
             "fitness_objectives": dict(objective_payload),
+            "fitness_metadata": fitness_metadata,
         }
 
     profile = PHASE1_TASK_MIX_PROFILES.get(task_mix_profile or "tiny_local_default")
@@ -296,6 +316,7 @@ def score_evaluation_payload(
             "results": task_results_map,
             "fitness_components": dict(objective_payload),
             "fitness_objectives": dict(objective_payload),
+            "fitness_metadata": fitness_metadata,
         }
 
     structured_score = (
@@ -311,6 +332,7 @@ def score_evaluation_payload(
             "diversity_bonus": 0.0,
         },
         "fitness_objectives": dict(objective_payload),
+        "fitness_metadata": fitness_metadata,
     }
 
 
@@ -654,6 +676,8 @@ def _eval_model(
     model_args: Optional[Dict[str, Any]] = None,
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     fitness_mode: str = "weighted_sum",
+    fitness_version: str = "v1",
+    lower_is_better_transform: str = "legacy_reciprocal",
     task_mix_profile: Optional[str] = None,
     behavior_probe: Optional[Dict[str, Any]] = None,
     **kwargs,
@@ -673,6 +697,8 @@ def _eval_model(
         results,
         tasks,
         fitness_mode=fitness_mode,
+        fitness_version=fitness_version,
+        lower_is_better_transform=lower_is_better_transform,
         task_mix_profile=task_mix_profile,
         behavior_probe=behavior_probe,
     )
@@ -689,6 +715,8 @@ def evaluate_model(
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     model_kwargs: Optional[Dict[str, Any]] = None,
     fitness_mode: str = "weighted_sum",
+    fitness_version: str = "v1",
+    lower_is_better_transform: str = "legacy_reciprocal",
     task_mix_profile: Optional[str] = None,
     behavior_prompts: Optional[List[str]] = None,
     behavior_probe_max_new_tokens: int = 24,
@@ -768,6 +796,8 @@ def evaluate_model(
                     batch_size=batch_size,
                     task_manager=task_manager,
                     fitness_mode=fitness_mode,
+                    fitness_version=fitness_version,
+                    lower_is_better_transform=lower_is_better_transform,
                     task_mix_profile=task_mix_profile,
                     behavior_probe=behavior_probe,
                     bootstrap_iters=0,
@@ -791,6 +821,8 @@ def evaluate_model(
                         batch_size=batch_size,
                         task_manager=task_manager,
                         fitness_mode=fitness_mode,
+                        fitness_version=fitness_version,
+                        lower_is_better_transform=lower_is_better_transform,
                         task_mix_profile=task_mix_profile,
                         behavior_probe=behavior_probe,
                         bootstrap_iters=0,
@@ -825,6 +857,8 @@ def evaluate_model_cpu(
     task_manager: Optional[lm_eval.tasks.TaskManager] = None,
     model_kwargs: Optional[Dict[str, Any]] = None,
     fitness_mode: str = "weighted_sum",
+    fitness_version: str = "v1",
+    lower_is_better_transform: str = "legacy_reciprocal",
     task_mix_profile: Optional[str] = None,
     behavior_prompts: Optional[List[str]] = None,
     behavior_probe_max_new_tokens: int = 24,
@@ -889,6 +923,8 @@ def evaluate_model_cpu(
                     batch_size=batch_size,
                     task_manager=task_manager,
                     fitness_mode=fitness_mode,
+                    fitness_version=fitness_version,
+                    lower_is_better_transform=lower_is_better_transform,
                     task_mix_profile=task_mix_profile,
                     behavior_probe=behavior_probe,
                     bootstrap_iters=0,
@@ -912,6 +948,8 @@ def evaluate_model_cpu(
                         batch_size=batch_size,
                         task_manager=task_manager,
                         fitness_mode=fitness_mode,
+                        fitness_version=fitness_version,
+                        lower_is_better_transform=lower_is_better_transform,
                         task_mix_profile=task_mix_profile,
                         behavior_probe=behavior_probe,
                         bootstrap_iters=0,

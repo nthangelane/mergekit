@@ -24,10 +24,10 @@ import shutil
 import socket
 import subprocess
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -50,23 +50,45 @@ except ImportError:
 
 from mergekit.common import ModelReference, call_with_dtype
 from mergekit.config import MergeConfiguration
+from mergekit.evo.baselines import (
+    best_weighted_score_from_frame as _best_weighted_score_from_frame,
+)
+from mergekit.evo.baselines import collect_task_metrics as _collect_task_metrics
+from mergekit.evo.baselines import configured_task_names as _configured_task_names
+from mergekit.evo.baselines import (
+    reusable_baseline_csv_path as _reusable_baseline_csv_path,
+)
+from mergekit.evo.baselines import run_baseline_evaluations as _run_baseline_evaluations
+from mergekit.evo.baselines import unique_model_refs as _unique_model_refs
 from mergekit.evo.cache_utils import genotype_exact_hash
 from mergekit.evo.checkpoint import GA_STATE_FILENAME, atomic_write_json, load_ga_state
-from mergekit.evo.config import (
-    EvolMergeConfiguration,
-    ModelGenomeDefinition,
-    TaskConfiguration,
-    check_for_naughty_config,
-)
-from mergekit.evo.enhanced_ga import EnhancedGAOptimizer, EnhancedGAParams
-from mergekit.evo.ga import GAOptimizer, GAParams
+from mergekit.evo.config import EvolMergeConfiguration, check_for_naughty_config
+from mergekit.evo.enhanced_ga import EnhancedGAOptimizer
+from mergekit.evo.fitness import ensure_fitness_definition
+from mergekit.evo.ga import GAOptimizer
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import (
     MultiMethodGenome,
     MultiMethodGenomeDefinition,
 )
+from mergekit.evo.optimizer_factory import (
+    build_enhanced_ga_params,
+    resolve_optimizer_kind,
+)
+from mergekit.evo.orchestrator import (
+    build_genome,
+    build_run_signature,
+)
+from mergekit.evo.orchestrator import resolve_device as _resolve_device
+from mergekit.evo.orchestrator import (
+    resolve_evaluation_strategy,
+    resolve_ga_params,
+)
+from mergekit.evo.orchestrator import resolve_merge_cuda as _resolve_merge_cuda
+from mergekit.evo.orchestrator import (
+    resolve_stop_configuration as _resolve_stop_configuration,
+)
 from mergekit.evo.provenance import (
-    PARENT_LINEAGE_FILENAME,
     annotate_lineage_risk,
     inspect_parent_lineage,
     lineage_policy_failed,
@@ -74,6 +96,30 @@ from mergekit.evo.provenance import (
 )
 from mergekit.evo.random_search import RandomSearchOptimizer
 from mergekit.evo.ray_observability import RayRunObserver, default_run_label
+from mergekit.evo.reporting import (
+    classify_solution_novelty as _classify_solution_novelty,
+)
+from mergekit.evo.reporting import (
+    collect_merge_method_outcomes as _collect_merge_method_outcomes,
+)
+from mergekit.evo.reporting import configured_merge_methods as _configured_merge_methods
+from mergekit.evo.reporting import (
+    evaluate_and_write_final_comparison as _evaluate_and_write_final_comparison,
+)
+from mergekit.evo.reporting import log_run_artifacts as _log_run_artifacts
+from mergekit.evo.reporting import (
+    meets_improvement_thresholds as _meets_improvement_thresholds,
+)
+from mergekit.evo.reporting import (
+    sanitize_metric_key_fragment as _sanitize_metric_key_fragment,
+)
+from mergekit.evo.reporting import score_improvement as _score_improvement
+from mergekit.evo.reporting import write_candidate_history as _write_candidate_history
+from mergekit.evo.reporting import write_ga_outputs as _write_ga_outputs
+from mergekit.evo.reporting import (
+    write_merge_method_history as _write_merge_method_history,
+)
+from mergekit.evo.reporting import write_stop_details as _write_stop_details
 from mergekit.evo.resources import InsufficientDiskSpaceError, ensure_free_disk
 from mergekit.evo.tracking import create_tracker
 from mergekit.merge import run_merge
@@ -94,12 +140,6 @@ def _require_ray():
     return ray
 
 
-def _eval_model(*args, **kwargs):
-    from mergekit.evo.helpers import _eval_model as implementation
-
-    return implementation(*args, **kwargs)
-
-
 def merge_model_with_details(*args, **kwargs):
     from mergekit.evo.helpers import merge_model_with_details as implementation
 
@@ -112,329 +152,9 @@ def validate_input_model_architecture(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def create_task_manager(*args, **kwargs):
-    from mergekit.evo.task_utils import create_task_manager as implementation
-
-    return implementation(*args, **kwargs)
-
-
 def stage_log(stage: str, message: str, *, level: int = logging.INFO) -> None:
     """Emit a structured log message for high-level run stages."""
     LOGGER.log(level, "[%s] %s", stage, message)
-
-
-def _best_weighted_score_from_frame(frame: "pandas.DataFrame") -> Optional[float]:
-    """Return the best normalized score from a baseline/comparison table."""
-    if "weighted_score" not in frame.columns:
-        return None
-
-    numeric_scores = pandas.to_numeric(
-        frame["weighted_score"], errors="coerce"
-    ).dropna()
-    if numeric_scores.empty:
-        return None
-    return float(numeric_scores.max())
-
-
-def _reusable_baseline_csv_path(
-    baseline_csv_path: str,
-    expected_models: List[str],
-) -> Optional[str]:
-    if not os.path.exists(baseline_csv_path):
-        return None
-
-    try:
-        frame = pandas.read_csv(baseline_csv_path)
-    except Exception as exc:
-        stage_log(
-            "Stage-Baseline",
-            f"Existing baseline_results.csv could not be read; rerunning baselines: {exc}",
-            level=logging.WARNING,
-        )
-        return None
-
-    if "model" not in frame.columns or "weighted_score" not in frame.columns:
-        return None
-
-    reusable_models = set(
-        frame.loc[
-            pandas.to_numeric(frame["weighted_score"], errors="coerce").notna(), "model"
-        ]
-        .dropna()
-        .astype(str)
-    )
-    if not set(expected_models).issubset(reusable_models):
-        return None
-
-    return baseline_csv_path
-
-
-def _unique_model_refs(model_refs: List[ModelReference]) -> List[ModelReference]:
-    unique: List[ModelReference] = []
-    seen: set[str] = set()
-    for model_ref in model_refs:
-        model_name = str(model_ref)
-        if model_name in seen:
-            continue
-        seen.add(model_name)
-        unique.append(model_ref)
-    return unique
-
-
-def _sanitize_metric_key_fragment(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", str(value)).strip("_").lower()
-    return cleaned or "unknown"
-
-
-def _configured_merge_methods(config: EvolMergeConfiguration) -> List[str]:
-    genome_cfg = config.genome
-    if hasattr(genome_cfg, "allowed_methods"):
-        return [str(method) for method in getattr(genome_cfg, "allowed_methods")]
-    merge_method = getattr(genome_cfg, "merge_method", None)
-    return [str(merge_method)] if merge_method else []
-
-
-def _configured_task_names(config: EvolMergeConfiguration) -> List[str]:
-    task_names: List[str] = []
-    for task in config.tasks:
-        if task.name not in task_names:
-            task_names.append(task.name)
-    for task in getattr(config, "stage1_tasks", None) or []:
-        if task.name not in task_names:
-            task_names.append(task.name)
-    return task_names
-
-
-def _collect_merge_method_outcomes(
-    genotype_iterable: List[np.ndarray],
-    results: List[dict],
-    genome: Union[ModelGenome, MultiMethodGenome],
-    configured_methods: List[str],
-) -> Dict[str, Any]:
-    method_counter: Counter[str] = Counter()
-    method_success_counter: Counter[str] = Counter()
-    method_failure_counter: Counter[str] = Counter()
-    method_score_values: Dict[str, List[float]] = defaultdict(list)
-    all_methods = set(str(method) for method in configured_methods)
-
-    for genotype_candidate, result in zip(genotype_iterable, results):
-        try:
-            if hasattr(genome, "method_label_for_genotype"):
-                method_name = str(genome.method_label_for_genotype(genotype_candidate))
-            else:
-                cfg = (
-                    genome.genotype_to_merge_config(genotype_candidate)
-                    if hasattr(genome, "genotype_to_merge_config")
-                    else genome.genotype_merge_config(genotype_candidate)
-                )
-                method_name = str(getattr(cfg, "merge_method", None) or "unknown")
-        except Exception:  # pragma: no cover - diagnostic path only
-            logging.debug(
-                "Unable to decode genotype for merge-method outcome stats",
-                exc_info=True,
-            )
-            method_name = "decode_error"
-
-        all_methods.add(method_name)
-        method_counter[method_name] += 1
-        score = result.get("score")
-        if score is None:
-            method_failure_counter[method_name] += 1
-            continue
-
-        score_value = float(score)
-        method_success_counter[method_name] += 1
-        method_score_values[method_name].append(score_value)
-
-    metrics: Dict[str, float] = {}
-    history_rows: List[Dict[str, Union[str, float, int]]] = []
-    for method_name in sorted(all_methods):
-        total = int(method_counter.get(method_name, 0))
-        successes = int(method_success_counter.get(method_name, 0))
-        failures = int(method_failure_counter.get(method_name, 0))
-        success_rate = float(successes / total) if total else 0.0
-        metric_key = _sanitize_metric_key_fragment(method_name)
-        metrics[f"merge_method/{metric_key}/count"] = float(total)
-        metrics[f"merge_method/{metric_key}/success_count"] = float(successes)
-        metrics[f"merge_method/{metric_key}/failure_count"] = float(failures)
-        metrics[f"merge_method/{metric_key}/success_rate"] = success_rate
-
-        score_values = method_score_values.get(method_name, [])
-        mean_score = None
-        best_score = None
-        if score_values:
-            mean_score = float(sum(score_values) / len(score_values))
-            best_score = float(max(score_values))
-            metrics[f"merge_method/{metric_key}/mean_score"] = mean_score
-            metrics[f"merge_method/{metric_key}/best_score"] = best_score
-
-        history_rows.append(
-            {
-                "merge_method": method_name,
-                "count": total,
-                "success_count": successes,
-                "failure_count": failures,
-                "success_rate": success_rate,
-                "mean_score": mean_score,
-                "best_score": best_score,
-            }
-        )
-
-    return {
-        "method_counts": method_counter,
-        "method_success_counts": method_success_counter,
-        "method_failure_counts": method_failure_counter,
-        "metrics": metrics,
-        "history_rows": history_rows,
-    }
-
-
-def _classify_solution_novelty(
-    method_name: str,
-    genotype_candidate: Optional[np.ndarray] = None,
-    genome: Optional[Union[ModelGenome, MultiMethodGenome]] = None,
-) -> Dict[str, Any]:
-    """Classify whether a candidate should count as a new merge solution."""
-    normalized_method = str(method_name or "unknown")
-    if normalized_method == "passthrough":
-        return {
-            "is_novel_solution": False,
-            "novelty_class": "baseline_control",
-            "novelty_reason": "passthrough preserves one parent and is not a new merge",
-        }
-    if normalized_method in {"decode_error", "unknown"}:
-        return {
-            "is_novel_solution": False,
-            "novelty_class": "unknown",
-            "novelty_reason": "candidate method could not be decoded",
-        }
-
-    if genotype_candidate is None or genome is None:
-        return {
-            "is_novel_solution": True,
-            "novelty_class": "candidate_merge",
-            "novelty_reason": "non-passthrough merge method",
-        }
-
-    if not hasattr(genome, "genotype_to_param_arrays"):
-        return {
-            "is_novel_solution": True,
-            "novelty_class": "candidate_merge",
-            "novelty_reason": "non-passthrough merge method",
-        }
-
-    try:
-        params = genome.genotype_to_param_arrays(genotype_candidate)
-    except Exception:  # pragma: no cover - diagnostic path only
-        logging.debug("Unable to decode genotype novelty details", exc_info=True)
-        return {
-            "is_novel_solution": True,
-            "novelty_class": "candidate_merge",
-            "novelty_reason": "non-passthrough merge method",
-        }
-
-    methods = [str(method) for method in params.get("merge_method", [])]
-    if methods and all(method == "passthrough" for method in methods):
-        return {
-            "is_novel_solution": False,
-            "novelty_class": "baseline_control",
-            "novelty_reason": "all layer groups are passthrough",
-        }
-
-    selection_columns = [
-        key
-        for key in params.keys()
-        if key.startswith("model_") and key.endswith("_selection")
-    ]
-    min_selected_sources = None
-    for row_idx, layer_method in enumerate(methods):
-        if layer_method == "passthrough":
-            continue
-        selected = 0
-        for column in selection_columns:
-            values = params.get(column) or []
-            if row_idx < len(values):
-                try:
-                    if float(values[row_idx] or 0.0) > 1e-6:
-                        selected += 1
-                except (TypeError, ValueError):
-                    continue
-        min_selected_sources = (
-            selected
-            if min_selected_sources is None
-            else min(min_selected_sources, selected)
-        )
-
-    if min_selected_sources is not None and min_selected_sources < 2:
-        return {
-            "is_novel_solution": False,
-            "novelty_class": "degenerate_merge",
-            "novelty_reason": "non-passthrough layer selects fewer than two sources",
-        }
-
-    return {
-        "is_novel_solution": True,
-        "novelty_class": "candidate_merge",
-        "novelty_reason": "uses a non-passthrough merge over multiple sources",
-    }
-
-
-def _write_merge_method_history(
-    storage_path: str,
-    generation: int,
-    fevals: int,
-    rows: List[Dict[str, Union[str, float, int]]],
-) -> None:
-    history_path = os.path.join(storage_path, "ga_method_history.csv")
-    file_exists = os.path.exists(history_path)
-    base_fields = ["generation", "fevals"]
-    dynamic_fields: List[str] = []
-    for row in rows:
-        for key in row.keys():
-            if key not in dynamic_fields:
-                dynamic_fields.append(key)
-    with open(history_path, "a", encoding="utf-8", newline="") as history_file:
-        fieldnames = base_fields + dynamic_fields
-        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "generation": generation,
-                    "fevals": fevals,
-                    **row,
-                }
-            )
-
-
-def _write_candidate_history(
-    storage_path: str,
-    generation: int,
-    fevals: int,
-    rows: List[Dict[str, Any]],
-) -> None:
-    history_path = os.path.join(storage_path, "ga_candidate_history.csv")
-    file_exists = os.path.exists(history_path)
-    base_fields = ["generation", "fevals"]
-    dynamic_fields: List[str] = []
-    for row in rows:
-        for key in row.keys():
-            if key not in dynamic_fields:
-                dynamic_fields.append(key)
-    with open(history_path, "a", encoding="utf-8", newline="") as history_file:
-        fieldnames = base_fields + dynamic_fields
-        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "generation": generation,
-                    "fevals": fevals,
-                    **row,
-                }
-            )
 
 
 def _write_mlflow_run_info(
@@ -604,142 +324,6 @@ def _start_mlflow_ui_if_needed(
         return None
 
 
-def _log_run_artifacts(tracker, storage_path: str) -> None:
-    artifacts = {
-        "ga_history": "ga_history.csv",
-        "ga_method_history": "ga_method_history.csv",
-        "ga_summary": "ga_summary.txt",
-        "ga_stop_details": "ga_stop_details.json",
-        "ga_history_plot": "ga_history_plot.png",
-        "baseline_results": "baseline_results.csv",
-        "failed_genotypes": "failed_genotypes.csv",
-        "failed_genotype_blacklist": FAILED_BLACKLIST_FILENAME,
-        "final_comparison": "ga_final_comparison.csv",
-        "final_comparison_plot": "ga_final_comparison.png",
-        "mlflow_run_info": "mlflow_run_info.md",
-        "mlflow_ui_log": "mlflow_ui.log",
-        "ray_observability": "ray_observability.json",
-        "parent_lineage": PARENT_LINEAGE_FILENAME,
-        "ga_state": GA_STATE_FILENAME,
-        "run_abort": "run_abort.json",
-        "final_repair": "final_repair.json",
-    }
-    for artifact_name, file_name in artifacts.items():
-        file_path = os.path.join(storage_path, file_name)
-        if os.path.exists(file_path):
-            tracker.log_artifact(file_path, artifact_name)
-
-
-def _score_improvement(
-    current_score: float,
-    baseline_score: float,
-) -> Tuple[float, Optional[float]]:
-    """Return absolute and percentage improvement over a baseline score.
-
-    Scores are already normalized so that larger is always better. Percentage
-    improvement is therefore measured against the baseline magnitude, not the
-    raw baseline sign, which keeps loss-derived negative scores intuitive.
-    """
-    delta = current_score - baseline_score
-    baseline_magnitude = abs(float(baseline_score))
-    if baseline_magnitude == 0.0:
-        return delta, None
-    return delta, (delta / baseline_magnitude) * 100.0
-
-
-def _meets_improvement_thresholds(
-    delta: float,
-    pct: Optional[float],
-    min_abs: float,
-    min_pct: float,
-) -> bool:
-    if delta < min_abs:
-        return False
-    if min_pct <= 0.0:
-        return True
-    if pct is None:
-        return False
-    return pct >= min_pct
-
-
-def _resolve_stop_configuration(
-    config: EvolMergeConfiguration,
-    *,
-    max_fevals_cli: Optional[int],
-    timeout_cli: Optional[float],
-) -> Dict[str, Any]:
-    stop_cfg = getattr(config, "stop", None)
-    resolved_max_fevals = (
-        int(max_fevals_cli)
-        if max_fevals_cli is not None
-        else (
-            int(stop_cfg.max_fevals)
-            if stop_cfg is not None and stop_cfg.max_fevals is not None
-            else 100
-        )
-    )
-    resolved_timeout = (
-        float(timeout_cli)
-        if timeout_cli is not None
-        else (
-            float(stop_cfg.max_time_seconds)
-            if stop_cfg is not None and stop_cfg.max_time_seconds is not None
-            else None
-        )
-    )
-    return {
-        "max_fevals": resolved_max_fevals,
-        "timeout_seconds": resolved_timeout,
-        "target_improvement_abs": (
-            float(stop_cfg.target_improvement_abs)
-            if stop_cfg is not None and stop_cfg.target_improvement_abs is not None
-            else None
-        ),
-        "target_improvement_pct": (
-            float(stop_cfg.target_improvement_pct)
-            if stop_cfg is not None and stop_cfg.target_improvement_pct is not None
-            else None
-        ),
-        "target_reference": (
-            str(stop_cfg.target_reference) if stop_cfg is not None else "best_baseline"
-        ),
-        "min_generations_before_target_stop": (
-            int(stop_cfg.min_generations_before_target_stop)
-            if stop_cfg is not None
-            else 0
-        ),
-        "require_stage2_for_target": bool(
-            stop_cfg.require_stage2_for_target if stop_cfg is not None else False
-        ),
-        "stagnation_patience_generations": (
-            int(stop_cfg.stagnation_patience_generations)
-            if stop_cfg is not None
-            and stop_cfg.stagnation_patience_generations is not None
-            else 0
-        ),
-        "stagnation_min_delta": (
-            float(stop_cfg.stagnation_min_delta) if stop_cfg is not None else 0.0
-        ),
-    }
-
-
-def _write_stop_details(
-    storage_path: str,
-    *,
-    resolved_stop: Dict[str, Any],
-    stop_details: Optional[Dict[str, Any]],
-) -> str:
-    output_path = os.path.join(storage_path, "ga_stop_details.json")
-    payload = {
-        "resolved_stop": resolved_stop,
-        "final_stop": stop_details or {},
-    }
-    with open(output_path, "w", encoding="utf-8") as output_file:
-        json.dump(payload, output_file, indent=2, sort_keys=True)
-        output_file.write("\n")
-    return output_path
-
-
 def _failed_blacklist_scope(config: EvolMergeConfiguration) -> str:
     payload = json.dumps(
         config.genome.model_dump(mode="json"),
@@ -781,36 +365,6 @@ def _load_failed_genotype_blacklist(
             }
 
     return blacklist
-
-
-def _resolve_merge_cuda(merge_cuda: bool, num_gpus: Optional[int]) -> bool:
-    if num_gpus == 0 and merge_cuda:
-        stage_log(
-            "Stage-Init",
-            (
-                "--num-gpus 0 requested; disabling CUDA merges automatically. "
-                "Use --merge-cuda only when GPU workers are allocated."
-            ),
-            level=logging.WARNING,
-        )
-        return False
-    return merge_cuda
-
-
-def _resolve_device(device: str, num_gpus: Optional[int]) -> str:
-    if device == "auto":
-        if num_gpus == 0:
-            return "cpu"
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda" and not torch.cuda.is_available():
-        raise click.ClickException(
-            "--device cuda was requested, but torch.cuda.is_available() is false."
-        )
-    if device == "cuda" and num_gpus == 0:
-        raise click.ClickException("--device cuda conflicts with --num-gpus 0.")
-    if device == "cpu" and num_gpus is not None and num_gpus > 0:
-        raise click.ClickException("--device cpu conflicts with --num-gpus > 0.")
-    return device
 
 
 def _write_disk_abort(storage_path: str, exc: InsufficientDiskSpaceError) -> str:
@@ -885,6 +439,33 @@ def _init_ray_for_baselines() -> None:
             ignore_reinit_error=True,
             logging_level=logging.ERROR,
         )
+
+
+def run_baseline_evaluations(
+    config: EvolMergeConfiguration,
+    storage_path: str,
+    batch_size: Optional[int],
+    merge_cuda: bool,
+    num_gpus: Optional[int],
+    task_search_path: List[str],
+    trust_remote_code: bool,
+    ray_observer: Optional[RayRunObserver] = None,
+    use_ray: bool = True,
+) -> Optional[str]:
+    return _run_baseline_evaluations(
+        config,
+        storage_path,
+        batch_size,
+        merge_cuda,
+        num_gpus,
+        task_search_path,
+        trust_remote_code,
+        ray_observer=ray_observer,
+        use_ray=use_ray,
+        stage_logger=stage_log,
+        ray_initializer=_init_ray_for_baselines,
+        ray_loader=_require_ray,
+    )
 
 
 @click.command("mergekit-evolve-ga")
@@ -1204,6 +785,21 @@ def main(
             f"{resume_state.get('generation', 0)} with "
             f"{resume_state.get('fevals', 0)} completed evaluations.",
         )
+    try:
+        fitness_definition_path = ensure_fitness_definition(
+            storage_path,
+            config,
+            resume=resume is not None,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    stage_log(
+        "Stage-Init",
+        "Fitness definition: "
+        f"{config.fitness.version}/"
+        f"{config.fitness.lower_is_better_transform} "
+        f"({fitness_definition_path})",
+    )
     stage_log("Stage-Init", "Checking source-model parent lineage...")
     lineage_models = list(config.genome.models)
     if config.genome.base_model is not None:
@@ -1260,7 +856,10 @@ def main(
         generation=0,
         fevals_completed=0,
     )
-    device = _resolve_device(device, num_gpus)
+    try:
+        device = _resolve_device(device, num_gpus)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if device == "cpu":
         if merge_cuda:
             stage_log(
@@ -1505,52 +1104,13 @@ def main(
         resharded_models = config.genome.models
         resharded_base = config.genome.base_model
 
-    # Create genome based on type - check if it's MultiMethodGenomeDefinition
-    from mergekit.evo.multi_method_genome import MultiMethodGenomeDefinition
-
-    genome_config = config.genome
-
-    if isinstance(genome_config, MultiMethodGenomeDefinition):
-        genome_type = "multi_method"
-        # Create multi-method genome
-        genome = MultiMethodGenome(
-            MultiMethodGenomeDefinition.model_validate(
-                {
-                    **genome_config.model_dump(exclude=["models", "base_model"]),
-                    "models": resharded_models,
-                    "base_model": resharded_base,
-                }
-            ),
-            trust_remote_code=trust_remote_code,
-        )
-    else:
-        genome_type = "standard"
-        # Create traditional genome
-        genome = ModelGenome(
-            ModelGenomeDefinition.model_validate(
-                {
-                    **genome_config.model_dump(exclude=["models", "base_model"]),
-                    "models": resharded_models,
-                    "base_model": resharded_base,
-                }
-            ),
-            trust_remote_code=trust_remote_code,
-        )
-
-    if strategy == "pool":
-        from mergekit.evo.strategy import ActorPoolEvaluationStrategy
-
-        strat_cls = ActorPoolEvaluationStrategy
-    elif strategy == "buffered":
-        from mergekit.evo.strategy import BufferedRayEvaluationStrategy
-
-        strat_cls = BufferedRayEvaluationStrategy
-    elif strategy == "serial":
-        from mergekit.evo.strategy import SerialEvaluationStrategy
-
-        strat_cls = SerialEvaluationStrategy
-    else:
-        raise ValueError(f"Unknown strategy {strategy}")
+    genome_type, genome = build_genome(
+        config,
+        list(resharded_models),
+        resharded_base,
+        trust_remote_code=trust_remote_code,
+    )
+    strat_cls = resolve_evaluation_strategy(strategy)
 
     # Validate crossover if provided
     if crossover is not None and crossover not in {"arithmetic", "uniform", "sbx"}:
@@ -1604,60 +1164,18 @@ def main(
         print(f"Merge configuration:\n{best_yaml}")
         tracker.log_artifact(config_path, "best_config")
 
-    # Build GA optimizer with callbacks
-    # Resolve GA parameters: CLI overrides YAML; fallback to GAParams defaults
-    defaults = GAParams()
-    yaml_ga = getattr(config, "ga", None)
-    ga_params = GAParams(
-        population_size=(
-            population_size
-            if population_size is not None
-            else (yaml_ga.population_size if yaml_ga else defaults.population_size)
-        ),
-        elite_fraction=(
-            elite_fraction
-            if elite_fraction is not None
-            else (yaml_ga.elite_fraction if yaml_ga else defaults.elite_fraction)
-        ),
-        mutation_rate=(
-            mutation_rate
-            if mutation_rate is not None
-            else (yaml_ga.mutation_rate if yaml_ga else defaults.mutation_rate)
-        ),
-        mutation_sigma=(
-            mutation_sigma
-            if mutation_sigma is not None
-            else (yaml_ga.mutation_sigma if yaml_ga else defaults.mutation_sigma)
-        ),
-        crossover=(
-            crossover
-            if crossover is not None
-            else (yaml_ga.crossover if yaml_ga else defaults.crossover)
-        ),
-        tournament_size=(
-            tournament_size
-            if tournament_size is not None
-            else (yaml_ga.tournament_size if yaml_ga else defaults.tournament_size)
-        ),
-        target_improvement_abs=resolved_stop.get("target_improvement_abs"),
-        target_improvement_pct=resolved_stop.get("target_improvement_pct"),
-        target_reference=str(resolved_stop.get("target_reference") or "best_baseline"),
-        target_reference_score=(
-            float(baseline_best_score)
-            if baseline_best_score is not None and math.isfinite(baseline_best_score)
-            else None
-        ),
-        min_generations_before_target_stop=int(
-            resolved_stop.get("min_generations_before_target_stop") or 0
-        ),
-        require_stage2_for_target=bool(
-            resolved_stop.get("require_stage2_for_target", False)
-        ),
-        stagnation_patience_generations=int(
-            resolved_stop.get("stagnation_patience_generations") or 0
-        ),
-        stagnation_min_delta=float(resolved_stop.get("stagnation_min_delta") or 0.0),
+    ga_params = resolve_ga_params(
+        config,
+        population_size=population_size,
+        elite_fraction=elite_fraction,
+        mutation_rate=mutation_rate,
+        mutation_sigma=mutation_sigma,
+        crossover=crossover,
+        tournament_size=tournament_size,
+        resolved_stop=resolved_stop,
+        baseline_best_score=baseline_best_score,
     )
+    yaml_ga = config.ga
 
     # Log resolved GA params
     tracker.log_metrics(
@@ -1685,6 +1203,10 @@ def main(
                 float(config.stage2_top_k) if config.stage2_top_k is not None else None
             ),
             "eval/fitness_mode": config.fitness_mode,
+            "eval/fitness_version": config.fitness.version,
+            "eval/lower_is_better_transform": (
+                config.fitness.lower_is_better_transform
+            ),
             "eval/task_mix_profile": config.task_mix_profile,
             "eval/behavior_probe_enabled": float(
                 1.0 if config.behavior_prompts else 0.0
@@ -2352,43 +1874,28 @@ def main(
         save_best_config(best_x)
         log_best(best_x, best_score, step=step)
 
-    # Choose optimizer based on genome type and parameters
-    use_enhanced = (
-        genome_type == "multi_method"
-        or hasattr(config.ga, "semantic_crossover_prob")
-        or getattr(config.ga, "crossover", None) == "semantic"
-        or bool(getattr(config.ga, "adaptive_method_sampling", False))
-        or getattr(config.ga, "initial_method_probs", None) is not None
-        or getattr(config.ga, "passthrough_penalty", None) is not None
-        or getattr(config.ga, "passthrough_max_fraction", None) is not None
-        or getattr(config.ga, "explorer_fraction", None) is not None
-        or bool(getattr(config.ga, "diversity_parent_selection", False))
-        or getattr(config.ga, "diversity_parent_weight", None) is not None
-        or getattr(config.ga, "gene_diversity_bonus_weight", None) is not None
-        or getattr(config.ga, "behavior_diversity_bonus_weight", None) is not None
-        or getattr(config.ga, "archive_novelty_bonus_weight", None) is not None
-        or getattr(config.ga, "rank_objective_weights", None) is not None
-        or config.fitness_mode == "weighted_rank"
+    try:
+        optimizer_kind = resolve_optimizer_kind(config, genome_type)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    use_enhanced = optimizer_kind == "enhanced"
+    stage_log(
+        "Stage-GA",
+        f"Resolved optimizer: {optimizer_kind} (configured={config.optimizer})",
     )
-    run_signature = hashlib.sha256(
-        json.dumps(
-            {
-                "config": config.model_dump(mode="json"),
-                "ga_params": ga_params.__dict__,
-                "random_seed": random_seed,
-                "strategy": strategy,
-                "device": device,
-                "batch_size": batch_size,
-                "merge_cuda": merge_cuda,
-                "trust_remote_code": trust_remote_code,
-                "vllm": vllm,
-                "tensor_parallel_size": tensor_parallel_size,
-                "num_gpus": num_gpus,
-            },
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    run_signature = build_run_signature(
+        config,
+        ga_params,
+        random_seed=random_seed,
+        strategy=strategy,
+        device=device,
+        batch_size=batch_size,
+        merge_cuda=merge_cuda,
+        trust_remote_code=trust_remote_code,
+        vllm=vllm,
+        tensor_parallel_size=tensor_parallel_size,
+        num_gpus=num_gpus,
+    )
     if resume_state is not None and not use_enhanced:
         raise click.ClickException(
             "--resume currently requires an enhanced or multi-method GA configuration."
@@ -2415,141 +1922,7 @@ def main(
             on_generation_start=on_generation_start,
         )
     elif use_enhanced:
-        # Convert GAParams to EnhancedGAParams for new features
-        enhanced_params = EnhancedGAParams()
-        for key, value in ga_params.__dict__.items():
-            if hasattr(enhanced_params, key):
-                setattr(enhanced_params, key, value)
-
-        # Set additional enhanced parameters from config
-        if (
-            hasattr(config.ga, "semantic_crossover_prob")
-            and config.ga.semantic_crossover_prob is not None
-        ):
-            enhanced_params.semantic_crossover_prob = config.ga.semantic_crossover_prob
-        if (
-            hasattr(config.ga, "method_mutation_rate")
-            and config.ga.method_mutation_rate is not None
-        ):
-            enhanced_params.method_mutation_rate = config.ga.method_mutation_rate
-        if (
-            hasattr(config.ga, "model_mutation_rate")
-            and config.ga.model_mutation_rate is not None
-        ):
-            enhanced_params.model_mutation_rate = config.ga.model_mutation_rate
-        if (
-            hasattr(config.ga, "parameter_mutation_rate")
-            and config.ga.parameter_mutation_rate is not None
-        ):
-            enhanced_params.parameter_mutation_rate = config.ga.parameter_mutation_rate
-        if (
-            hasattr(config.ga, "adaptive_method_sampling")
-            and config.ga.adaptive_method_sampling is not None
-        ):
-            enhanced_params.adaptive_method_sampling = (
-                config.ga.adaptive_method_sampling
-            )
-        if (
-            hasattr(config.ga, "initial_method_probs")
-            and config.ga.initial_method_probs is not None
-        ):
-            enhanced_params.initial_method_probs = dict(config.ga.initial_method_probs)
-        if (
-            hasattr(config.ga, "operator_temperature")
-            and config.ga.operator_temperature is not None
-        ):
-            enhanced_params.operator_temperature = config.ga.operator_temperature
-        if (
-            hasattr(config.ga, "operator_update_smoothing")
-            and config.ga.operator_update_smoothing is not None
-        ):
-            enhanced_params.operator_update_smoothing = (
-                config.ga.operator_update_smoothing
-            )
-        if (
-            hasattr(config.ga, "operator_avg_child_weight")
-            and config.ga.operator_avg_child_weight is not None
-        ):
-            enhanced_params.operator_avg_child_weight = (
-                config.ga.operator_avg_child_weight
-            )
-        if (
-            hasattr(config.ga, "operator_parent_improvement_weight")
-            and config.ga.operator_parent_improvement_weight is not None
-        ):
-            enhanced_params.operator_parent_improvement_weight = (
-                config.ga.operator_parent_improvement_weight
-            )
-        if (
-            hasattr(config.ga, "operator_survival_weight")
-            and config.ga.operator_survival_weight is not None
-        ):
-            enhanced_params.operator_survival_weight = (
-                config.ga.operator_survival_weight
-            )
-        if (
-            hasattr(config.ga, "passthrough_penalty")
-            and config.ga.passthrough_penalty is not None
-        ):
-            enhanced_params.passthrough_penalty = config.ga.passthrough_penalty
-        if (
-            hasattr(config.ga, "passthrough_max_fraction")
-            and config.ga.passthrough_max_fraction is not None
-        ):
-            enhanced_params.passthrough_max_fraction = (
-                config.ga.passthrough_max_fraction
-            )
-        if (
-            hasattr(config.ga, "explorer_fraction")
-            and config.ga.explorer_fraction is not None
-        ):
-            enhanced_params.explorer_fraction = config.ga.explorer_fraction
-        if (
-            hasattr(config.ga, "diversity_parent_selection")
-            and config.ga.diversity_parent_selection is not None
-        ):
-            enhanced_params.diversity_parent_selection = (
-                config.ga.diversity_parent_selection
-            )
-        if (
-            hasattr(config.ga, "diversity_parent_weight")
-            and config.ga.diversity_parent_weight is not None
-        ):
-            enhanced_params.diversity_parent_weight = config.ga.diversity_parent_weight
-        if (
-            hasattr(config.ga, "gene_diversity_bonus_weight")
-            and config.ga.gene_diversity_bonus_weight is not None
-        ):
-            enhanced_params.gene_diversity_bonus_weight = (
-                config.ga.gene_diversity_bonus_weight
-            )
-        if (
-            hasattr(config.ga, "behavior_diversity_bonus_weight")
-            and config.ga.behavior_diversity_bonus_weight is not None
-        ):
-            enhanced_params.behavior_diversity_bonus_weight = (
-                config.ga.behavior_diversity_bonus_weight
-            )
-        if (
-            hasattr(config.ga, "archive_novelty_bonus_weight")
-            and config.ga.archive_novelty_bonus_weight is not None
-        ):
-            enhanced_params.archive_novelty_bonus_weight = (
-                config.ga.archive_novelty_bonus_weight
-            )
-        if (
-            hasattr(config.ga, "novelty_archive_size")
-            and config.ga.novelty_archive_size is not None
-        ):
-            enhanced_params.novelty_archive_size = config.ga.novelty_archive_size
-        if (
-            hasattr(config.ga, "rank_objective_weights")
-            and config.ga.rank_objective_weights is not None
-        ):
-            enhanced_params.rank_objective_weights = dict(
-                config.ga.rank_objective_weights
-            )
-        enhanced_params.fitness_mode = config.fitness_mode
+        enhanced_params = build_enhanced_ga_params(ga_params, config)
 
         optimizer = EnhancedGAOptimizer(
             genome=genome,
@@ -2949,618 +2322,11 @@ def main(
     tracker.finish()
 
 
-def run_baseline_evaluations(
-    config: EvolMergeConfiguration,
-    storage_path: str,
-    batch_size: Optional[int],
-    merge_cuda: bool,
-    num_gpus: Optional[int],
-    task_search_path: List[str],
-    trust_remote_code: bool,
-    ray_observer: Optional[RayRunObserver] = None,
-    use_ray: bool = True,
-) -> Optional[str]:
-    """Execute baseline evaluations for all models defined in the genome."""
-    stage_log("Stage-Baseline", "Starting baseline evaluation phase...")
-
-    storage_dir = os.path.abspath(storage_path)
-    os.makedirs(storage_dir, exist_ok=True)
-
-    models: List[ModelReference] = list(config.genome.models)
-    if getattr(config.genome, "base_model", None) is not None:
-        models.append(config.genome.base_model)
-    models = _unique_model_refs(models)
-
-    if not models:
-        stage_log(
-            "Stage-Baseline", "No models found in the genome; skipping baselines."
-        )
-        if ray_observer is not None:
-            ray_observer.set_phase(
-                "baseline", baseline_model_index=0, baseline_model_total=0
-            )
-        return None
-
-    if ray_observer is not None:
-        ray_observer.set_phase(
-            "baseline",
-            baseline_model_index=0,
-            baseline_model_total=len(models),
-        )
-
-    baseline_csv_path = _reusable_baseline_csv_path(
-        os.path.join(storage_dir, "baseline_results.csv"),
-        [str(model_ref) for model_ref in models],
-    )
-    if baseline_csv_path is not None:
-        stage_log(
-            "Stage-Baseline",
-            f"Reusing existing baseline metrics from {baseline_csv_path}",
-        )
-        if ray_observer is not None:
-            ray_observer.set_phase(
-                "baseline",
-                baseline_model_index=len(models),
-                baseline_model_total=len(models),
-            )
-        return baseline_csv_path
-
-    required_task_names = _configured_task_names(config)
-    task_manager = create_task_manager(
-        task_search_path,
-        required_tasks=required_task_names,
-    )
-
-    use_cuda = (merge_cuda or (num_gpus or 0) > 0) and (num_gpus or 0) > 0
-    device = "cuda" if use_cuda else "cpu"
-    stage_log(
-        "Stage-Baseline",
-        (
-            f"Using Ray {'GPU' if use_cuda else 'CPU'} workers for baseline evaluations."
-            if use_ray
-            else "Using local CPU execution for serial baseline evaluations."
-        ),
-    )
-
-    metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
-    baseline_rows: List[Dict[str, Union[str, float, None]]] = []
-    successes = 0
-    failures = 0
-
-    def _baseline_eval_gpu(
-        model_name: str,
-        tasks: List[TaskConfiguration],
-        num_fewshot: int,
-        limit: Optional[int],
-        batch_size: Optional[int],
-        task_search_path: List[str],
-        required_tasks: List[str],
-        trust_remote_code: bool,
-        fitness_mode: str,
-        task_mix_profile: Optional[str],
-    ) -> Dict[str, Any]:
-        task_manager = create_task_manager(
-            task_search_path,
-            required_tasks=required_tasks,
-        )
-        model_args: Dict[str, Any] = {
-            "pretrained": model_name,
-            "dtype": "bfloat16",
-            "use_cache": True,
-            "trust_remote_code": trust_remote_code,
-        }
-        try:
-            result = _eval_model(
-                "huggingface",
-                tasks,
-                model_args,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                fitness_mode=fitness_mode,
-                task_mix_profile=task_mix_profile,
-                bootstrap_iters=0,
-                device="cuda",
-            )
-            return {
-                "score": result.get("score"),
-                "results": result.get("results"),
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "score": None,
-                "results": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-
-    def _baseline_eval_cpu(
-        model_name: str,
-        tasks: List[TaskConfiguration],
-        num_fewshot: int,
-        limit: Optional[int],
-        batch_size: Optional[int],
-        task_search_path: List[str],
-        required_tasks: List[str],
-        trust_remote_code: bool,
-        fitness_mode: str,
-        task_mix_profile: Optional[str],
-    ) -> Dict[str, Any]:
-        task_manager = create_task_manager(
-            task_search_path,
-            required_tasks=required_tasks,
-        )
-        model_args: Dict[str, Any] = {
-            "pretrained": model_name,
-            "dtype": "float32",
-            "use_cache": True,
-            "trust_remote_code": trust_remote_code,
-        }
-        try:
-            result = _eval_model(
-                "huggingface",
-                tasks,
-                model_args,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                batch_size=batch_size,
-                task_manager=task_manager,
-                fitness_mode=fitness_mode,
-                task_mix_profile=task_mix_profile,
-                bootstrap_iters=0,
-                device="cpu",
-            )
-            return {
-                "score": result.get("score"),
-                "results": result.get("results"),
-                "error": None,
-            }
-        except Exception as exc:
-            return {
-                "score": None,
-                "results": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-
-    baseline_impl = _baseline_eval_gpu if use_cuda else _baseline_eval_cpu
-
-    def baseline_args(model_ref: ModelReference) -> Tuple[Any, ...]:
-        return (
-            str(model_ref),
-            config.tasks,
-            config.num_fewshot,
-            config.limit,
-            batch_size,
-            task_search_path,
-            required_task_names,
-            trust_remote_code,
-            config.fitness_mode,
-            config.task_mix_profile,
-        )
-
-    ray = None
-    baseline_refs: Dict[str, Any] = {}
-    if use_ray:
-        _init_ray_for_baselines()
-        ray = _require_ray()
-        baseline_remote = ray.remote(
-            num_cpus=1,
-            num_gpus=1.0 if use_cuda else 0,
-        )(baseline_impl)
-        baseline_refs = {
-            str(model_ref): baseline_remote.remote(*baseline_args(model_ref))
-            for model_ref in models
-        }
-
-    for model_index, model_ref in enumerate(models, start=1):
-        model_name = str(model_ref)
-        row: Dict[str, Union[str, float, None]] = {
-            "model": model_name,
-            "weighted_score": None,
-            "error": None,
-        }
-        for column in metric_columns:
-            row.setdefault(column, None)
-
-        stage_log("Stage-Baseline", f"Evaluating {model_name}...")
-        try:
-            result = (
-                ray.get(baseline_refs[model_name])
-                if ray is not None
-                else baseline_impl(*baseline_args(model_ref))
-            )
-        except (
-            Exception
-        ) as exc:  # pragma: no cover - remote environment depends on cluster state
-            failures += 1
-            row["error"] = str(exc)
-            stage_log(
-                "Stage-Baseline",
-                f"Evaluation failed for {model_name}: {exc}",
-                level=logging.ERROR,
-            )
-            if ray_observer is not None:
-                ray_observer.record_baseline_progress(
-                    model_index=model_index,
-                    model_total=len(models),
-                    model_name=model_name,
-                    score=None,
-                    failed=True,
-                )
-            LOGGER.debug("Baseline evaluation error", exc_info=exc)
-            baseline_rows.append(row)
-            continue
-
-        if not result or result.get("error"):
-            failures += 1
-            row["error"] = (
-                result.get("error")
-                if result
-                else "Baseline evaluation returned no result"
-            )
-            stage_log(
-                "Stage-Baseline",
-                f"Evaluation failed for {model_name}: {row['error']}",
-                level=logging.ERROR,
-            )
-            if ray_observer is not None:
-                ray_observer.record_baseline_progress(
-                    model_index=model_index,
-                    model_total=len(models),
-                    model_name=model_name,
-                    score=None,
-                    failed=True,
-                )
-            baseline_rows.append(row)
-            continue
-
-        successes += 1
-        weighted_score = result.get("score")
-        row["weighted_score"] = weighted_score
-        if ray_observer is not None:
-            ray_observer.record_baseline_progress(
-                model_index=model_index,
-                model_total=len(models),
-                model_name=model_name,
-                score=(
-                    float(weighted_score)
-                    if weighted_score is not None and math.isfinite(weighted_score)
-                    else None
-                ),
-                failed=False,
-            )
-
-        row.update(_collect_task_metrics(result, config.tasks))
-
-        baseline_rows.append(row)
-
-    if not baseline_rows:
-        stage_log(
-            "Stage-Baseline", "No baseline results recorded; skipping CSV output."
-        )
-        return None
-
-    baseline_df = pandas.DataFrame(baseline_rows)
-    ordered_columns = ["model", "weighted_score", *metric_columns, "error"]
-    # Ensure DataFrame includes expected columns even if absent from rows
-    for column in ordered_columns:
-        if column not in baseline_df.columns:
-            baseline_df[column] = None
-    baseline_df = baseline_df[ordered_columns]
-    baseline_df.sort_values(
-        "weighted_score",
-        ascending=False,
-        inplace=True,
-        na_position="last",
-    )
-
-    baseline_csv_path = os.path.join(storage_dir, "baseline_results.csv")
-    baseline_df.to_csv(baseline_csv_path, index=False)
-
-    stage_log(
-        "Stage-Baseline",
-        f"Baseline metrics saved to {baseline_csv_path}",
-    )
-    stage_log(
-        "Stage-Baseline",
-        f"Completed evaluations: {successes}; failures: {failures}",
-    )
-    if ray_observer is not None:
-        ray_observer.set_phase(
-            "baseline",
-            baseline_model_index=len(models),
-            baseline_model_total=len(models),
-            failed_evals=failures,
-        )
-
-    return baseline_csv_path
-
-
-def _collect_task_metrics(
-    result: Dict[str, Any],
-    tasks: List[TaskConfiguration],
-) -> Dict[str, Optional[float]]:
-    metrics: Dict[str, Optional[float]] = {}
-    for task_cfg in tasks:
-        task_results = result.get("results", {}).get(task_cfg.name, {})
-        metric_value = task_results.get(task_cfg.metric)
-
-        if metric_value is None:
-            metric_alternatives = {
-                "ppl,none": [
-                    "word_perplexity,none",
-                    "perplexity,none",
-                    "byte_perplexity,none",
-                ],
-                "acc,none": ["acc,none", "acc_norm,none", "accuracy,none"],
-                "acc_norm,none": [
-                    "acc_norm,none",
-                    "acc,none",
-                    "accuracy,none",
-                ],
-            }
-            for alt_metric in metric_alternatives.get(task_cfg.metric, []):
-                if alt_metric in task_results:
-                    metric_value = task_results[alt_metric]
-                    break
-
-            if metric_value is None:
-                lowered_metric = task_cfg.metric.lower()
-                for metric_name, value in task_results.items():
-                    lowered_name = metric_name.lower()
-                    if "stderr" in lowered_name:
-                        continue
-                    if (
-                        "ppl" in lowered_metric or "perplexity" in lowered_metric
-                    ) and "perplexity" in lowered_name:
-                        metric_value = value
-                        break
-                    if "acc" in lowered_metric and "acc" in lowered_name:
-                        metric_value = value
-                        break
-
-        if isinstance(metric_value, float) and math.isnan(metric_value):
-            metric_value = None
-
-        metrics[f"{task_cfg.name}:{task_cfg.metric}"] = metric_value
-
-    return metrics
-
-
-def _evaluate_and_write_final_comparison(
-    config: EvolMergeConfiguration,
-    storage_path: str,
-    batch_size: Optional[int],
-    merge_cuda: bool,
-    num_gpus: Optional[int],
-    task_search_path: List[str],
-    trust_remote_code: bool,
-) -> None:
-    baseline_csv = os.path.join(storage_path, "baseline_results.csv")
-    final_model_path = os.path.join(storage_path, "final_model")
-    comparison_csv = os.path.join(storage_path, "ga_final_comparison.csv")
-
-    if not os.path.exists(final_model_path):
-        stage_log("Stage-GA", "final_model not found; skipping final comparison table.")
-        return
-
-    baseline_rows: List[Dict[str, Union[str, float, None]]] = []
-    if os.path.exists(baseline_csv):
-        baseline_rows = pandas.read_csv(baseline_csv).to_dict(orient="records")
-    else:
-        stage_log(
-            "Stage-GA",
-            "baseline_results.csv not found; comparison will include only final model.",
-            level=logging.WARNING,
-        )
-
-    task_manager = create_task_manager(
-        task_search_path,
-        required_tasks=_configured_task_names(config),
-    )
-    use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
-    device = "cuda" if use_cuda else "cpu"
-
-    model_args: Dict[str, Any] = {
-        "pretrained": final_model_path,
-        "dtype": "float32",
-        "use_cache": True,
-        "trust_remote_code": trust_remote_code,
-    }
-    eval_kwargs: Dict[str, Any] = {"device": device}
-
-    stage_log("Stage-GA", "Evaluating final merged model for comparison table...")
-    try:
-        result = _eval_model(
-            "huggingface",
-            config.tasks,
-            model_args,
-            num_fewshot=config.num_fewshot,
-            limit=config.limit,
-            batch_size=batch_size,
-            task_manager=task_manager,
-            fitness_mode=config.fitness_mode,
-            task_mix_profile=config.task_mix_profile,
-            bootstrap_iters=0,
-            **eval_kwargs,
-        )
-    except Exception as exc:  # pragma: no cover - depends on runtime
-        stage_log(
-            "Stage-GA",
-            f"Final model evaluation failed; skipping comparison table: {exc}",
-            level=logging.ERROR,
-        )
-        return
-
-    metric_columns = [f"{task.name}:{task.metric}" for task in config.tasks]
-    final_row: Dict[str, Union[str, float, None]] = {
-        "model": "final_merged",
-        "weighted_score": result.get("score"),
-        "error": None,
-    }
-    final_row.update(_collect_task_metrics(result, config.tasks))
-
-    all_rows = baseline_rows + [final_row]
-    comparison_df = pandas.DataFrame(all_rows)
-    ordered_columns = ["model", "weighted_score", *metric_columns, "error"]
-    for column in ordered_columns:
-        if column not in comparison_df.columns:
-            comparison_df[column] = None
-    comparison_df = comparison_df[ordered_columns]
-    comparison_df.to_csv(comparison_csv, index=False)
-
-    _write_comparison_plot(
-        comparison_df, os.path.join(storage_path, "ga_final_comparison.png")
-    )
-
-
-def _write_comparison_plot(table: "pandas.DataFrame", output_path: str) -> None:
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        fig_height = max(2.5, 0.35 * (len(table) + 1))
-        fig, ax = plt.subplots(figsize=(10, fig_height))
-        ax.axis("off")
-
-        display_df = table.copy()
-        if "weighted_score" in display_df.columns:
-            display_df["weighted_score"] = display_df["weighted_score"].map(
-                lambda v: f"{v:.4f}" if isinstance(v, (int, float)) else v
-            )
-
-        tbl = ax.table(
-            cellText=display_df.values,
-            colLabels=display_df.columns,
-            cellLoc="center",
-            loc="center",
-        )
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(8)
-        tbl.scale(1.0, 1.2)
-
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=160)
-        plt.close(fig)
-    except Exception as exc:  # pragma: no cover - optional plotting
-        stage_log(
-            "Stage-GA",
-            f"Skipping comparison plot generation: {exc}",
-            level=logging.WARNING,
-        )
-
-
-def _write_ga_outputs(
-    storage_path: str, *, stop_details: Optional[Dict[str, Any]] = None
-) -> None:
-    """Write a compact GA summary table and optional plot to the run outputs."""
-    history_path = os.path.join(storage_path, "ga_history.csv")
-    if not os.path.exists(history_path):
-        stage_log("Stage-GA", "ga_history.csv not found; skipping summary outputs.")
-        return
-
-    rows: List[Dict[str, str]] = []
-    with open(history_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-
-    if not rows:
-        stage_log("Stage-GA", "ga_history.csv is empty; skipping summary outputs.")
-        return
-
-    summary_path = os.path.join(storage_path, "ga_summary.txt")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        f.write("gen  fevals  gen_best   best_so_far  eval_s  cache_hits  crossover\n")
-        for r in rows:
-            gen = int(r.get("generation", "0") or 0)
-            fevals = int(r.get("fevals", "0") or 0)
-            gen_best = float(r.get("gen_best", "nan") or float("nan"))
-            best_so_far_raw = r.get("best_so_far", "")
-            best_so_far = (
-                "NaN" if best_so_far_raw in ("", "None", "-inf") else best_so_far_raw
-            )
-            eval_s = float(r.get("eval_seconds", "0") or 0)
-            cache_hits = int(r.get("cache_hits", "0") or 0)
-            crossover = r.get("crossover_type", "")
-            f.write(
-                f"{gen:>2}  {fevals:>6}  {gen_best:>8.5f}  {best_so_far:>10}  "
-                f"{eval_s:>6.1f}     {cache_hits:>3}       {crossover}\n"
-            )
-
-        gen_best_vals = [float(r.get("gen_best", 0.0) or 0.0) for r in rows]
-        finite_vals = [v for v in gen_best_vals if math.isfinite(v)]
-        blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-        f.write("\nGen-best sparkline:\n")
-        if not finite_vals:
-            f.write("(insufficient finite values)\n")
-            f.write("min=N/A max=N/A\n")
-        else:
-            min_v = min(finite_vals)
-            max_v = max(finite_vals)
-            if max_v == min_v:
-                spark = "".join(blocks[0] for _ in gen_best_vals)
-            else:
-                spark = "".join(
-                    blocks[
-                        min(
-                            len(blocks) - 1,
-                            max(
-                                0,
-                                int(
-                                    ((v if math.isfinite(v) else min_v) - min_v)
-                                    / (max_v - min_v)
-                                    * (len(blocks) - 1)
-                                ),
-                            ),
-                        )
-                    ]
-                    for v in gen_best_vals
-                )
-            f.write(spark + "\n")
-            f.write(f"min={min_v:.5f} max={max_v:.5f}\n")
-
-        if stop_details:
-            f.write("\nStop details:\n")
-            for key in sorted(stop_details.keys()):
-                f.write(f"{key}={stop_details[key]}\n")
-
-    # Optional plot (best/mean over generations)
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        gens = [int(r.get("generation", "0") or 0) for r in rows]
-        gen_best = [float(r.get("gen_best", 0.0) or 0.0) for r in rows]
-        gen_mean = [float(r.get("gen_mean", 0.0) or 0.0) for r in rows]
-
-        plot_path = os.path.join(storage_path, "ga_history_plot.png")
-        plt.figure(figsize=(7.5, 4.5))
-        plt.plot(gens, gen_best, marker="o", label="gen_best")
-        plt.plot(gens, gen_mean, marker="x", label="gen_mean")
-        plt.xlabel("Generation")
-        plt.ylabel("Score")
-        plt.title("GA Progress")
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(plot_path, dpi=160)
-        plt.close()
-    except Exception as exc:  # pragma: no cover - optional plotting
-        stage_log(
-            "Stage-GA",
-            f"Skipping ga_history_plot.png generation: {exc}",
-            level=logging.WARNING,
-        )
-
-
 def _reshard_model(
     model: ModelReference, storage_path: str, merge_cache: str, trust_remote_code: bool
 ) -> ModelReference:
+    import transformers
+
     merged = model.merged(
         cache_dir=merge_cache,
         trust_remote_code=trust_remote_code,

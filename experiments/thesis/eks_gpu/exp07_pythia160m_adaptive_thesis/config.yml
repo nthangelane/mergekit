@@ -37,6 +37,10 @@ genome:
   enable_method_evolution: true
   enable_model_selection: true
 
+optimizer: enhanced
+fitness:
+  version: v2
+
 tasks:
   - name: boolq
     weight: 0.25

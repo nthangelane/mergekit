@@ -47,7 +47,7 @@ python -m mergekit.scripts.evolve_ga \
   --batch-size 1 \
   --baseline \
   --save-final-model \
-  --no-reshard \
+  --reshard \
   --max-disk-gb-min "${MAX_DISK_GB_MIN:-5}" \
   --random-seed 11 \
   2>&1 | tee "$RUN_DIR/run.log"
@@ -61,6 +61,7 @@ from pathlib import Path
 run_dir = Path(sys.argv[1])
 required = [
     "parent_lineage.json",
+    "fitness_definition.json",
     "ga_candidate_history.csv",
     "ga_history.csv",
     "ga_stop_details.json",
@@ -73,6 +74,14 @@ if not (run_dir / "final_model").is_dir():
     raise SystemExit("Missing final_model directory")
 if (run_dir / "run_abort.json").exists():
     raise SystemExit("Preflight produced run_abort.json")
+
+input_models = run_dir / "input_models"
+resharded_models = [path for path in input_models.iterdir() if path.is_dir()]
+if len(resharded_models) < 2:
+    raise SystemExit(f"Expected at least two resharded models, found {len(resharded_models)}")
+for model_dir in resharded_models:
+    if not list(model_dir.glob("*.safetensors")):
+        raise SystemExit(f"Resharded model has no safetensors checkpoint: {model_dir}")
 
 with (run_dir / "ga_candidate_history.csv").open(newline="") as handle:
     candidates = list(csv.DictReader(handle))
@@ -89,6 +98,12 @@ if final_stop.get("reason") != "random_search_complete" or final_stop.get("feval
 lineage = json.loads((run_dir / "parent_lineage.json").read_text())
 if lineage.get("status") not in {"common_lineage", "no_common_lineage"}:
     raise SystemExit(f"Lineage was not resolved: {lineage.get('status')}")
+
+fitness = json.loads((run_dir / "fitness_definition.json").read_text())
+if fitness.get("fitness_version") != "v2":
+    raise SystemExit(f"Unexpected fitness version: {fitness}")
+if fitness.get("lower_is_better_transform") != "log_reciprocal":
+    raise SystemExit(f"Unexpected lower-is-better transform: {fitness}")
 
 print(f"Evo preflight passed: {run_dir}")
 PY

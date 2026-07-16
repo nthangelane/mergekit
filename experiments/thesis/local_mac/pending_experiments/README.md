@@ -38,3 +38,8 @@ candidate runbooks, while generated outputs should remain under `workspace/`.
 
 Before running these launchers on a new machine, review any local path
 assumptions and prefer repository-relative paths where possible.
+
+These pending configs use the thesis `v2` fitness definition and explicitly
+select the enhanced optimizer. Their scores must not be compared directly with
+historical `v1` outputs; rerun every control under `v2` for an apples-to-apples
+comparison.

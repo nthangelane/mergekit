@@ -34,6 +34,10 @@ genome:
   enable_method_evolution: true
   enable_model_selection: true
 
+optimizer: enhanced
+fitness:
+  version: v2
+
 tasks:
   - name: xnli_vi
     weight: 0.25

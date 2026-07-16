@@ -20,8 +20,10 @@ The smoke exercises:
 
 - Hugging Face parent-lineage lookup and `parent_lineage.json`
 - source-model architecture validation
+- real source-model loading and single-shard safetensors conversion
 - CPU execution without Ray initialization
 - native seeded random sampling
+- the `v2` log-reciprocal fitness definition and `fitness_definition.json`
 - two-stage evaluation and Stage 2 top-K promotion
 - gated parent-distillation repair on a WikiText train slice
 - per-merge free-disk checks and scratch-directory reuse
@@ -54,6 +56,8 @@ lineage warning escalation.
 - Record the passing commit SHA and preflight output directory.
 - Confirm `parent_lineage.json` contains the expected disconnected-lineage
   warning for the historical thesis pair.
+- Confirm `fitness_definition.json` records `fitness_version` as `v2` and
+  `lower_is_better_transform` as `log_reciprocal`.
 - Confirm `ga_candidate_history.csv` has two rows with genotype and exact hash.
 - Confirm `ga_stop_details.json` records `final_stop.reason` as
   `random_search_complete` and `final_stop.fevals` as `2`.
