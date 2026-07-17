@@ -119,6 +119,17 @@ def test_local_m1_launcher_requires_valid_artifacts_before_done_marker():
     assert os.access(launcher_path, os.X_OK)
 
 
+def test_local_m1_launchers_run_from_repo_and_reuse_hf_cache():
+    for name in ("run_thesis_campaign.sh", "run_exp26.sh"):
+        launcher = _local_m1_config_path(name).read_text(encoding="utf-8")
+
+        assert 'cd "$REPO"' in launcher
+        assert 'SHARED_HF_CACHE="${HF_SHARED_CACHE:-$HOME/.cache/huggingface/hub}"' in (
+            launcher
+        )
+        assert 'ln -s "$SHARED_HF_CACHE" "$DIR/transformers_cache"' in launcher
+
+
 def test_campaign_rerun_resumes_existing_ga_checkpoint(tmp_path):
     run_dir = tmp_path / "exp26_aos_off" / "seed-11"
     run_dir.mkdir(parents=True)

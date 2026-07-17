@@ -11,9 +11,11 @@
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
+cd "$REPO"
 MON="$HOME/Documents/master_research/Master Research Paper/Research Project/experiments/m1_campaign"
 OUT="$REPO/workspace/thesis/local_mac/results"
-mkdir -p "$MON" "$OUT"
+SHARED_HF_CACHE="${HF_SHARED_CACHE:-$HOME/.cache/huggingface/hub}"
+mkdir -p "$MON" "$OUT" "$SHARED_HF_CACHE"
 
 PY=$(command -v python3.11 || command -v python3.10 || command -v python3)
 if [ ! -d "$REPO/.venv-exp" ]; then
@@ -76,6 +78,9 @@ run_ga () {  # name config seed extra_flags...
   fi
 
   mkdir -p "$DIR"
+  if [ ! -e "$DIR/transformers_cache" ] && [ ! -L "$DIR/transformers_cache" ]; then
+    ln -s "$SHARED_HF_CACHE" "$DIR/transformers_cache"
+  fi
   if [ "$RESUME" -eq 1 ]; then
     STORAGE_ARGS=(--resume "$DIR")
     TEE_ARGS=(-a "$DIR/run.log")
