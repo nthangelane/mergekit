@@ -59,6 +59,10 @@ python -m mergekit.scripts.evolve_ga \
   --random-seed 11 \
   2>&1 | tee "$RUN_DIR/run.log"
 
+python -m mergekit.scripts.validate_evo_run \
+  "$RUN_DIR" \
+  --config "$CONFIG_PATH"
+
 python - "$RUN_DIR" <<'PY'
 import csv
 import json

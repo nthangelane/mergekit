@@ -12,6 +12,7 @@ from mergekit.scripts.evolve_ga import (
     _best_weighted_score_from_frame,
     _classify_solution_novelty,
     _collect_merge_method_outcomes,
+    _has_valid_solution,
     _init_ray_for_baselines,
     _meets_improvement_thresholds,
     _mlflow_ui_responds,
@@ -21,6 +22,14 @@ from mergekit.scripts.evolve_ga import (
     _unique_model_refs,
     _write_mlflow_run_info,
 )
+
+
+def test_valid_solution_requires_finite_score():
+    assert _has_valid_solution(object(), 0.5)
+    assert not _has_valid_solution(None, 0.5)
+    assert not _has_valid_solution(object(), None)
+    assert not _has_valid_solution(object(), float("nan"))
+    assert not _has_valid_solution(object(), float("-inf"))
 
 
 def test_best_weighted_score_from_frame_uses_max_normalized_score():

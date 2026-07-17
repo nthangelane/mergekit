@@ -1,0 +1,21 @@
+# M1 campaign stack validated on Python 3.11. Torch has only a minimum version so
+# CPU macOS and CUDA AWS images can supply the appropriate platform-specific wheel.
+accelerate==1.6.0
+click==8.2.1
+datasets==5.0.0
+huggingface_hub==1.16.1
+immutables==0.21
+lm_eval==0.4.12
+matplotlib==3.11.0
+numpy==2.4.6
+peft==0.19.1
+protobuf==7.35.1
+pydantic==2.10.6
+ray==2.56.0
+safetensors==0.5.3
+scipy==1.17.1
+sentencepiece==0.2.2
+tokenizers==0.22.2
+torch>=2.0
+tqdm==4.67.1
+transformers==5.12.1

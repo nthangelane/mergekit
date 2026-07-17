@@ -130,6 +130,16 @@ LOGGER = logging.getLogger("mergekit.evolve_ga.cli")
 FAILED_BLACKLIST_FILENAME = "failed_genotype_blacklist.csv"
 
 
+def _has_valid_solution(
+    best_x: Optional[np.ndarray], best_score: Optional[float]
+) -> bool:
+    return (
+        best_x is not None
+        and best_score is not None
+        and math.isfinite(float(best_score))
+    )
+
+
 def _require_ray():
     try:
         import ray
@@ -2164,7 +2174,8 @@ def main(
     time.sleep(1.0)
 
     # save the best merge configuration using original model references
-    if best_x is not None:
+    has_valid_solution = _has_valid_solution(best_x, best_score)
+    if has_valid_solution:
         best_config = None
         best_plan_dict = None
         if genome_type == "multi_method":
@@ -2417,6 +2428,8 @@ def main(
 
     _log_run_artifacts(tracker, storage_path)
     tracker.finish()
+    if not has_valid_solution:
+        raise click.ClickException("No valid solution found; all evaluations failed.")
 
 
 def _reshard_model(

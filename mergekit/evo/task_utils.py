@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import dataclasses
 import logging
 import os
 from pathlib import Path
@@ -260,10 +261,24 @@ def _apply_task_overrides(
             continue
 
         LOGGER.debug("Applying task override for %s from %s", task_name, override_file)
-        task_manager._task_index[task_name] = {
-            "type": "task",
-            "yaml_path": str(override_file),
-        }
+        task_index = getattr(task_manager, "task_index", None)
+        if task_index is None:  # lm-eval < 0.4.12
+            task_index = task_manager._task_index
+
+        existing_entry = task_index.get(task_name)
+        if dataclasses.is_dataclass(existing_entry) and hasattr(
+            existing_entry, "yaml_path"
+        ):
+            task_index[task_name] = dataclasses.replace(
+                existing_entry,
+                yaml_path=override_file,
+                cfg=override_data,
+            )
+        else:
+            task_index[task_name] = {
+                "type": "task",
+                "yaml_path": str(override_file),
+            }
 
 
 def create_task_manager(

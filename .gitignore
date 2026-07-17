@@ -200,6 +200,7 @@ mlartifacts/
 
 # Evolution workspace and storage
 workspace/
+.venv-exp/
 
 # Model storage and cache directories
 workspace/evol_merge_storage/transformers_cache/

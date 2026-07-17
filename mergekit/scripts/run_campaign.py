@@ -13,6 +13,7 @@ import yaml
 from mergekit.evo.config import EvolMergeConfiguration
 from mergekit.evo.finetune import FineTuneBaselineConfiguration
 from mergekit.evo.progress import iter_progress_events
+from mergekit.evo.run_validation import EvoRunValidationError, validate_evo_run
 
 
 @dataclass(frozen=True)
@@ -94,20 +95,55 @@ def validate_preset(config_path: Path) -> tuple[Dict[str, Any], Dict[str, Any]]:
     return payload, metadata
 
 
-def _successful_run(run_dir: Path, runner: str) -> bool:
+def _successful_progress(run_dir: Path, runner: str) -> bool:
     if not run_dir.is_dir():
         return False
+    start_message = "run_started" if runner == "evolve_ga" else "finetune_run_started"
     success_message = (
         "run_finished" if runner == "evolve_ga" else "finetune_run_finished"
     )
     try:
-        terminal_status = None
-        for event in iter_progress_events(str(run_dir)):
-            if event.get("msg") == success_message:
-                terminal_status = event.get("status")
-        return terminal_status == "success"
+        events = list(iter_progress_events(str(run_dir)))
+        start_indexes = [
+            index
+            for index, event in enumerate(events)
+            if event.get("msg") == start_message
+        ]
+        if not start_indexes:
+            return False
+        terminal = events[-1]
+        return (
+            terminal.get("msg") == success_message
+            and terminal.get("status") == "success"
+            and start_indexes[-1] < len(events) - 1
+        )
     except (FileNotFoundError, ValueError):
         return False
+
+
+def _successful_run(
+    run_dir: Path,
+    runner: str,
+    *,
+    config_path: Optional[Path] = None,
+) -> bool:
+    if runner == "evolve_ga":
+        try:
+            validate_evo_run(run_dir, config_path=config_path)
+        except EvoRunValidationError:
+            return False
+        return True
+    return _successful_progress(run_dir, runner)
+
+
+def _validate_completed_job(job: CampaignJob) -> None:
+    if job.runner == "evolve_ga":
+        validate_evo_run(job.run_dir, config_path=job.config_path)
+        return
+    if not _successful_progress(job.run_dir, job.runner):
+        raise EvoRunValidationError(
+            f"Run at {job.run_dir} has no successful terminal progress event"
+        )
 
 
 def _parse_seeds(value: Optional[str], defaults: Iterable[Any]) -> List[int]:
@@ -133,7 +169,7 @@ def build_job(
     _payload, metadata = validate_preset(config_path)
     runner = str(metadata["runner"])
     run_dir = output_root / preset / f"seed-{seed}"
-    if _successful_run(run_dir, runner):
+    if _successful_run(run_dir, runner, config_path=config_path):
         return CampaignJob(
             preset=preset,
             seed=seed,
@@ -268,20 +304,30 @@ def main(
             try:
                 subprocess.run(job.command, cwd=root, check=True)
             except subprocess.CalledProcessError as exc:
-                failures.append((preset, seed, int(exc.returncode)))
+                failures.append((preset, seed, f"exit-{int(exc.returncode)}"))
                 if not continue_on_error:
                     raise click.ClickException(
                         f"Campaign run failed: {preset} seed={seed} "
                         f"(exit {exc.returncode})"
                     ) from exc
+                continue
             except KeyboardInterrupt as exc:
                 raise click.ClickException(
                     f"Campaign interrupted; rerun the same command to resume {job.run_dir}"
                 ) from exc
+            try:
+                _validate_completed_job(job)
+            except EvoRunValidationError as exc:
+                failures.append((preset, seed, "invalid-artifacts"))
+                if not continue_on_error:
+                    raise click.ClickException(
+                        f"Campaign run did not produce valid artifacts: {preset} "
+                        f"seed={seed}: {exc}"
+                    ) from exc
 
     if failures:
         summary = ", ".join(
-            f"{preset}/seed-{seed}:exit-{code}" for preset, seed, code in failures
+            f"{preset}/seed-{seed}:{reason}" for preset, seed, reason in failures
         )
         raise click.ClickException(f"Campaign completed with failures: {summary}")
 
