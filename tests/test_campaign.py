@@ -113,9 +113,29 @@ def test_local_m1_launcher_requires_valid_artifacts_before_done_marker():
 
     assert "set -Eeuo pipefail" in launcher
     assert "mergekit.scripts.validate_evo_run" in launcher
-    completion_validation = launcher.rindex('validate_run "$DIR" "$HERE/$CFG"; then')
-    done_marker = launcher.index('date -Iseconds > "$DIR/DONE"')
-    assert completion_validation < done_marker
+    assert "mergekit.scripts.finalize_evo_run" in launcher
+    launcher_lines = launcher.splitlines()
+    validation_lines = [
+        index for index, line in enumerate(launcher_lines) if "validate_run " in line
+    ]
+    done_lines = [
+        index
+        for index, line in enumerate(launcher_lines)
+        if 'date -Iseconds > "$DIR/DONE"' in line
+    ]
+    assert done_lines
+    for done_line in done_lines:
+        preceding_validation = max(
+            index for index in validation_lines if index < done_line
+        )
+        assert done_line - preceding_validation <= 20
+    assert launcher.index("finalize completed search") < launcher.index(
+        "archive incomplete"
+    )
+    assert "restore validated $NAME seed $SEED" in launcher
+    assert launcher.index("restore validated $NAME seed $SEED") < launcher.index(
+        "archive incomplete"
+    )
     assert os.access(launcher_path, os.X_OK)
 
 

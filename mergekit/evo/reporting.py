@@ -493,13 +493,33 @@ def write_ga_outputs(
             "gen  fevals  gen_best   best_so_far  eval_s  cache_hits  crossover\n"
         )
         for row in rows:
-            generation = int(row.get("generation", "0") or 0)
-            fevals = int(row.get("fevals", "0") or 0)
-            generation_best = float(row.get("gen_best", "nan") or float("nan"))
+            try:
+                generation = int(float(row.get("generation", "0") or 0))
+            except (TypeError, ValueError):
+                generation = 0
+            try:
+                fevals = int(float(row.get("fevals", "0") or 0))
+            except (TypeError, ValueError):
+                fevals = 0
+            gen_best_raw = row.get("gen_best", "")
+            if gen_best_raw in ("", "None", "none", "-inf"):
+                generation_best = float("nan")
+            else:
+                try:
+                    generation_best = float(gen_best_raw)
+                except (TypeError, ValueError):
+                    generation_best = float("nan")
             best_raw = row.get("best_so_far", "")
             best = "NaN" if best_raw in ("", "None", "-inf") else best_raw
-            evaluation_seconds = float(row.get("eval_seconds", "0") or 0)
-            cache_hits = int(row.get("cache_hits", "0") or 0)
+            eval_seconds_raw = row.get("eval_seconds", "0")
+            try:
+                evaluation_seconds = float(eval_seconds_raw)
+            except (TypeError, ValueError):
+                evaluation_seconds = 0.0
+            try:
+                cache_hits = int(float(row.get("cache_hits", "0") or 0))
+            except (TypeError, ValueError):
+                cache_hits = 0
             crossover = row.get("crossover_type", "")
             summary_file.write(
                 f"{generation:>2}  {fevals:>6}  {generation_best:>8.5f}  "
@@ -507,9 +527,15 @@ def write_ga_outputs(
                 f"{crossover}\n"
             )
 
-        generation_best_values = [
-            float(row.get("gen_best", 0.0) or 0.0) for row in rows
-        ]
+        def _safe_float(value, default=float("nan")):
+            if value in (None, "", "None", "none", "-inf", "inf"):
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        generation_best_values = [_safe_float(row.get("gen_best")) for row in rows]
         finite_values = [
             value for value in generation_best_values if math.isfinite(value)
         ]
@@ -554,9 +580,24 @@ def write_ga_outputs(
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        generations = [int(row.get("generation", "0") or 0) for row in rows]
-        generation_best = [float(row.get("gen_best", 0.0) or 0.0) for row in rows]
-        generation_mean = [float(row.get("gen_mean", 0.0) or 0.0) for row in rows]
+        def _safe_int(value):
+            try:
+                return int(float(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        generations = [_safe_int(row.get("generation")) for row in rows]
+
+        def _plot_safe_float(value):
+            if value in (None, "", "None", "none", "-inf", "inf"):
+                return float("nan")
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return float("nan")
+
+        generation_best = [_plot_safe_float(row.get("gen_best")) for row in rows]
+        generation_mean = [_plot_safe_float(row.get("gen_mean")) for row in rows]
         plt.figure(figsize=(7.5, 4.5))
         plt.plot(generations, generation_best, marker="o", label="gen_best")
         plt.plot(generations, generation_mean, marker="x", label="gen_mean")

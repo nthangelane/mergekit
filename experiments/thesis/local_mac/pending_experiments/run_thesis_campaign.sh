@@ -59,13 +59,58 @@ run_ga () {  # name config seed extra_flags...
     if [ "$ARG" = "--random-search" ]; then IS_RANDOM=1; fi
   done
 
-  if [ -f "$DIR/DONE" ]; then
-    if validate_run "$DIR" "$HERE/$CFG" >/dev/null 2>&1; then
-      log "skip $NAME seed $SEED (validated)"
-      return
+  if [ -d "$DIR" ] && validate_run "$DIR" "$HERE/$CFG" >/dev/null 2>&1; then
+    for f in ga_method_history ga_candidate_history; do
+      cp "$DIR/$f.csv" "$MON/${NAME}_seed${SEED}_${f#ga_}.csv"
+    done
+    date -Iseconds > "$DIR/DONE"
+    log "skip $NAME seed $SEED (validated)"
+    return
+  fi
+
+  VALID_ARCHIVE=""
+  for ARCHIVE in "$DIR".failed-*; do
+    if [ -d "$ARCHIVE" ] && validate_run "$ARCHIVE" "$HERE/$CFG" >/dev/null 2>&1; then
+      VALID_ARCHIVE="$ARCHIVE"
     fi
+  done
+  if [ -n "$VALID_ARCHIVE" ]; then
+    if [ -d "$DIR" ]; then
+      SUPERSEDED_DIR="${DIR}.superseded-$(date '+%Y%m%d-%H%M%S')"
+      mv "$DIR" "$SUPERSEDED_DIR"
+      log "archive duplicate $NAME seed $SEED to $SUPERSEDED_DIR"
+    fi
+    mv "$VALID_ARCHIVE" "$DIR"
+    log "restore validated $NAME seed $SEED from $VALID_ARCHIVE"
+    for f in ga_method_history ga_candidate_history; do
+      cp "$DIR/$f.csv" "$MON/${NAME}_seed${SEED}_${f#ga_}.csv"
+    done
+    date -Iseconds > "$DIR/DONE"
+    log "skip $NAME seed $SEED (restored and validated)"
+    return
+  fi
+  if [ -f "$DIR/DONE" ]; then
     rm -f "$DIR/DONE"
     log "reject stale DONE for $NAME seed $SEED"
+  fi
+
+  if [ "$IS_RANDOM" -eq 1 ] && [ -f "$DIR/ga_stop_details.json" ]; then
+    log "finalize completed search $NAME seed $SEED"
+    if ! "$PYBIN" -m mergekit.scripts.finalize_evo_run \
+        "$HERE/$CFG" "$DIR" --device cpu --min-free-disk-gb 5; then
+      log "fail $NAME seed $SEED completed-search finalization"
+      return 1
+    fi
+    if ! validate_run "$DIR" "$HERE/$CFG"; then
+      log "fail $NAME seed $SEED recovered artifact validation"
+      return 1
+    fi
+    for f in ga_method_history ga_candidate_history; do
+      cp "$DIR/$f.csv" "$MON/${NAME}_seed${SEED}_${f#ga_}.csv"
+    done
+    date -Iseconds > "$DIR/DONE"
+    log "recover $NAME seed $SEED without search rerun"
+    return
   fi
 
   RESUME=0
