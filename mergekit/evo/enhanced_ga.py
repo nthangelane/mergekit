@@ -1,6 +1,10 @@
 # Copyright (C) 2025 Nkululeko Thangelane
 # Enhanced GA optimizer with semantic operations for multi-method genomes
 
+import hashlib
+import logging
+import os
+import shutil
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -18,6 +22,13 @@ from mergekit.evo.checkpoint import (
 from mergekit.evo.genome import ModelGenome
 from mergekit.evo.multi_method_genome import MultiMethodGenome
 from mergekit.evo.ranking import weighted_rank_scores
+from mergekit.evo.reentry import (
+    capture_genome_geometry,
+    pad_genotype_for_reentry,
+)
+from mergekit.evo.reentry import (
+    register_reentrant_parent as register_reentrant_parent_on_genome,
+)
 from mergekit.evo.stop_policy import (
     StopDetails,
     evaluate_stagnation_stop,
@@ -30,6 +41,8 @@ if TYPE_CHECKING:
 OnPopulationEvaluated = Callable[[List[dict], np.ndarray, int, Dict[str, Any]], None]
 OnNewBest = Callable[[np.ndarray, float, int], None]
 OnGenerationStart = Callable[[int, int, int, int, float], None]
+OnAudit = Callable[[Dict[str, Any]], None]
+OnReentry = Callable[[Dict[str, Any]], None]
 
 
 def _summarize_failure_reasons(results: List[dict]) -> str:
@@ -114,6 +127,8 @@ class EnhancedGAOptimizer:
         on_population_evaluated: Optional[OnPopulationEvaluated] = None,
         on_new_best: Optional[OnNewBest] = None,
         on_generation_start: Optional[OnGenerationStart] = None,
+        on_audit: Optional[OnAudit] = None,
+        on_reentry: Optional[OnReentry] = None,
         checkpoint_path: Optional[str] = None,
         resume_state: Optional[Dict[str, Any]] = None,
         config_signature: Optional[str] = None,
@@ -127,6 +142,8 @@ class EnhancedGAOptimizer:
         self.on_population_evaluated = on_population_evaluated
         self.on_new_best = on_new_best
         self.on_generation_start = on_generation_start
+        self.on_audit = on_audit
+        self.on_reentry = on_reentry
         self.checkpoint_path = checkpoint_path
         self.resume_state = resume_state
         self.config_signature = config_signature
@@ -174,6 +191,31 @@ class EnhancedGAOptimizer:
         self._last_operator_summary: Dict[str, Any] = {}
         self.last_stop_details: Optional[Dict[str, Any]] = None
         self._fitness_history: List[List[float]] = []
+        audit_config = getattr(getattr(strategy, "config", None), "audit", None)
+        self._audit_config = (
+            audit_config if getattr(audit_config, "enabled", False) else None
+        )
+        self._effective_audit_every = int(
+            getattr(self._audit_config, "every_generations", 1)
+        )
+        self._first_audit_seconds: Optional[float] = None
+        self._audited_candidates: Dict[str, Dict[str, Any]] = {}
+        self._reentrant_parents: List[str] = []
+
+    def _register_reentrant_parent(self, checkpoint_path: str) -> int:
+        register = getattr(self.strategy, "register_reentrant_parent", None)
+        if callable(register):
+            parent_index = int(register(checkpoint_path))
+            if getattr(self.strategy, "genome", self.genome) is not self.genome:
+                local_index = register_reentrant_parent_on_genome(
+                    self.genome, checkpoint_path
+                )
+                if local_index != parent_index:
+                    raise ValueError(
+                        "Optimizer and evaluator disagree on re-entrant parent index"
+                    )
+            return parent_index
+        return register_reentrant_parent_on_genome(self.genome, checkpoint_path)
 
     @staticmethod
     def _state_float(value: Any) -> float:
@@ -237,6 +279,17 @@ class EnhancedGAOptimizer:
                     "novelty_archive": self._novelty_archive,
                 },
                 "fitness_cache": cache_rows,
+                "reentrant_parents": list(self._reentrant_parents),
+                "audited_candidates": [
+                    {
+                        "genotype_hash": key,
+                        "genotype": value["genotype"],
+                        "score": value["score"],
+                        "raw_score": value["raw_score"],
+                        "result": value["result"],
+                    }
+                    for key, value in self._audited_candidates.items()
+                ],
                 "rng_state": capture_rng_state(self.rs),
             },
         )
@@ -253,6 +306,11 @@ class EnhancedGAOptimizer:
         ):
             raise ValueError("Checkpoint configuration does not match this run")
 
+        for checkpoint_path in state.get("reentrant_parents") or []:
+            if checkpoint_path not in self._reentrant_parents:
+                self._register_reentrant_parent(str(checkpoint_path))
+                self._reentrant_parents.append(str(checkpoint_path))
+        self.dim = int(self.genome.initial_genotype(random=False).numel())
         population = np.asarray(state["population"], dtype=np.float32)
         if population.shape != (self.pop_size, self.dim):
             raise ValueError(
@@ -284,6 +342,15 @@ class EnhancedGAOptimizer:
                 self._state_float(row["score"]),
                 dict(row["result"]),
             )
+        self._audited_candidates = {
+            str(row["genotype_hash"]): {
+                "genotype": np.asarray(row["genotype"], dtype=np.float32),
+                "score": self._state_float(row["score"]),
+                "raw_score": self._state_float(row["raw_score"]),
+                "result": dict(row["result"]),
+            }
+            for row in state.get("audited_candidates") or []
+        }
         self.params.mutation_sigma = float(
             state.get("mutation_sigma", self.params.mutation_sigma)
         )
@@ -648,8 +715,26 @@ class EnhancedGAOptimizer:
         flat_norm = float(np.linalg.norm(flat))
         distances = []
         for archived in self._novelty_archive:
-            denom = max(flat_norm, float(np.linalg.norm(archived)), 1e-8)
-            distance = float(np.linalg.norm(flat - archived) / denom)
+            archived = np.asarray(archived, dtype=np.float32).reshape(-1)
+            # Memetic re-entry (E11) grows the genome; archive entries recorded
+            # before a re-entry are shorter than current genotypes. Zero-pad the
+            # shorter vector — identical semantics to pad_genotype_for_reentry,
+            # which assigns weight 0 on the new slot to pre-existing genotypes.
+            if archived.shape[0] != flat.shape[0]:
+                width = max(archived.shape[0], flat.shape[0])
+                if archived.shape[0] < width:
+                    archived = np.pad(archived, (0, width - archived.shape[0]))
+                cmp = (
+                    np.pad(flat, (0, width - flat.shape[0]))
+                    if flat.shape[0] < width
+                    else flat
+                )
+            else:
+                cmp = flat
+            denom = max(
+                float(np.linalg.norm(cmp)), float(np.linalg.norm(archived)), 1e-8
+            )
+            distance = float(np.linalg.norm(cmp - archived) / denom)
             distances.append(distance)
         if not distances:
             return 0.0
@@ -890,6 +975,239 @@ class EnhancedGAOptimizer:
             "probabilities_after": dict(self._method_probs),
         }
 
+    @staticmethod
+    def _exact_hash(genotype: np.ndarray) -> str:
+        values = np.asarray(genotype, dtype=np.float32).reshape(-1)
+        return hashlib.sha256(values.tobytes()).hexdigest()
+
+    def _record_audit(
+        self,
+        *,
+        generation: int,
+        genotype: np.ndarray,
+        search_score: float,
+        audit_result: dict,
+        seconds: float,
+        final: bool,
+    ) -> Tuple[float, dict]:
+        adjusted = self._adjust_result_score(audit_result, genotype)
+        audit_score = audit_result.get("score")
+        adjusted_score = adjusted.get("score")
+        row = {
+            "generation": int(generation),
+            "genotype_hash": self._exact_hash(genotype),
+            "search_score": float(search_score),
+            "audit_score": (float(audit_score) if audit_score is not None else None),
+            "delta": (
+                float(audit_score) - float(search_score)
+                if audit_score is not None and np.isfinite(search_score)
+                else None
+            ),
+            "seconds": float(seconds),
+            "final": bool(final),
+        }
+        if self.on_audit:
+            self.on_audit(row)
+        if adjusted_score is not None:
+            self._audited_candidates[row["genotype_hash"]] = {
+                "genotype": np.asarray(genotype, dtype=np.float32).copy(),
+                "score": float(adjusted_score),
+                "raw_score": float(audit_score),
+                "result": dict(adjusted),
+            }
+            return float(adjusted_score), adjusted
+        return -np.inf, adjusted
+
+    def _apply_periodic_audits(
+        self,
+        *,
+        pop: np.ndarray,
+        fitness: np.ndarray,
+        results: List[dict],
+        generation: int,
+        total_generations: int,
+    ) -> Tuple[np.ndarray, List[dict]]:
+        if self._audit_config is None:
+            return fitness, results
+        if generation % self._effective_audit_every != 0:
+            return fitness, results
+
+        order = np.argsort(-fitness)
+        indices = [
+            int(idx)
+            for idx in order[: min(int(self._audit_config.top_n), len(order))]
+            if np.isfinite(fitness[int(idx)])
+        ]
+        if not indices:
+            return fitness, results
+        started = time.perf_counter()
+        audited = self.strategy.audit_genotypes(
+            [pop[idx] for idx in indices], limit=self._audit_config.limit
+        )
+        elapsed = time.perf_counter() - started
+        per_candidate = elapsed / max(len(indices), 1)
+        for idx, audit_result in zip(indices, audited):
+            corrected_score, corrected_result = self._record_audit(
+                generation=generation,
+                genotype=pop[idx],
+                search_score=float(fitness[idx]),
+                audit_result=audit_result,
+                seconds=per_candidate,
+                final=False,
+            )
+            if self._audit_config.replace_cached_score:
+                fitness[idx] = corrected_score
+                enriched = dict(corrected_result)
+                enriched["search_score"] = results[idx].get("score")
+                enriched["audit_score"] = audit_result.get("score")
+                enriched["audited"] = True
+                results[idx] = enriched
+                self._fitness_cache[self._hash(pop[idx])] = (
+                    corrected_score,
+                    enriched,
+                )
+
+        if self._first_audit_seconds is None:
+            self._first_audit_seconds = per_candidate
+            max_seconds = float(
+                getattr(self.strategy.config, "audit_max_total_seconds", 4 * 60 * 60)
+            )
+            old_every = self._effective_audit_every
+            while True:
+                planned_periodic = (
+                    total_generations // self._effective_audit_every
+                ) * int(self._audit_config.top_n)
+                planned_total = planned_periodic + int(self._audit_config.final_audit)
+                if per_candidate * planned_total <= max_seconds:
+                    break
+                if planned_periodic == 0:
+                    logging.warning(
+                        "A single final audit is estimated to exceed the %.1fs "
+                        "audit budget; periodic audits are disabled for the remainder",
+                        max_seconds,
+                    )
+                    break
+                self._effective_audit_every *= 2
+            if self._effective_audit_every != old_every:
+                logging.warning(
+                    "Estimated audit budget exceeds %.1fs; increasing "
+                    "audit.every_generations from %d to %d",
+                    max_seconds,
+                    old_every,
+                    self._effective_audit_every,
+                )
+        return fitness, results
+
+    def _finalize_audited_winner(
+        self, best_x: np.ndarray, best_score: float, generation: int
+    ) -> Tuple[np.ndarray, float]:
+        if self._audit_config is None:
+            return best_x, best_score
+        if self._audit_config.final_audit:
+            started = time.perf_counter()
+            result = self.strategy.audit_genotypes(
+                [best_x], limit=self._audit_config.limit
+            )[0]
+            self._record_audit(
+                generation=generation,
+                genotype=best_x,
+                search_score=float(best_score),
+                audit_result=result,
+                seconds=time.perf_counter() - started,
+                final=True,
+            )
+        if not self._audited_candidates:
+            return best_x, best_score
+        winner = max(
+            self._audited_candidates.values(), key=lambda item: float(item["score"])
+        )
+        return winner["genotype"].copy(), float(winner["score"])
+
+    def _process_reentries(
+        self,
+        pop: np.ndarray,
+        results: List[dict],
+        best_x: np.ndarray,
+        generation: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        repair_config = getattr(getattr(self.strategy, "config", None), "repair", None)
+        if not getattr(repair_config, "reentry", False):
+            return pop, best_x
+        remaining = int(repair_config.max_reentries) - len(self._reentrant_parents)
+        candidates = []
+        for idx, result in enumerate(results):
+            path = result.get("reentry_checkpoint_path")
+            pre = result.get("repair_pre_score")
+            post = result.get("repair_post_score")
+            gain = (
+                float(post) - float(pre)
+                if pre is not None and post is not None
+                else float("-inf")
+            )
+            if (
+                path
+                and os.path.isdir(str(path))
+                and gain >= float(repair_config.reentry_min_gain)
+            ):
+                candidates.append((gain, self._exact_hash(pop[idx]), idx, str(path)))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        unique_candidates = []
+        seen_paths = set()
+        for candidate in candidates:
+            if candidate[3] in seen_paths:
+                continue
+            seen_paths.add(candidate[3])
+            unique_candidates.append(candidate)
+        candidates = unique_candidates
+        selected_paths = set()
+        for gain, genotype_hash, idx, source_path in candidates[: max(remaining, 0)]:
+            run_dir = os.path.dirname(
+                str(getattr(self.strategy, "model_storage_path", ""))
+            )
+            destination = os.path.join(run_dir, "reentrant", genotype_hash)
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            if os.path.exists(destination):
+                shutil.rmtree(destination)
+            shutil.move(source_path, destination)
+            selected_paths.add(source_path)
+            geometry = capture_genome_geometry(self.genome)
+            parent_index = self._register_reentrant_parent(destination)
+            pop = np.stack(
+                [pad_genotype_for_reentry(item, geometry) for item in pop], axis=0
+            )
+            best_x = pad_genotype_for_reentry(best_x, geometry)
+            for audited in self._audited_candidates.values():
+                audited["genotype"] = pad_genotype_for_reentry(
+                    audited["genotype"], geometry
+                )
+            self.dim = int(pop.shape[1])
+            self._reentrant_parents.append(destination)
+            if hasattr(self.strategy, "_repair_distiller"):
+                self.strategy._repair_distiller = None
+            row = {
+                "generation": int(generation),
+                "genotype_hash": genotype_hash,
+                "checkpoint_path": destination,
+                "pre_score": results[idx].get("repair_pre_score"),
+                "post_score": results[idx].get("repair_post_score"),
+                "gain": float(gain),
+                "audited": bool(results[idx].get("repair_comparison_audited")),
+                "parent_index": int(parent_index),
+            }
+            if self.on_reentry:
+                self.on_reentry(row)
+        retained_paths = {
+            str(result.get("reentry_checkpoint_path"))
+            for result in results
+            if result.get("reentry_checkpoint_path")
+        }
+        for path in retained_paths - selected_paths:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+        if selected_paths:
+            self._fitness_cache.clear()
+        return pop, best_x
+
     def run(
         self, max_fevals: int, timeout: Optional[float] = None
     ) -> Tuple[np.ndarray, float]:
@@ -975,6 +1293,16 @@ class EnhancedGAOptimizer:
             fitness, res_list = self._evaluate_population(pop)
             fevals += self.pop_size
             eval_seconds = time.time() - t0
+            pop, best_x = self._process_reentries(pop, res_list, best_x, generation_idx)
+            fitness, res_list = self._apply_periodic_audits(
+                pop=pop,
+                fitness=fitness,
+                results=res_list,
+                generation=generation_idx,
+                total_generations=int(
+                    np.ceil(float(effective_max_fevals) / float(self.pop_size))
+                ),
+            )
             self._fitness_history.append([float(value) for value in fitness.tolist()])
             order = np.argsort(-fitness)
             elite_indices = order[: self.n_elite]
@@ -1209,6 +1537,20 @@ class EnhancedGAOptimizer:
                 max_fevals=effective_max_fevals,
                 timeout_seconds=float(timeout) if timeout is not None else None,
             ).to_dict()
+
+        best_x, best_score = self._finalize_audited_winner(
+            best_x,
+            best_score,
+            int(
+                self.last_stop_details.get("generation")
+                or max(0, fevals // self.pop_size)
+            ),
+        )
+        self.last_stop_details["best_score"] = (
+            float(best_score) if np.isfinite(best_score) else None
+        )
+        if self._audit_config is not None:
+            self.last_stop_details["best_score_source"] = "audit"
 
         self._write_checkpoint(
             population=pop,

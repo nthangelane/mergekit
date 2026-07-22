@@ -136,8 +136,13 @@ def test_serial_two_stage_repairs_only_top_k(monkeypatch):
         repair_callback = kwargs.get("repair_callback")
         result = {"score": float(genotype[0]), "results": {}}
         if repair_callback is not None:
+            pre_score = result["score"]
             result["score"] += 10.0
             result["repair"] = repair_callback("/tmp/merged", genotype, eval_config)
+            result["repair_pre_score"] = pre_score
+            result["repair_post_score"] = result["score"]
+            result["repair_comparison_limit"] = eval_config.limit
+            result["repair_comparison_audited"] = False
         return result
 
     monkeypatch.setattr(
@@ -341,3 +346,60 @@ def test_serial_cpu_helper_reports_timing_on_success(monkeypatch, capsys):
     assert "Merge completed in" in output
     assert "Evaluation completed in" in output
     assert "Total time:" in output
+
+
+def test_repair_pre_and_post_scores_use_same_audit_fidelity(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "merged"
+    checkpoint.mkdir()
+    state = {"repaired": False}
+    limits = []
+
+    monkeypatch.setattr(
+        "mergekit.evo.strategy.merge_model_with_details",
+        lambda *args, **kwargs: {
+            "merged_path": str(checkpoint),
+            "error_stage": None,
+            "error_type": None,
+            "error_message": None,
+        },
+    )
+
+    def fake_evaluate_model_cpu(*args, **kwargs):
+        limits.append(kwargs["limit"])
+        return {"score": 0.45 if state["repaired"] else 0.40, "results": {}}
+
+    monkeypatch.setattr(
+        "mergekit.evo.strategy.evaluate_model_cpu", fake_evaluate_model_cpu
+    )
+
+    def fake_repair(path, genotype, eval_config):
+        del path, genotype
+        assert eval_config.limit == 50
+        state["repaired"] = True
+        return {"repaired": True, "probe_slope": 0.1}
+
+    search_config = DummyConfig(
+        tasks=[SimpleNamespace(name="sciq")],
+        num_fewshot=0,
+        limit=10,
+        fitness_mode="weighted_sum",
+        fitness=SimpleNamespace(
+            version="v2", lower_is_better_transform="log_reciprocal"
+        ),
+    )
+    audit_config = search_config.model_copy(update={"limit": 50})
+    result = _evaluate_genotype_serial_cpu_impl(
+        np.array([1]),
+        search_config,
+        object(),
+        object(),
+        model_storage_path=str(tmp_path),
+        repair_callback=fake_repair,
+        repair_eval_config=audit_config,
+    )
+
+    assert limits == [50, 50]
+    assert result["repair_pre_score"] == 0.40
+    assert result["repair_post_score"] == 0.45
+    assert result["repair_comparison_limit"] == 50
+    assert result["repair_comparison_audited"] is True

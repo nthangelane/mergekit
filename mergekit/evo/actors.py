@@ -215,6 +215,11 @@ class MergeActorBase:
     def get_status(self) -> Dict[str, Any]:
         return dict(self._status)
 
+    def register_reentrant_parent(self, checkpoint_path: str) -> int:
+        from mergekit.evo.reentry import register_reentrant_parent
+
+        return register_reentrant_parent(self.genome, checkpoint_path)
+
 
 @ray.remote(num_cpus=1, num_gpus=1.0)
 class OnDiskMergeEvaluator(MergeActorBase):

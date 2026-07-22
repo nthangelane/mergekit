@@ -31,8 +31,10 @@ def main(run_dir: Path, config_path: Path | None, require_baseline: bool) -> Non
     click.echo(
         f"VALID {result.run_dir} mode={result.mode} fevals={result.fevals} "
         f"candidates={result.candidate_rows} successful={result.successful_candidates} "
-        f"methods={result.method_rows}"
+        f"methods={result.method_rows} invalid_genotypes={result.invalid_genotype_count}"
     )
+    for warning in result.warnings:
+        click.echo(f"WARNING: {warning}", err=True)
 
 
 if __name__ == "__main__":

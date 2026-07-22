@@ -28,6 +28,10 @@ class EvoRunValidation:
     fevals: int
     stop_reason: str
     repair_recorded: bool
+    audit_rows: int
+    reentry_rows: int
+    invalid_genotype_count: int
+    warnings: tuple[str, ...]
 
 
 def _read_csv_rows(path: Path, errors: list[str]) -> list[Dict[str, str]]:
@@ -88,6 +92,17 @@ def _repair_enabled(config_path: Optional[Path], errors: list[str]) -> bool:
     return isinstance(repair, dict) and repair.get("enabled") is True
 
 
+def _campaign_config(config_path: Optional[Path], errors: list[str]) -> Dict[str, Any]:
+    if config_path is None:
+        return {}
+    try:
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        errors.append(f"unable to read run config {config_path}: {exc}")
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def validate_evo_run(
     run_dir: Path | str,
     *,
@@ -136,7 +151,10 @@ def validate_evo_run(
     candidate_rows = _read_csv_rows(run_dir / "ga_candidate_history.csv", errors)
     method_rows = _read_csv_rows(run_dir / "ga_method_history.csv", errors)
     successful_candidates = 0
+    invalid_genotype_count = 0
     for row in candidate_rows:
+        if str(row.get("error_type") or "").strip() == "invalid_genotype":
+            invalid_genotype_count += 1
         try:
             if math.isfinite(float(row.get("score", ""))):
                 successful_candidates += 1
@@ -184,9 +202,57 @@ def validate_evo_run(
         if repair_payload and not repair_recorded:
             errors.append("final_repair.json has no repaired outcome")
 
+    campaign_config = _campaign_config(resolved_config, errors)
+    audit_payload = campaign_config.get("audit")
+    audit_enabled = (
+        isinstance(audit_payload, dict) and audit_payload.get("enabled") is True
+    )
+    audit_rows: list[Dict[str, str]] = []
+    if audit_enabled:
+        audit_rows = _read_csv_rows(run_dir / "ga_audit_history.csv", errors)
+        if (
+            audit_payload.get("final_audit", True)
+            and audit_rows
+            and not any(
+                str(row.get("final", "")).lower() == "true" for row in audit_rows
+            )
+        ):
+            errors.append("ga_audit_history.csv has no final audit row")
+
+    reentry_rows: list[Dict[str, str]] = []
+    reentrant_dir = run_dir / "reentrant"
+    reentry_history = run_dir / "ga_reentry_history.csv"
+    if reentrant_dir.exists() or reentry_history.exists():
+        reentry_rows = _read_csv_rows(reentry_history, errors)
+        logged_paths = set()
+        for row in reentry_rows:
+            checkpoint = Path(str(row.get("checkpoint_path") or ""))
+            if not checkpoint.is_absolute():
+                checkpoint = run_dir / checkpoint
+            logged_paths.add(checkpoint.resolve())
+            if not checkpoint.is_dir():
+                errors.append(
+                    "ga_reentry_history.csv references missing checkpoint "
+                    f"{checkpoint}"
+                )
+        disk_paths = (
+            {path.resolve() for path in reentrant_dir.iterdir() if path.is_dir()}
+            if reentrant_dir.is_dir()
+            else set()
+        )
+        if disk_paths != logged_paths:
+            errors.append("reentry checkpoints do not match ga_reentry_history.csv")
+
     if errors:
         raise EvoRunValidationError(
             f"Invalid evolutionary run at {run_dir}: " + "; ".join(errors)
+        )
+
+    warnings = []
+    if invalid_genotype_count:
+        warnings.append(
+            "ga_candidate_history.csv contains "
+            f"{invalid_genotype_count} invalid_genotype rejection(s)"
         )
 
     return EvoRunValidation(
@@ -198,4 +264,8 @@ def validate_evo_run(
         fevals=fevals,
         stop_reason=stop_reason,
         repair_recorded=repair_recorded,
+        audit_rows=len(audit_rows),
+        reentry_rows=len(reentry_rows),
+        invalid_genotype_count=invalid_genotype_count,
+        warnings=tuple(warnings),
     )

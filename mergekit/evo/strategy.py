@@ -8,6 +8,7 @@ import hashlib
 import logging
 import math
 import os
+import shutil
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -135,6 +136,26 @@ class EvaluationStrategyBase(ABC):
         if self.model_storage_path:
             os.makedirs(self.model_storage_path, exist_ok=True)
 
+    def register_reentrant_parent(self, checkpoint_path: str) -> int:
+        """Register a repaired parent locally and in persistent evaluators."""
+        from mergekit.evo.reentry import (
+            align_reentrant_parent_vocab,
+            register_reentrant_parent,
+        )
+
+        align_reentrant_parent_vocab(
+            self.genome,
+            checkpoint_path,
+            trust_remote_code=self.merge_options.trust_remote_code,
+        )
+        parent_index = register_reentrant_parent(self.genome, checkpoint_path)
+        self._propagate_reentrant_parent(checkpoint_path)
+        return parent_index
+
+    def _propagate_reentrant_parent(self, checkpoint_path: str) -> None:
+        """Update evaluator-owned genome copies, if this strategy has any."""
+        del checkpoint_path
+
     def set_runtime_context(
         self,
         *,
@@ -211,6 +232,11 @@ class EvaluationStrategyBase(ABC):
         stage2_config = self._stage_config(stage=2)
         stage1_results = self._evaluate_genotypes_once(genotypes, stage1_config)
 
+        if getattr(self.config, "metric_guard_mode", "reject") == "quarantine":
+            stage1_results = self._resolve_quarantined_candidates(
+                genotypes, stage1_results, stage1_config
+            )
+
         combined_results: List[dict] = []
         successful_indices: List[int] = []
         for idx, stage1_result in enumerate(stage1_results):
@@ -220,6 +246,8 @@ class EvaluationStrategyBase(ABC):
             result["stage1_limit"] = stage1_config.limit
             result["stage1_tasks"] = [task.name for task in stage1_config.tasks]
             result["evaluation_stage"] = "stage1"
+            result.setdefault("quarantined", False)
+            result.setdefault("quarantine_outcome", None)
             if stage1_result.get("score") is not None:
                 successful_indices.append(idx)
             combined_results.append(result)
@@ -264,10 +292,106 @@ class EvaluationStrategyBase(ABC):
             repair_metadata = stage2_result.get("repair")
             if repair_metadata is not None:
                 result["repair"] = repair_metadata
-                result["repair_pre_score"] = result.get("stage1_score")
-                result["repair_post_score"] = result.get("stage2_score")
+                result["repair_pre_score"] = stage2_result.get("repair_pre_score")
+                result["repair_post_score"] = stage2_result.get("repair_post_score")
+                result["repair_comparison_limit"] = stage2_result.get(
+                    "repair_comparison_limit"
+                )
+                result["repair_comparison_audited"] = stage2_result.get(
+                    "repair_comparison_audited", False
+                )
+                if stage2_result.get("reentry_checkpoint_path"):
+                    result["reentry_checkpoint_path"] = stage2_result[
+                        "reentry_checkpoint_path"
+                    ]
 
         return combined_results
+
+    def _resolve_quarantined_candidates(
+        self,
+        genotypes: List[np.ndarray],
+        stage1_results: List[dict],
+        stage1_config: EvolMergeConfiguration,
+    ) -> List[dict]:
+        resolved = [dict(result) for result in stage1_results]
+        for idx, (genotype, result) in enumerate(zip(genotypes, stage1_results)):
+            if result.get("error_type") != "metric_guard":
+                resolved[idx].setdefault("quarantined", False)
+                resolved[idx].setdefault("quarantine_outcome", None)
+                continue
+
+            guarded_task_name = result.get("guarded_task")
+            guarded_tasks = [
+                task
+                for task in stage1_config.tasks
+                if guarded_task_name is None or task.name == guarded_task_name
+            ]
+            if not guarded_tasks:
+                guarded_tasks = list(stage1_config.tasks)
+            quarantine_config = stage1_config.model_copy(
+                update={
+                    "tasks": guarded_tasks,
+                    "limit": int(self.config.quarantine_audit_limit),
+                    "two_stage": False,
+                    "metric_guard_mode": "reject",
+                }
+            )
+            self.set_runtime_context(phase="quarantine")
+            audit_result = self._evaluate_genotypes_once([genotype], quarantine_config)[
+                0
+            ]
+            self.set_runtime_context(phase="ga")
+            if audit_result.get("score") is not None:
+                admitted = dict(audit_result)
+                admitted.update(
+                    {
+                        "quarantined": True,
+                        "quarantine_outcome": "passed",
+                        "quarantine_stage1_score": result.get("score"),
+                        "quarantine_limit": int(self.config.quarantine_audit_limit),
+                        "score_source": "quarantine_stage2",
+                    }
+                )
+                resolved[idx] = admitted
+            else:
+                confirmed = dict(result)
+                confirmed.update(
+                    {
+                        "score": None,
+                        "quarantined": True,
+                        "quarantine_outcome": "failed",
+                        "quarantine_limit": int(self.config.quarantine_audit_limit),
+                        "error_type": "metric_guard_confirmed",
+                        "error_message": audit_result.get("error_message")
+                        or result.get("error_message"),
+                    }
+                )
+                resolved[idx] = confirmed
+        return resolved
+
+    def audit_genotypes(
+        self, genotypes: List[np.ndarray], *, limit: Optional[int]
+    ) -> List[dict]:
+        """Evaluate genotypes once at audit fidelity without repair or staging."""
+        repair_config = getattr(self.config, "repair", None)
+        audit_config = self.config.model_copy(
+            update={
+                "tasks": self.config.tasks,
+                "limit": limit,
+                "two_stage": False,
+                "repair": (
+                    repair_config.model_copy(update={"enabled": False})
+                    if repair_config is not None
+                    else None
+                ),
+                "metric_guard_mode": "reject",
+            }
+        )
+        self.set_runtime_context(phase="audit")
+        try:
+            return self._evaluate_genotypes_once(genotypes, audit_config)
+        finally:
+            self.set_runtime_context(phase="ga")
 
     def _rank_stage_results(
         self, stage_results: List[dict], candidate_indices: List[int]
@@ -389,35 +513,43 @@ class ActorPoolEvaluationStrategy(EvaluationStrategyBase):
             tensor_parallel_size=self.tensor_parallel_size,
             in_memory=in_memory,
         )
-        self.actor_pool = ray.util.ActorPool(
+        self._actors = [
+            (
+                self.actor_cls.options(
+                    name=worker_actor_name(self.run_label, "pool", worker_idx),
+                    num_gpus=actor_gpu_request,
+                ).remote
+                if actor_gpu_request > 0
+                else self.actor_cls.options(
+                    name=worker_actor_name(self.run_label, "pool", worker_idx)
+                ).remote
+            )(
+                self.config,
+                self.genome,
+                self.merge_options,
+                model_storage_path=self.model_storage_path,
+                vllm=vllm,
+                tensor_parallel_size=self.tensor_parallel_size,
+                batch_size=self.batch_size,
+                task_manager=self.task_manager,
+                quantization_config=self.quantization_config,
+                worker_name=worker_actor_name(self.run_label, "pool", worker_idx),
+                observer_config=(
+                    self.run_observer.export_config(role="worker")
+                    if self.run_observer is not None
+                    else None
+                ),
+            )
+            for worker_idx in range(worker_count)
+        ]
+        self.actor_pool = ray.util.ActorPool(self._actors)
+
+    def _propagate_reentrant_parent(self, checkpoint_path: str) -> None:
+        ray = _require_ray()
+        ray.get(
             [
-                (
-                    self.actor_cls.options(
-                        name=worker_actor_name(self.run_label, "pool", worker_idx),
-                        num_gpus=actor_gpu_request,
-                    ).remote
-                    if actor_gpu_request > 0
-                    else self.actor_cls.options(
-                        name=worker_actor_name(self.run_label, "pool", worker_idx)
-                    ).remote
-                )(
-                    self.config,
-                    self.genome,
-                    self.merge_options,
-                    model_storage_path=self.model_storage_path,
-                    vllm=vllm,
-                    tensor_parallel_size=self.tensor_parallel_size,
-                    batch_size=self.batch_size,
-                    task_manager=self.task_manager,
-                    quantization_config=self.quantization_config,
-                    worker_name=worker_actor_name(self.run_label, "pool", worker_idx),
-                    observer_config=(
-                        self.run_observer.export_config(role="worker")
-                        if self.run_observer is not None
-                        else None
-                    ),
-                )
-                for worker_idx in range(worker_count)
+                actor.register_reentrant_parent.remote(checkpoint_path)
+                for actor in self._actors
             ]
         )
 
@@ -675,6 +807,11 @@ class BufferedRayEvaluationStrategyActor:
     async def shutdown(self):
         self._shutdown = True
 
+    def register_reentrant_parent(self, checkpoint_path: str) -> int:
+        from mergekit.evo.reentry import register_reentrant_parent
+
+        return register_reentrant_parent(self.genome, checkpoint_path)
+
 
 class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
     def __init__(
@@ -714,6 +851,10 @@ class BufferedRayEvaluationStrategy(EvaluationStrategyBase):
             ),
         )
         self.actor.process_queue.remote()
+
+    def _propagate_reentrant_parent(self, checkpoint_path: str) -> None:
+        ray = _require_ray()
+        ray.get(self.actor.register_reentrant_parent.remote(checkpoint_path))
 
     def _evaluate_genotypes_once(
         self, genotypes: List[np.ndarray], eval_config: EvolMergeConfiguration
@@ -808,6 +949,8 @@ def _evaluate_genotype_serial_cpu_impl(
     batch_size: Optional[int] = None,
     task_manager: Optional[Any] = None,
     repair_callback=None,
+    repair_eval_config: Optional[EvolMergeConfiguration] = None,
+    retain_repaired_checkpoint: bool = False,
 ):
     import sys
     import time
@@ -852,41 +995,63 @@ def _evaluate_genotype_serial_cpu_impl(
     )
     sys.stdout.flush()
 
-    repair_metadata = None
-    if repair_callback is not None:
-        print("[EVAL] Running gated Stage-2 repair...", flush=True)
-        repair_metadata = repair_callback(merged_path, genotype, config)
-
     print(f"[EVAL] Step 2/2: Evaluating merged model on {config.tasks}...", flush=True)
     sys.stdout.flush()
     eval_start = time.perf_counter()
-    res = evaluate_model_cpu(
-        merged_path,
-        config.tasks,
-        num_fewshot=config.num_fewshot,
-        limit=config.limit,
-        batch_size=batch_size,
-        task_manager=task_manager,
-        fitness_mode=getattr(config, "fitness_mode", "weighted_sum"),
-        fitness_version=getattr(getattr(config, "fitness", None), "version", "v1"),
-        lower_is_better_transform=getattr(
-            getattr(config, "fitness", None),
-            "lower_is_better_transform",
-            "legacy_reciprocal",
-        ),
-        task_mix_profile=getattr(config, "task_mix_profile", None),
-        behavior_prompts=getattr(config, "behavior_prompts", None),
-        behavior_probe_max_new_tokens=getattr(
-            config, "behavior_probe_max_new_tokens", 24
-        ),
-        behavior_repetition_ngram_size=getattr(
-            config, "behavior_repetition_ngram_size", 4
-        ),
-        behavior_min_distinct_ratio=getattr(config, "behavior_min_distinct_ratio", 0.2),
-        behavior_reject_on_degenerate=getattr(
-            config, "behavior_reject_on_degenerate", False
-        ),
-    )
+
+    def evaluate_checkpoint(eval_config, *, cleanup: bool):
+        return evaluate_model_cpu(
+            merged_path,
+            eval_config.tasks,
+            num_fewshot=eval_config.num_fewshot,
+            limit=eval_config.limit,
+            batch_size=batch_size,
+            task_manager=task_manager,
+            fitness_mode=getattr(eval_config, "fitness_mode", "weighted_sum"),
+            fitness_version=getattr(
+                getattr(eval_config, "fitness", None), "version", "v1"
+            ),
+            lower_is_better_transform=getattr(
+                getattr(eval_config, "fitness", None),
+                "lower_is_better_transform",
+                "legacy_reciprocal",
+            ),
+            task_mix_profile=getattr(eval_config, "task_mix_profile", None),
+            behavior_prompts=getattr(eval_config, "behavior_prompts", None),
+            behavior_probe_max_new_tokens=getattr(
+                eval_config, "behavior_probe_max_new_tokens", 24
+            ),
+            behavior_repetition_ngram_size=getattr(
+                eval_config, "behavior_repetition_ngram_size", 4
+            ),
+            behavior_min_distinct_ratio=getattr(
+                eval_config, "behavior_min_distinct_ratio", 0.2
+            ),
+            behavior_reject_on_degenerate=getattr(
+                eval_config, "behavior_reject_on_degenerate", False
+            ),
+            cleanup_merged_path=cleanup,
+        )
+
+    repair_metadata = None
+    if repair_callback is not None:
+        comparison_config = repair_eval_config or config
+        pre_repair = evaluate_checkpoint(comparison_config, cleanup=False)
+        print("[EVAL] Running gated Stage-2 repair...", flush=True)
+        repair_metadata = repair_callback(merged_path, genotype, comparison_config)
+        retain = bool(retain_repaired_checkpoint and repair_metadata.get("repaired"))
+        res = evaluate_checkpoint(comparison_config, cleanup=not retain)
+        res = dict(res)
+        res["repair_pre_score"] = pre_repair.get("score")
+        res["repair_post_score"] = res.get("score")
+        res["repair_comparison_limit"] = comparison_config.limit
+        res["repair_comparison_audited"] = comparison_config is not config
+        if retain:
+            res["reentry_checkpoint_path"] = merged_path
+        elif os.path.exists(merged_path):
+            shutil.rmtree(merged_path, ignore_errors=True)
+    else:
+        res = evaluate_checkpoint(config, cleanup=True)
     eval_seconds = time.perf_counter() - eval_start
     if res.get("score") is None:
         print(
@@ -1054,6 +1219,16 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                     flush=True,
                 )
                 sys.stdout.flush()
+                audit_config = getattr(self.config, "audit", None)
+                repair_eval_config = None
+                if (
+                    getattr(getattr(eval_config, "repair", None), "enabled", False)
+                    and audit_config is not None
+                    and audit_config.enabled
+                ):
+                    repair_eval_config = eval_config.model_copy(
+                        update={"limit": audit_config.limit, "two_stage": False}
+                    )
                 result = _evaluate_genotype_serial_cpu_impl(
                     genotype,
                     eval_config,
@@ -1068,6 +1243,10 @@ class SerialEvaluationStrategy(EvaluationStrategyBase):
                             getattr(eval_config, "repair", None), "enabled", False
                         )
                         else None
+                    ),
+                    repair_eval_config=repair_eval_config,
+                    retain_repaired_checkpoint=bool(
+                        getattr(getattr(eval_config, "repair", None), "reentry", False)
                     ),
                 )
                 results.append(result)

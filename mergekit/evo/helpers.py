@@ -865,6 +865,7 @@ def evaluate_model_cpu(
     behavior_repetition_ngram_size: int = 4,
     behavior_min_distinct_ratio: float = 0.2,
     behavior_reject_on_degenerate: bool = False,
+    cleanup_merged_path: bool = True,
     **kwargs,
 ) -> dict:
     """CPU-only evaluation using HuggingFace backend and float32."""
@@ -971,7 +972,7 @@ def evaluate_model_cpu(
                 res["behavior_probe"] = behavior_probe
         return res
     finally:
-        if merged_path:
+        if merged_path and cleanup_merged_path:
             shutil.rmtree(merged_path, ignore_errors=True)
 
 
@@ -1147,6 +1148,8 @@ def _apply_metric_guards(result: dict) -> None:
                     result.setdefault("error_stage", "eval")
                     result.setdefault("error_type", "metric_guard")
                     result.setdefault("error_message", message)
+                    result.setdefault("guarded_task", task_name)
+                    result.setdefault("guarded_metric", "perplexity,none")
                     return
             except (TypeError, ValueError):
                 message = f"Non-numeric perplexity {perplexity!r} for task {task_name}"
@@ -1158,6 +1161,8 @@ def _apply_metric_guards(result: dict) -> None:
                 result.setdefault("error_stage", "eval")
                 result.setdefault("error_type", "metric_guard")
                 result.setdefault("error_message", message)
+                result.setdefault("guarded_task", task_name)
+                result.setdefault("guarded_metric", "perplexity,none")
                 return
 
         if accuracy is not None:
@@ -1172,6 +1177,8 @@ def _apply_metric_guards(result: dict) -> None:
                     result.setdefault("error_stage", "eval")
                     result.setdefault("error_type", "metric_guard")
                     result.setdefault("error_message", message)
+                    result.setdefault("guarded_task", task_name)
+                    result.setdefault("guarded_metric", "acc,none")
                     return
             except (TypeError, ValueError):
                 message = f"Non-numeric accuracy {accuracy!r} for task {task_name}"
@@ -1183,4 +1190,6 @@ def _apply_metric_guards(result: dict) -> None:
                 result.setdefault("error_stage", "eval")
                 result.setdefault("error_type", "metric_guard")
                 result.setdefault("error_message", message)
+                result.setdefault("guarded_task", task_name)
+                result.setdefault("guarded_metric", "acc,none")
                 return

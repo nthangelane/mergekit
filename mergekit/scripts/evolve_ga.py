@@ -1559,6 +1559,12 @@ def main(
                     "repair_final_loss": (result.get("repair") or {}).get("final_loss"),
                     "repair_pre_score": result.get("repair_pre_score"),
                     "repair_post_score": result.get("repair_post_score"),
+                    "repair_comparison_limit": result.get("repair_comparison_limit"),
+                    "repair_comparison_audited": result.get(
+                        "repair_comparison_audited"
+                    ),
+                    "quarantined": result.get("quarantined", False),
+                    "quarantine_outcome": result.get("quarantine_outcome"),
                     "fitness_proxy": result.get("fitness_proxy"),
                     "error_stage": result.get("error_stage"),
                     "error_type": result.get("error_type"),
@@ -1930,6 +1936,43 @@ def main(
         save_best_config(best_x)
         log_best(best_x, best_score, step=step)
 
+    def _append_campaign_row(filename: str, row: Dict[str, Any]) -> None:
+        output_path = os.path.join(storage_path, filename)
+        file_exists = os.path.exists(output_path)
+        with open(output_path, "a", encoding="utf-8", newline="") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=list(row.keys()))
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+    def on_audit(row: Dict[str, Any]) -> None:
+        _append_campaign_row("ga_audit_history.csv", row)
+        progress.write(
+            "candidate_audited",
+            generation=int(row["generation"]),
+            scores={
+                "search": row.get("search_score"),
+                "audit": row.get("audit_score"),
+            },
+            secs=float(row.get("seconds") or 0.0),
+            genotype_hash=row.get("genotype_hash"),
+            final=bool(row.get("final")),
+        )
+
+    def on_reentry(row: Dict[str, Any]) -> None:
+        _append_campaign_row("ga_reentry_history.csv", row)
+        progress.write(
+            "repair_reentry",
+            generation=int(row["generation"]),
+            scores={
+                "pre": row.get("pre_score"),
+                "post": row.get("post_score"),
+                "gain": row.get("gain"),
+            },
+            genotype_hash=row.get("genotype_hash"),
+            checkpoint_path=row.get("checkpoint_path"),
+        )
+
     try:
         optimizer_kind = resolve_optimizer_kind(config, genome_type)
     except ValueError as exc:
@@ -1966,6 +2009,10 @@ def main(
         )
 
     if random_search is not None:
+        if getattr(getattr(config, "audit", None), "enabled", False):
+            raise click.ClickException(
+                "audit.enabled is currently supported by GA optimizers, not random search."
+            )
         optimizer = RandomSearchOptimizer(
             genome=genome,
             strategy=strat,
@@ -1990,6 +2037,8 @@ def main(
             on_population_evaluated=on_pop,
             on_new_best=on_best,
             on_generation_start=on_generation_start,
+            on_audit=on_audit,
+            on_reentry=on_reentry,
             checkpoint_path=os.path.join(storage_path, GA_STATE_FILENAME),
             resume_state=resume_state,
             config_signature=run_signature,
@@ -2006,6 +2055,8 @@ def main(
             on_population_evaluated=on_pop,
             on_new_best=on_best,
             on_generation_start=on_generation_start,
+            on_audit=on_audit,
+            on_reentry=on_reentry,
         )
 
     if baseline_csv_path:
@@ -2178,18 +2229,29 @@ def main(
     if has_valid_solution:
         best_config = None
         best_plan_dict = None
+        has_reentrant_parents = len(genome.definition.models) > len(
+            config.genome.models
+        )
         if genome_type == "multi_method":
-            genome_pretty = MultiMethodGenome(
-                MultiMethodGenomeDefinition.model_validate(config.genome.model_dump()),
-                trust_remote_code=trust_remote_code,
+            genome_pretty = (
+                genome
+                if has_reentrant_parents
+                else MultiMethodGenome(
+                    MultiMethodGenomeDefinition.model_validate(
+                        config.genome.model_dump()
+                    ),
+                    trust_remote_code=trust_remote_code,
+                )
             )
             if hasattr(genome_pretty, "execution_plan_dict"):
                 best_plan_dict = genome_pretty.execution_plan_dict(best_x)
             if not best_plan_dict or best_plan_dict.get("kind") == "config":
                 best_config = genome_pretty.genotype_to_merge_config(best_x)
         else:
-            genome_pretty = ModelGenome(
-                config.genome, trust_remote_code=trust_remote_code
+            genome_pretty = (
+                genome
+                if has_reentrant_parents
+                else ModelGenome(config.genome, trust_remote_code=trust_remote_code)
             )
             best_config = genome_pretty.genotype_merge_config(best_x)
 

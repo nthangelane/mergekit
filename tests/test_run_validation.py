@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from mergekit.evo.progress import ProgressLogger
 from mergekit.evo.run_validation import EvoRunValidationError, validate_evo_run
+from mergekit.scripts.validate_evo_run import main as validate_evo_run_cli
 
 
 def _write_csv(path: Path, rows: int) -> None:
@@ -104,3 +106,63 @@ def test_validate_evo_run_reports_malformed_numeric_metadata(tmp_path):
 
     with pytest.raises(EvoRunValidationError, match="final stop fevals must be"):
         validate_evo_run(tmp_path)
+
+
+def test_validate_evo_run_requires_audit_history_and_final_row(tmp_path):
+    _write_valid_run(tmp_path)
+    config_path = tmp_path / "audit.yml"
+    config_path.write_text(
+        "audit:\n  enabled: true\n  final_audit: true\n", encoding="utf-8"
+    )
+
+    with pytest.raises(EvoRunValidationError, match="missing ga_audit_history.csv"):
+        validate_evo_run(tmp_path, config_path=config_path)
+
+    (tmp_path / "ga_audit_history.csv").write_text(
+        "generation,genotype_hash,search_score,audit_score,delta,seconds,final\n"
+        "1,abc,0.5,0.4,-0.1,1.0,false\n"
+        "1,abc,0.4,0.4,0.0,1.0,true\n",
+        encoding="utf-8",
+    )
+    result = validate_evo_run(tmp_path, config_path=config_path)
+    assert result.audit_rows == 2
+
+
+def test_validate_evo_run_matches_reentry_log_to_checkpoints(tmp_path):
+    _write_valid_run(tmp_path)
+    checkpoint = tmp_path / "reentrant" / "abc"
+    checkpoint.mkdir(parents=True)
+    (tmp_path / "ga_reentry_history.csv").write_text(
+        "generation,genotype_hash,checkpoint_path,pre_score,post_score,gain\n"
+        f"1,abc,{checkpoint},0.4,0.45,0.05\n",
+        encoding="utf-8",
+    )
+
+    result = validate_evo_run(tmp_path)
+    assert result.reentry_rows == 1
+
+    (tmp_path / "reentrant" / "unlogged").mkdir()
+    with pytest.raises(EvoRunValidationError, match="do not match"):
+        validate_evo_run(tmp_path)
+
+
+def test_validate_evo_run_warns_with_invalid_genotype_count(tmp_path):
+    _write_valid_run(tmp_path)
+    (tmp_path / "ga_candidate_history.csv").write_text(
+        "generation,fevals,score,error_type\n"
+        "1,1,0.5,\n"
+        "1,2,,invalid_genotype\n"
+        "1,3,,invalid_genotype\n",
+        encoding="utf-8",
+    )
+
+    result = validate_evo_run(tmp_path)
+
+    assert result.invalid_genotype_count == 2
+    assert result.warnings == (
+        "ga_candidate_history.csv contains 2 invalid_genotype rejection(s)",
+    )
+    cli_result = CliRunner().invoke(validate_evo_run_cli, [str(tmp_path)])
+    assert cli_result.exit_code == 0
+    assert "invalid_genotypes=2" in cli_result.output
+    assert "WARNING:" in cli_result.output

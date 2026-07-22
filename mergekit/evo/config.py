@@ -242,7 +242,7 @@ class StopConfiguration(BaseModel, frozen=True):
 class RepairConfiguration(BaseModel, frozen=True):
     enabled: bool = False
     probe_steps: int = 100
-    max_steps: int = 500
+    max_steps: int = 2000
     gate_min_slope: float = 1e-5
     tau_distill: float = 2.0
     corpus: str = "wikitext-train-slice"
@@ -250,6 +250,9 @@ class RepairConfiguration(BaseModel, frozen=True):
     batch_size: int = 4
     seq_len: int = 256
     plateau_patience: int = 50
+    reentry: bool = False
+    reentry_min_gain: float = 0.02
+    max_reentries: int = 2
 
     @model_validator(mode="after")
     def validate_repair_settings(self):
@@ -269,8 +272,33 @@ class RepairConfiguration(BaseModel, frozen=True):
             raise ValueError("repair.seq_len must be > 0")
         if self.plateau_patience <= 0:
             raise ValueError("repair.plateau_patience must be > 0")
+        if self.reentry_min_gain < 0:
+            raise ValueError("repair.reentry_min_gain must be >= 0")
+        if self.max_reentries < 0:
+            raise ValueError("repair.max_reentries must be >= 0")
+        if self.reentry and self.max_reentries < 1:
+            raise ValueError("repair.reentry requires max_reentries >= 1")
         if not self.corpus.strip():
             raise ValueError("repair.corpus must not be empty")
+        return self
+
+
+class AuditConfiguration(BaseModel, frozen=True):
+    enabled: bool = False
+    every_generations: int = 3
+    top_n: int = 1
+    limit: Optional[int] = None
+    replace_cached_score: bool = True
+    final_audit: bool = True
+
+    @model_validator(mode="after")
+    def validate_audit_settings(self):
+        if self.every_generations <= 0:
+            raise ValueError("audit.every_generations must be > 0")
+        if self.top_n <= 0:
+            raise ValueError("audit.top_n must be > 0")
+        if self.limit is not None and self.limit <= 0:
+            raise ValueError("audit.limit must be > 0 when set")
         return self
 
 
@@ -303,6 +331,10 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
     ga: Optional[GAOptimizerConfiguration] = None
     stop: Optional[StopConfiguration] = None
     repair: Optional[RepairConfiguration] = None
+    audit: Optional[AuditConfiguration] = None
+    audit_max_total_seconds: float = 4 * 60 * 60
+    metric_guard_mode: Literal["reject", "quarantine"] = "reject"
+    quarantine_audit_limit: int = 100
     apply_chat_template: bool = True
     fewshot_as_multiturn: bool = True
 
@@ -320,6 +352,10 @@ class EvolMergeConfiguration(BaseModel, frozen=True):
             raise ValueError("behavior_repetition_ngram_size must be > 0")
         if not 0.0 <= self.behavior_min_distinct_ratio <= 1.0:
             raise ValueError("behavior_min_distinct_ratio must be in [0, 1]")
+        if self.audit_max_total_seconds <= 0:
+            raise ValueError("audit_max_total_seconds must be > 0")
+        if self.quarantine_audit_limit <= 0:
+            raise ValueError("quarantine_audit_limit must be > 0")
         if self.two_stage:
             if self.stage2_top_k is not None and self.stage2_top_k < 1:
                 raise ValueError("two_stage requires stage2_top_k >= 1")

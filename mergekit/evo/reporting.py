@@ -266,6 +266,8 @@ def log_run_artifacts(tracker, storage_path: str) -> None:
     artifacts = {
         "ga_history": "ga_history.csv",
         "ga_candidate_history": "ga_candidate_history.csv",
+        "ga_audit_history": "ga_audit_history.csv",
+        "ga_reentry_history": "ga_reentry_history.csv",
         "ga_method_history": "ga_method_history.csv",
         "ga_summary": "ga_summary.txt",
         "ga_stop_details": "ga_stop_details.json",
@@ -367,6 +369,9 @@ def evaluate_and_write_final_comparison(
     )
     use_cuda = torch.cuda.is_available() and (merge_cuda or (num_gpus or 0) > 0)
     device = "cuda" if use_cuda else "cpu"
+    audit_config = getattr(config, "audit", None)
+    audited = bool(audit_config is not None and audit_config.enabled)
+    comparison_limit = audit_config.limit if audited else config.limit
     stage_logger("Stage-GA", "Evaluating final merged model for comparison table...")
     try:
         result = _eval_model(
@@ -379,7 +384,7 @@ def evaluate_and_write_final_comparison(
                 "trust_remote_code": trust_remote_code,
             },
             num_fewshot=config.num_fewshot,
-            limit=config.limit,
+            limit=comparison_limit,
             batch_size=batch_size,
             task_manager=task_manager,
             fitness_mode=config.fitness_mode,
@@ -403,6 +408,7 @@ def evaluate_and_write_final_comparison(
         "weighted_score": result.get("score"),
         "fitness_version": config.fitness.version,
         "lower_is_better_transform": config.fitness.lower_is_better_transform,
+        "audited": audited,
         "error": None,
     }
     final_row.update(collect_task_metrics(result, config.tasks))
@@ -412,6 +418,7 @@ def evaluate_and_write_final_comparison(
         "weighted_score",
         "fitness_version",
         "lower_is_better_transform",
+        "audited",
         *metric_columns,
         "error",
     ]
